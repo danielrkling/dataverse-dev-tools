@@ -1,5 +1,8 @@
 import { Command, register } from "./index.mjs";
 
+const CDN_URL = "https://unpkg.com/esbuild-wasm@0.27.2/esm/browser.min.js";
+const WASM_URL = "https://unpkg.com/esbuild-wasm@0.27.2/esbuild.wasm";
+
 let esbuildModule = null;
 let esbuildReady = null;
 
@@ -8,9 +11,10 @@ async function getEsbuild() {
   if (esbuildReady) return esbuildReady;
 
   esbuildReady = (async () => {
-    const mod = await import("esbuild-wasm/esm/browser.js");
+    const mod = await import(CDN_URL);
     await mod.initialize({
-      wasmURL: "/esbuild.wasm",
+      worker: true,
+      wasmURL: WASM_URL,
     });
     esbuildModule = mod;
     return mod;
@@ -64,7 +68,7 @@ function createFsPlugin(fs) {
 function resolveRelative(path, base) {
   if (path.startsWith("/")) return path;
   const baseParts = base.replace(/^\//, "").split("/").filter(Boolean);
-  baseParts.pop(); // remove file name
+  baseParts.pop();
   const parts = path.split("/").filter(Boolean);
   for (const part of parts) {
     if (part === ".") continue;
@@ -94,7 +98,6 @@ class EsbuildCommand extends Command {
       plugins: [createFsPlugin(fs)],
     };
 
-    // Parse extra flags
     for (let i = 3; i < args.length; i++) {
       const arg = args[i];
       if (arg === "--minify") options.minify = true;
