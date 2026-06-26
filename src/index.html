@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dataverse Web Resource IDE</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      background: #0d0d0d;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    #setup-panel {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      z-index: 10;
+      background: #0d0d0d;
+      color: #d4d4d4;
+    }
+    #setup-panel h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 0;
+      color: #569cd6;
+    }
+    #setup-panel p {
+      margin: 0;
+      color: #888;
+      font-size: 0.9rem;
+    }
+    #setup-panel button {
+      padding: 0.6rem 1.4rem;
+      font-size: 0.95rem;
+      border: none;
+      border-radius: 6px;
+      background: #569cd6;
+      color: #0d0d0d;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #setup-panel button:hover {
+      background: #4a8bc2;
+    }
+    #setup-panel .note {
+      font-size: 0.75rem;
+      color: #555;
+      margin-top: 0.5rem;
+    }
+    #terminal-container {
+      display: none;
+      height: 100%;
+      width: 100%;
+    }
+    web-terminal {
+      height: 100%;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="setup-panel">
+    <h1>Dataverse Web Resource IDE</h1>
+    <p>Select a local directory to use as your workspace.</p>
+    <button id="pick-dir">Pick Directory</button>
+    <div class="note">Requires a Chromium-based browser with File System Access API support.</div>
+  </div>
+
+  <div id="terminal-container">
+    <web-terminal id="terminal"></web-terminal>
+  </div>
+
+  <script type="module">
+    import { WebFileSystem } from "./web-filesystem.mjs";
+    import { WebTerminal } from "./web-terminal.mjs";
+    import { get, has, all, load, lazy } from "./commands/index.mjs";
+    import "./commands/fs.mjs";
+    import "./commands/webresource.mjs";
+
+    // Lazy-load modules for future features
+    lazy("./commands/bundle.mjs",  ["bundle", "build"]);
+    lazy("./commands/preview.mjs", ["preview", "serve"]);
+    lazy("./commands/config.mjs",  ["config", "cfg"]);
+    lazy("./commands/npm.mjs",     ["npm", "install-pkg"]);
+    lazy("./commands/compile.mjs", ["compile", "tsc", "ts"]);
+
+    const setupPanel = document.getElementById("setup-panel");
+    const terminalContainer = document.getElementById("terminal-container");
+    const pickDirBtn = document.getElementById("pick-dir");
+    const terminal = document.getElementById("terminal");
+
+    async function initWithHandle(dirHandle) {
+      const fs = new WebFileSystem(dirHandle);
+      terminal.prompt = fs.cwd;
+
+      // Wire command handlers
+      terminal.register(async (args, term) => {
+        const name = args[0];
+        if (!name) return;
+
+        if (name === "help") {
+          const cmds = all();
+          const lines = cmds.map((c) => {
+            const aliases = c.aliases.length ? ` (${c.aliases.join(", ")})` : "";
+            return `  ${c.name}${aliases} - ${c.description}`;
+          });
+          return "Available commands:\n" + lines.join("\n");
+        }
+
+        let cmd = get(name);
+        if (!cmd) {
+          const loaded = await load(name);
+          if (loaded) {
+            cmd = get(name);
+          }
+        }
+        if (!cmd) return;
+
+        try {
+          return await cmd.execute(args, { terminal: term, fs });
+        } catch (err) {
+          return { class: "log-error", content: err.message };
+        }
+      });
+
+      setupPanel.style.display = "none";
+      terminalContainer.style.display = "flex";
+      terminal.log(`Mounted: ${dirHandle.name}`, { class: "log-echo" });
+      terminal.log("Type 'help' for available commands.", { class: "log-echo" });
+    }
+
+    pickDirBtn.addEventListener("click", async () => {
+      try {
+        const dirHandle = await window.showDirectoryPicker();
+        await initWithHandle(dirHandle);
+      } catch (err) {
+        if (err.name === "AbortError") return;
+        alert("Failed to open directory: " + err.message);
+      }
+    });
+
+    // If previously granted, restore it
+    if (navigator.storage?.getDirectory) {
+      // Not relevant for user-picked directories
+    }
+  </script>
+</body>
+</html>

@@ -150,7 +150,8 @@ export class WebFileSystem {
 
   async exists(path) {
     try {
-      this._getHandle(this._resolvePath(path));
+      await this._getHandle(this._resolvePath(path));
+      return true;
     } catch {
       return false;
     }
@@ -453,12 +454,12 @@ export class WebFileSystem {
     try {
       const handle = await this._getHandle(newCwd);
       if (handle.kind !== "directory") {
-        throw new WebFSError(`Not a directory: ${absPath}`, "ENOTDIR");
+        throw new WebFSError(`Not a directory: ${newCwd}`, "ENOTDIR");
       }
       this.cwd = newCwd; // Only change CWD on success
       return newCwd;
     } catch (e) {
-      throw new WebFSError(`No such file or directory: ${absPath}`, "ENOENT");
+      throw new WebFSError(`No such file or directory: ${newCwd}`, "ENOENT");
     }
   }
 

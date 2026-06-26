@@ -111,6 +111,8 @@ export class WebTerminal extends HTMLElement {
    */
   log(content, attributes = {}) {
     const line = document.createElement("div");
+    line.style.whiteSpace = "pre-wrap";
+    line.style.wordBreak = "break-all";
     Object.entries(attributes).forEach(([name, value]) =>
       line.setAttribute(name, value),
     );
@@ -180,28 +182,27 @@ export class WebTerminal extends HTMLElement {
       try {
         const result = handler(args, this);
 
-        // If the command is async, it might return a promise.
-        // We await it in case it returns a final value to be logged.
+        let resolved = result;
         if (result instanceof Promise) {
-          const promiseResult = await result;
-          if (promiseResult !== undefined) {
-            this.log(promiseResult);
-            return
-          }
-        } else if (result !== undefined) {
-          // For sync commands that return a simple value
-          this.log(result);
-          return;
+          resolved = await result;
         }
-        // Note: Generators are now handled entirely within the command logic itself.
+
+        if (resolved === undefined) continue;
+
+        if (resolved && typeof resolved === "object" && "content" in resolved) {
+          this.log(resolved.content, { class: resolved.class || "" });
+        } else {
+          this.log(resolved);
+        }
+        return;
       } catch (error) {
         this.log(error.message, { class: "log-error" });
         console.error(`Error executing command '${name}':`, error);
+        return;
       }
     }
 
     this.log(`Command not found: ${name}`, { class: "log-error" });
-    return;
   }
 }
 
