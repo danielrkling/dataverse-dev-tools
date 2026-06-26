@@ -72,7 +72,8 @@
     <h1>Dataverse Web Resource IDE</h1>
     <p>Select a local directory to use as your workspace.</p>
     <button id="pick-dir">Pick Directory</button>
-    <div class="note">Requires a Chromium-based browser with File System Access API support.</div>
+    <button id="mock-mode">Mock Mode</button>
+    <div class="note">Requires a Chromium-based browser with File System Access API support. Use Mock Mode for testing without a real directory.</div>
   </div>
 
   <div id="terminal-container">
@@ -81,6 +82,7 @@
 
   <script type="module">
     import { WebFileSystem } from "./web-filesystem.mjs";
+    import { InMemoryFileSystem } from "./in-memory-filesystem.mjs";
     import { WebTerminal } from "./web-terminal.mjs";
     import { get, has, all, load, lazy } from "./commands/index.mjs";
     import "./commands/fs.mjs";
@@ -96,10 +98,10 @@
     const setupPanel = document.getElementById("setup-panel");
     const terminalContainer = document.getElementById("terminal-container");
     const pickDirBtn = document.getElementById("pick-dir");
+    const mockBtn = document.getElementById("mock-mode");
     const terminal = document.getElementById("terminal");
 
-    async function initWithHandle(dirHandle) {
-      const fs = new WebFileSystem(dirHandle);
+    async function initWithFs(fs) {
       terminal.prompt = fs.cwd;
 
       // Wire command handlers
@@ -134,18 +136,32 @@
 
       setupPanel.style.display = "none";
       terminalContainer.style.display = "flex";
-      terminal.log(`Mounted: ${dirHandle.name}`, { class: "log-echo" });
+      terminal.log(`Mounted: ${fs.rootName}`, { class: "log-echo" });
       terminal.log("Type 'help' for available commands.", { class: "log-echo" });
     }
 
     pickDirBtn.addEventListener("click", async () => {
       try {
         const dirHandle = await window.showDirectoryPicker();
-        await initWithHandle(dirHandle);
+        const fs = new WebFileSystem(dirHandle);
+        await initWithFs(fs);
       } catch (err) {
         if (err.name === "AbortError") return;
         alert("Failed to open directory: " + err.message);
       }
+    });
+
+    mockBtn.addEventListener("click", async () => {
+      const fs = new InMemoryFileSystem();
+      // Seed with some example files
+      await fs.mkdir("src", { recursive: true });
+      await fs.writeFile("src/app.js", "console.log('hello dataverse');");
+      await fs.writeFile("src/app.css", "body { margin: 0; }");
+      await fs.writeFile("src/index.html", "<!DOCTYPE html><html><body>Hello</body></html>");
+      await fs.mkdir("assets", { recursive: true });
+      await fs.writeFile("assets/logo.png", "(binary data placeholder)");
+      await fs.writeFile("README.md", "# Dataverse Web Resource IDE\n\nA pseudo-terminal IDE for Dataverse web resources.");
+      await initWithFs(fs);
     });
 
     // If previously granted, restore it
