@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "esbuild-wasm": "^0.28.1"
   }
 }

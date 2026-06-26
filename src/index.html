@@ -89,7 +89,7 @@
     import "./commands/webresource.mjs";
 
     // Lazy-load modules for future features
-    lazy("./commands/bundle.mjs",  ["bundle", "build"]);
+    lazy("./commands/bundle.mjs",  ["esbuild", "build"]);
     lazy("./commands/preview.mjs", ["preview", "serve"]);
     lazy("./commands/config.mjs",  ["config", "cfg"]);
     lazy("./commands/npm.mjs",     ["npm", "install-pkg"]);
