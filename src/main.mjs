@@ -3,6 +3,7 @@ import { WebFileSystem } from "./fs.mjs";
 import { PluginManager } from "./plugin.mjs";
 import { listHandles, saveHandle } from "./handles.mjs";
 import { uploadWebResource, publishWebResources } from "./wr.mjs";
+import { previewWindows } from "./preview-state.mjs";
 
 /** @type {WebTerminal} */
 export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-terminal"));
@@ -79,14 +80,6 @@ async function loadHandle(handle) {
     if (await fs.exists("dataverse.config.json")) {
         setupFileWatching();
     }
-}
-
-/** @type {Set<Window>} */
-const previewWindows = new Set();
-
-/** @param {Window} win */
-export function registerPreviewWindow(win) {
-    previewWindows.add(win);
 }
 
 function refreshPreviews() {

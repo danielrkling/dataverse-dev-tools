@@ -1,4 +1,4 @@
-import { registerPreviewWindow } from '../main.mjs';
+import { registerPreviewWindow } from '../preview-state.mjs';
 
 /** @type {import('../plugin.mjs').Plugin} */
 export default {
