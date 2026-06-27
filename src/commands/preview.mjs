@@ -1,3 +1,5 @@
+import { registerPreviewWindow } from '../main.mjs';
+
 /** @type {import('../plugin.mjs').Plugin} */
 export default {
   name: 'preview',
@@ -9,7 +11,6 @@ export default {
       usage: 'preview [path]',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         let path = args[0];
         if (!path) {
           try {
@@ -21,7 +22,8 @@ export default {
         }
         if (!path) return 'Could not determine preview path.';
         const url = `${location.origin}/WebResources/${path}`;
-        window.open(url);
+        const win = window.open(url);
+        if (win) registerPreviewWindow(win);
         return `Opening ${url}`;
       },
     },

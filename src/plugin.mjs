@@ -16,7 +16,7 @@
 
 /**
  * @typedef {Object} ExecuteContext
- * @property {import('./fs.mjs').WebFileSystem | null} [fs]
+ * @property {import('./fs.mjs').WebFileSystem} fs
  * @property {PluginManager} pm
  */
 
@@ -93,16 +93,16 @@ export class PluginManager {
   #plugins = new Map();
   /** @type {import('./terminal.mjs').WebTerminal | null} */
   #terminal = null;
-  /** @type {import('./fs.mjs').WebFileSystem | null} */
-  #fs = null;
+  /** @type {import('./fs.mjs').WebFileSystem} */
+  #fs;
 
   /**
-   * @param {{ terminal?: import('./terminal.mjs').WebTerminal | null, fs?: import('./fs.mjs').WebFileSystem | null }} [options]
+   * @param {{ terminal?: import('./terminal.mjs').WebTerminal | null, fs: import('./fs.mjs').WebFileSystem }} options
    */
-  constructor({ terminal, fs } = {}) {
+  constructor({ terminal, fs }) {
+    if (!fs) throw new Error('PluginManager requires a WebFileSystem instance');
     this.#terminal = terminal ?? null;
-    this.#fs = fs ?? null;
-    this.#registerBuiltin();
+    this.#fs = fs;
   }
 
   /** @returns {CommandRegistry} */
@@ -115,7 +115,7 @@ export class PluginManager {
     return this.#terminal;
   }
 
-  /** @returns {import('./fs.mjs').WebFileSystem | null} */
+  /** @returns {import('./fs.mjs').WebFileSystem} */
   get fs() {
     return this.#fs;
   }
@@ -132,46 +132,6 @@ export class PluginManager {
    */
   setFs(fs) {
     this.#fs = fs;
-  }
-
-  #registerBuiltin() {
-    this.#registry.register({
-      name: 'help',
-      aliases: ['?'],
-      description: 'Show available commands or details about a specific command',
-      usage: 'help [command]',
-      plugin: 'builtin',
-      /** @type {CommandHandler} */
-      handler: (args, term, { pm }) => {
-        if (args.length > 0) {
-          const cmd = pm.registry.resolve(args[0]);
-          if (cmd) {
-            const parts = [`${cmd.name} — ${cmd.description}`];
-            if (cmd.usage) parts.push(`Usage: ${cmd.usage}`);
-            if (cmd.aliases && cmd.aliases.length) parts.push(`Aliases: ${cmd.aliases.join(', ')}`);
-            term.log(parts.join('\n'));
-            return '';
-          }
-          term.log(`No help found for '${args[0]}'`, { class: 'log-error' });
-          return '';
-        }
-        const cmds = pm.registry.list();
-        const lines = cmds.map(c => `  ${c.name.padEnd(15)} ${c.description}`);
-        term.log(`Available commands (${cmds.length}):\n${lines.join('\n')}`);
-        return '';
-      },
-    });
-
-    this.#registry.register({
-      name: 'clear',
-      description: 'Clear the terminal screen',
-      plugin: 'builtin',
-      /** @type {CommandHandler} */
-      handler: (args, term) => {
-        term.clear();
-        return '';
-      },
-    });
   }
 
   /**

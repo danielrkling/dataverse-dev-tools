@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { CommandRegistry, PluginManager } from '../src/plugin.mjs';
+import builtinPlugin from '../src/commands/builtin.mjs';
 
 class MockTerminal {
   constructor() {
@@ -67,13 +68,16 @@ test.describe('CommandRegistry', () => {
   });
 });
 
+const dummyFs = /** @type {import('../src/fs.mjs').WebFileSystem} */ ({});
+
 test.describe('PluginManager', () => {
   let pm;
   let term;
 
   test.beforeEach(() => {
     term = new MockTerminal();
-    pm = new PluginManager({ terminal: term });
+    pm = new PluginManager({ terminal: term, fs: dummyFs });
+    pm.registerPlugin(builtinPlugin);
   });
 
   test('registers builtin commands on construction', () => {
@@ -128,8 +132,7 @@ test.describe('PluginManager', () => {
   });
 
   test('execute runs a command handler with context', async () => {
-    const mockFs = { test: true };
-    pm.setFs(mockFs);
+    pm.setFs(dummyFs);
     const plugin = {
       name: 'test-plugin',
       commands: [

@@ -9,7 +9,6 @@ export default {
       usage: 'ls [path]',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         const path = args[0] || '.';
         try {
           const entries = await fs.readdir(path);
@@ -40,7 +39,6 @@ export default {
       usage: 'cd <path>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         if (!args[0]) return fs.cwd;
         try {
           const newCwd = await fs.cd(args[0]);
@@ -56,7 +54,6 @@ export default {
       description: 'Print working directory',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         return fs.cwd;
       },
     },
@@ -66,7 +63,6 @@ export default {
       usage: 'cat <file>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         if (!args[0]) return 'Usage: cat <file>';
         try {
           return await fs.readFile(args[0], { encoding: 'utf8' });
@@ -81,7 +77,6 @@ export default {
       usage: 'mkdir <path>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         if (!args[0]) return 'Usage: mkdir <path>';
         try {
           await fs.mkdir(args[0], { recursive: true });
@@ -98,7 +93,6 @@ export default {
       usage: 'rm [-r] <path>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         const recursive = args[0] === '-r';
         const path = recursive ? args[1] : args[0];
         if (!path) return 'Usage: rm [-r] <path>';
@@ -122,7 +116,6 @@ export default {
       usage: 'mv <source> <dest>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         if (args.length < 2) return 'Usage: mv <source> <dest>';
         try {
           await fs.rename(args[0], args[1]);
@@ -138,7 +131,6 @@ export default {
       usage: 'touch <path>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         if (!args[0]) return 'Usage: touch <path>';
         try {
           await fs.writeFile(args[0], '');
@@ -155,7 +147,6 @@ export default {
       usage: 'stat <path>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        if (!fs) return 'No file system.';
         if (!args[0]) return 'Usage: stat <path>';
         try {
           const s = await fs.stat(args[0]);

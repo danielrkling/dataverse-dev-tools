@@ -83,7 +83,9 @@ export class WebTerminal extends HTMLElement {
                     outline: none;
                 }
                 .log-echo { color: #a0a0a0; }
+                .log-info { color: #4fc1ff; }
                 .log-error { color: #f48771; }
+                .log-success { color: #4ec9b0; }
             </style>
             <div id="output"></div>
             <div class="input-line">
@@ -160,6 +162,33 @@ export class WebTerminal extends HTMLElement {
         this._output.appendChild(line);
         this._output.scrollTop = this._output.scrollHeight;
         return line;
+    }
+
+    /**
+     * Log an informational message (blue).
+     * @param {string|HTMLElement} content
+     * @returns {HTMLDivElement}
+     */
+    info(content) {
+        return this.log(content, { class: 'log-info' });
+    }
+
+    /**
+     * Log an error message (red).
+     * @param {string|HTMLElement} content
+     * @returns {HTMLDivElement}
+     */
+    error(content) {
+        return this.log(content, { class: 'log-error' });
+    }
+
+    /**
+     * Log a success message (green).
+     * @param {string|HTMLElement} content
+     * @returns {HTMLDivElement}
+     */
+    success(content) {
+        return this.log(content, { class: 'log-success' });
     }
 
     /** Clear all terminal output */
