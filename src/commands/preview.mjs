@@ -14,8 +14,8 @@ export default {
         let path = args[0];
         if (!path) {
           try {
-            const pkg = JSON.parse(/** @type {string} */ (await fs.readFile('package.json', { encoding: 'utf8' })));
-            path = pkg.webResourceKit?.upload?.preview;
+            const config = JSON.parse(/** @type {string} */ (await fs.readFile('dataverse.config.json', { encoding: 'utf8' })));
+            path = config.upload?.preview;
           } catch {
             return 'No preview path configured and no path provided.';
           }

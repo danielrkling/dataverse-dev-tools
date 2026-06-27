@@ -22,6 +22,7 @@ await pm.loadPlugin('upload', () => import('./commands/upload.mjs'));
 await pm.loadPlugin('preview', () => import('./commands/preview.mjs'));
 await pm.loadPlugin('esbuild', () => import('./commands/esbuild.mjs'));
 await pm.loadPlugin('run', () => import('./commands/run.mjs'));
+await pm.loadPlugin('init-config', () => import('./commands/init-config.mjs'));
 
 terminal.setDispatchHandler((args, term) => pm.execute(args, term));
 terminal._input.disabled = false;
@@ -75,11 +76,8 @@ async function loadHandle(handle) {
     terminal.log(`Loading ${handle.name}`);
     terminal.prompt = handle.name;
 
-    try {
-        await fs.exists("package.json");
+    if (await fs.exists("dataverse.config.json")) {
         setupFileWatching();
-    } catch (e) {
-        terminal.log(`No Config file found`);
     }
 }
 
@@ -104,15 +102,15 @@ function refreshPreviews() {
 async function setupFileWatching() {
     let raw;
     try {
-        raw = await fs.readFile("package.json", { encoding: "utf8" });
+        raw = await fs.readFile("dataverse.config.json", { encoding: "utf8" });
     } catch {
-        terminal.info('No package.json found — file watching disabled.');
+        terminal.info('No dataverse.config.json found — file watching disabled.');
         return;
     }
     const config = JSON.parse(/** @type {string} */ (raw));
-    const upload = config.webResourceKit?.upload;
+    const upload = config.upload;
     if (!upload?.prefix || !upload?.watch) {
-        terminal.info('No webResourceKit.upload config found — file watching disabled.');
+        terminal.info('No valid upload config found in dataverse.config.json — file watching disabled.');
         return;
     }
 
