@@ -1,0 +1,288 @@
+import { extractTar } from '../tar.mjs';
+
+const REGISTRY = 'https://registry.npmjs.org';
+
+/**
+ * @param {string} name
+ * @returns {string}
+ */
+function registryUrl(name) {
+    return `${REGISTRY}/${name.replace('/', '%2F')}`;
+}
+
+/**
+ * @param {string} spec e.g. "lodash", "lodash@4.17.21", "@types/node", "@types/node@18"
+ * @returns {{ name: string, version: string }}
+ */
+function parsePackageSpec(spec) {
+    if (spec.startsWith('@')) {
+        const i = spec.indexOf('@', 1);
+        if (i === -1) return { name: spec, version: 'latest' };
+        return { name: spec.slice(0, i), version: spec.slice(i + 1) || 'latest' };
+    }
+    const i = spec.lastIndexOf('@');
+    if (i === -1) return { name: spec, version: 'latest' };
+    return { name: spec.slice(0, i), version: spec.slice(i + 1) || 'latest' };
+}
+
+/**
+ * @param {ArrayBuffer} buffer
+ * @returns {Promise<ArrayBuffer>}
+ */
+async function decompressGzip(buffer) {
+    const body = new Response(buffer).body;
+    if (!body) throw new Error('Response body is null');
+    const stream = body.pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(stream).arrayBuffer();
+}
+
+/**
+ * @param {{ path: string, data: Uint8Array }[]} files
+ * @param {boolean} tsOnly
+ * @returns {{ path: string, data: Uint8Array }[]}
+ */
+function filterFiles(files, tsOnly) {
+    if (!tsOnly) return files;
+    return files.filter(f => {
+        if (f.path === 'package.json') return true;
+        return /\.(?:ts|tsx|mts|cts|d\.ts)$/i.test(f.path);
+    });
+}
+
+/**
+ * @param {string} v
+ * @returns {{ major: number, minor: number, patch: number } | null}
+ */
+function parseSemver(v) {
+    const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
+    return m ? { major: +m[1], minor: +m[2], patch: +m[3] } : null;
+}
+
+/**
+ * @param {{ major: number, minor: number, patch: number }} a
+ * @param {{ major: number, minor: number, patch: number }} b
+ * @returns {number}
+ */
+function compareSemver(a, b) {
+    return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+/**
+ * @param {{ major: number, minor: number, patch: number }} sv
+ * @param {string} range
+ * @returns {boolean}
+ */
+function satisfies(sv, range) {
+    if (!range || range === '*' || range === 'latest') return true;
+
+    if (/^\d+\.\d+\.\d+$/.test(range)) {
+        const p = range.split('.');
+        return sv.major === +p[0] && sv.minor === +p[1] && sv.patch === +p[2];
+    }
+
+    const c = range.match(/^\^(\d+)\.(\d+)\.(\d+)/);
+    if (c) {
+        const cm = +c[1], cmin = +c[2], cp = +c[3];
+        if (sv.major !== cm) return false;
+        if (cm === 0) {
+            if (cmin === 0) return sv.patch >= cp;
+            return sv.minor === cmin && sv.patch >= cp;
+        }
+        return sv.minor >= cmin;
+    }
+
+    const t = range.match(/^~(\d+)\.(\d+)\.(\d+)/);
+    if (t) {
+        return sv.major === +t[1] && sv.minor === +t[2] && sv.patch >= +t[3];
+    }
+
+    const g = range.match(/^>=(\d+)\.(\d+)\.(\d+)/);
+    if (g) {
+        return compareSemver(sv, { major: +g[1], minor: +g[2], patch: +g[3] }) >= 0;
+    }
+
+    return true;
+}
+
+/**
+ * @param {string[]} versions
+ * @param {string} range
+ * @returns {string | undefined}
+ */
+/**
+ * @param {string[]} versions
+ * @param {string} range
+ * @returns {string | undefined}
+ */
+function pickBestVersion(versions, range) {
+    /** @type {Array<{ major: number, minor: number, patch: number }>} */
+    const parsed = [];
+    for (const v of versions) {
+        if (!/^\d+\.\d+\.\d+$/.test(v)) continue;
+        const sv = parseSemver(v);
+        if (sv && satisfies(sv, range)) parsed.push(sv);
+    }
+    parsed.sort((a, b) => compareSemver(b, a));
+    return parsed[0] ? `${parsed[0].major}.${parsed[0].minor}.${parsed[0].patch}` : undefined;
+}
+
+/** @type {Map<string, any>} */
+const metaCache = new Map();
+
+/**
+ * @param {string} name
+ * @returns {Promise<any>}
+ */
+async function fetchPackageMeta(name) {
+    if (metaCache.has(name)) return metaCache.get(name);
+    const res = await fetch(registryUrl(name));
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${name}`);
+    const data = await res.json();
+    metaCache.set(name, data);
+    return data;
+}
+
+/** @type {Set<string>} */
+const installing = new Set();
+
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../terminal.mjs').WebTerminal} term
+ * @param {string} name
+ * @param {string} version
+ * @param {boolean} tsOnly
+ */
+async function installOne(fs, term, name, version, tsOnly) {
+    if (installing.has(name)) return;
+    installing.add(name);
+
+    const targetDir = `node_modules/${name}`;
+    if (await fs.exists(targetDir)) {
+        term.info(`    ${name} already installed`);
+        return;
+    }
+
+    const meta = await fetchPackageMeta(name);
+    const versions = Object.keys(meta.versions || {});
+    const resolved = pickBestVersion(versions, version || 'latest');
+    if (!resolved) {
+        throw new Error(`No version of ${name} matches ${version}`);
+    }
+    const pkg = meta.versions[resolved];
+
+    term.log(`  ↓ ${name}@${resolved}`);
+
+    const res = await fetch(pkg.dist.tarball);
+    if (!res.ok) throw new Error(`Download failed for ${name}@${resolved}`);
+
+    const tarBuffer = await decompressGzip(await res.arrayBuffer());
+    const files = extractTar(tarBuffer);
+    const filtered = filterFiles(files, tsOnly);
+
+    for (const file of filtered) {
+        const fp = `${targetDir}/${file.path}`;
+        const parts = fp.split('/');
+        parts.pop();
+        await fs.mkdir(parts.join('/'), { recursive: true });
+        await fs.writeFile(fp, file.data);
+    }
+
+    term.success(`    ${name}@${resolved} installed`);
+
+    const deps = pkg.dependencies || {};
+    for (const [depName, depRange] of Object.entries(deps)) {
+        try {
+            await installOne(fs, term, depName, depRange, tsOnly);
+        } catch (e) {
+            term.error(`    Failed to install ${depName}: ${e.message}`);
+        }
+    }
+}
+
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} name
+ * @param {string} version
+ */
+async function updatePackageJson(fs, name, version) {
+    /** @type {Record<string, any>} */
+    let pkg = {};
+    try {
+        const raw = await fs.readFile('package.json', { encoding: 'utf8' });
+        pkg = JSON.parse(/** @type {string} */ (raw));
+    } catch {
+        pkg = {};
+    }
+    pkg.dependencies = pkg.dependencies || {};
+    pkg.dependencies[name] = `^${version}`;
+    await fs.writeFile('package.json', JSON.stringify(pkg, null, 2));
+}
+
+/** @type {import('../plugin.mjs').Plugin} */
+export default {
+    name: 'npm',
+    commands: [
+        {
+            name: 'npm',
+            aliases: ['n'],
+            description: 'Install npm packages',
+            usage: 'npm install [package@version] [--ts-only]',
+            /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
+            handler: async (args, term, { fs }) => {
+                const tsOnly = args.includes('--ts-only');
+                const cleanArgs = args.filter(a => a !== '--ts-only');
+
+                const sub = cleanArgs[0];
+
+                if (sub !== 'install') {
+                    return 'Usage: npm install [package@version] [--ts-only]';
+                }
+
+                const spec = cleanArgs[1];
+
+                if (spec) {
+                    // Single package install
+                    const { name, version } = parsePackageSpec(spec);
+                    try {
+                        await installOne(fs, term, name, version, tsOnly);
+                        const meta = await fetchPackageMeta(name);
+                        const versions = Object.keys(meta.versions || {});
+                        const resolved = pickBestVersion(versions, version || 'latest');
+                        if (resolved) {
+                            await updatePackageJson(fs, name, resolved);
+                            term.success(`Added ${name}@${resolved} to package.json`);
+                        }
+                    } catch (e) {
+                        return `npm install failed: ${e.message}`;
+                    }
+                    return '';
+                }
+
+                // Install all from package.json
+                let pkg;
+                try {
+                    const raw = await fs.readFile('package.json', { encoding: 'utf8' });
+                    pkg = JSON.parse(/** @type {string} */ (raw));
+                } catch {
+                    return 'No package.json found.';
+                }
+
+                const deps = pkg.dependencies || {};
+                const entries = Object.entries(deps);
+                if (entries.length === 0) {
+                    term.info('No dependencies in package.json');
+                    return '';
+                }
+
+                for (const [depName, depRange] of entries) {
+                    try {
+                        await installOne(fs, term, depName, depRange, tsOnly);
+                    } catch (e) {
+                        term.error(`  Failed to install ${depName}: ${e.message}`);
+                    }
+                }
+                return '';
+            },
+        },
+    ],
+};
