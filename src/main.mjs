@@ -3,6 +3,7 @@ import { WebFileSystem } from "./fs.mjs";
 import { PluginManager } from "./plugin.mjs";
 import { listHandles, saveHandle } from "./handles.mjs";
 import { uploadWebResource, publishWebResources } from "./wr.mjs";
+import { bundle_in_memory } from "./esbuild.mjs";
 import { previewWindows } from "./preview-state.mjs";
 
 /** @type {WebTerminal} */
@@ -181,5 +182,32 @@ async function setupFileWatching() {
                 uploadFiles([[path, str]]);
             }
         });
+    }
+
+    // esbuild watch — rebuild on source file changes
+    let esbuildRaw;
+    try {
+        esbuildRaw = await fs.readFile("esbuild.config.json", { encoding: "utf8" });
+    } catch {
+        // No esbuild config found — skip esbuild watching
+    }
+
+    if (esbuildRaw) {
+        const esbuildConfig = JSON.parse(esbuildRaw);
+        if (esbuildConfig.watch && Array.isArray(esbuildConfig.watch)) {
+            const { watch: watchDirs, ...buildConfig } = esbuildConfig;
+            for (const dir of watchDirs) {
+                fs.watch(dir, { recursive: true, debounce: 200 }, async (path, type) => {
+                    if (type === "modified") {
+                        try {
+                            const files = await bundle_in_memory(fs, buildConfig);
+                            terminal.log(`esbuild rebuilt: ${files.map(f => f.path).join(', ')}`);
+                        } catch (e) {
+                            terminal.error(`esbuild rebuild failed: ${e.message}`);
+                        }
+                    }
+                });
+            }
+        }
     }
 }

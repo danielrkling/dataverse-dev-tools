@@ -11,18 +11,15 @@ export default {
       usage: 'esbuild',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
+        let config;
         try {
-          const files = await bundle_in_memory(fs, {
-            entryPoints: ['./src/app.ts'],
-            bundle: true,
-            outdir: 'dist',
-            minify: false,
-            format: 'esm',
-            platform: 'browser',
-            sourcemap: 'inline',
-            splitting: false,
-            outExtension: { '.js': '.mjs' },
-          });
+          const raw = await fs.readFile('esbuild.config.json', { encoding: 'utf8' });
+          config = JSON.parse(/** @type {string} */ (raw));
+        } catch {
+          return 'No esbuild.config.json found. Run init-config to create it.';
+        }
+        try {
+          const files = await bundle_in_memory(fs, config);
           return `Built ${files.map(v => v.path).join(', ')}`;
         } catch (e) {
           return `esbuild failed: ${e.message}`;
