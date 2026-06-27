@@ -1,19 +1,31 @@
 import { WebTerminal } from "./terminal.mjs";
-// import { createContainer, esbuild, getServerBridge } from "almostnode";
-// import { ViteDevServer } from "almostnode";
 import { WebFileSystem } from "./fs.mjs";
+import { PluginManager } from "./plugin.mjs";
 import { listHandles, saveHandle } from "./handles.mjs";
-import { bundle_in_memory } from "./esbuild.mjs";
-import { publishWebResources, uploadWebResource } from "./wr.mjs";
+import { uploadWebResource, publishWebResources } from "./wr.mjs";
 
-// const container = createContainer();
-
-/** @type {WebTerminal}*/
-export const terminal = document.querySelector("web-terminal");
+/** @type {WebTerminal} */
+export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-terminal"));
 terminal._input.disabled = true;
 
-/** @type {WebFileSystem} */
+/** @type {WebFileSystem | undefined} */
 export var fs;
+
+/** @type {PluginManager} */
+export const pm = new PluginManager({ terminal });
+
+await pm.loadPlugin('builtin', () => import('./commands/builtin.mjs'));
+await pm.loadPlugin('fs', () => import('./commands/fs.mjs'));
+await pm.loadPlugin('upload', () => import('./commands/upload.mjs'));
+await pm.loadPlugin('preview', () => import('./commands/preview.mjs'));
+await pm.loadPlugin('esbuild', () => import('./commands/esbuild.mjs'));
+await pm.loadPlugin('run', () => import('./commands/run.mjs'));
+
+terminal.setDispatchHandler((args, term) => pm.execute(args, term));
+
+/**
+ * @typedef {import("./handles.mjs").StoredHandle} StoredHandle
+ */
 
 async function loadRecentFolders() {
     const recentFolders = await listHandles();
@@ -34,6 +46,7 @@ async function loadRecentFolders() {
     const button = document.createElement("button");
     button.innerText = "  Select New Folder";
     button.onclick = async () => {
+        // @ts-ignore - showDirectoryPicker is experimental and not in TS DOM types
         const rootHandle = await window.showDirectoryPicker({
             id: "terminal",
             mode: "readwrite",
@@ -48,49 +61,47 @@ async function loadRecentFolders() {
 loadRecentFolders();
 
 /**
- *
  * @param {FileSystemDirectoryHandle} handle
  */
 async function loadHandle(handle) {
     saveHandle(handle.name, handle);
     fs = new WebFileSystem(handle);
+    // @ts-ignore - Expose fs globally for debugging
     window.fs = fs;
+    pm.setFs(fs);
     terminal.log(`Loading ${handle.name}`);
     terminal.prompt = handle.name;
     terminal._input.disabled = false;
 
     try {
-        const config = await fs.exists("package.json");
-        upload()
+        await fs.exists("package.json");
+        setupFileWatching();
     } catch (e) {
         terminal.log(`No Config file found`);
     }
 }
 
-terminal.register(async (args, term) => {
-    if (args[0] === "upload") {
-        if (args[1]) {
-            const path = args[1];
-            terminal.log(`Uploading ${path}`);
-            const wr = await uploadWebResource(`Dev_Tools/${path}`, await fs.readFile(path), "NNSY_Dev_Tools");
-            terminal.log(`Uploaded ${path}`);
-            await publishWebResources([wr]);
-            return `Published ${path}`;
-        } else {
-            return `Watching ${upload.watch.join(", ")}`;
-        }
-    }
-});
+/**
+ * Placeholder for refreshing iframe content.
+ * This should be implemented based on the specific iframe structure.
+ */
+function refreshIframe() {
+    // TODO: Implement iframe refresh logic
+}
 
-async function upload() {
-    const { upload } = await fs
-        .readFile("package.json", { encoding: "utf8" })
-        .then((r) => JSON.parse(r).webResourceKit);
+async function setupFileWatching() {
+    if (!fs) return;
+    const _fs = fs;
+    const raw = await _fs.readFile("package.json", { encoding: "utf8" });
+    const { upload } = JSON.parse(/** @type {string} */ (raw)).webResourceKit;
 
+    /**
+     * @param {Array<[string, string]>} filesToUpload
+     */
     const uploadFiles = async (filesToUpload) => {
         if (filesToUpload.length > 0) {
             terminal.log(`Uploading ${filesToUpload.map((f) => f[0])} web resource(s)...`);
-            Promise.all(
+            const wrs = await Promise.all(
                 filesToUpload.map(([path, content]) =>
                     uploadWebResource(
                         `${upload.prefix}${path.startsWith("/") ? "" : "/"}${path}`,
@@ -98,67 +109,25 @@ async function upload() {
                         upload.solution,
                     ),
                 ),
-            )
-                .then(async (wrs) => {
-                    if (upload.refresh === "onUpload") refreshIframe();
-                    terminal.log(`Publishing ${wrs.length} web resource(s).`);
-                    await publishWebResources(wrs).then(() =>
-                        terminal.log(`Successfully published ${wrs.length} web resource(s).`),
-                    );
-                    if (upload.refresh === "onPublish") refreshIframe();
-                })
-                .catch((err) => terminal.log("Web resource upload/publish failed:", err));
+            );
+            const validWrs = wrs.filter(/** @return {wr is import('./wr.mjs').WebResource} */ (wr) => wr != null);
+            if (upload.refresh === "onUpload") refreshIframe();
+            terminal.log(`Publishing ${validWrs.length} web resource(s).`);
+            await publishWebResources(validWrs);
+            terminal.log(`Successfully published ${validWrs.length} web resource(s).`);
+            if (upload.refresh === "onPublish") refreshIframe();
         }
     };
 
     for (const watch of upload.watch) {
-        const files = await fs.getFilesFromDirectory(watch);
+        const files = await _fs.getFilesFromDirectory(watch);
         uploadFiles(Object.entries(files));
-        fs.watch(watch, { recursive: true, debounce: 200 }, async (path, type) => {
+        _fs.watch(watch, { recursive: true, debounce: 200 }, async (path, type) => {
             if (type === "modified") {
-                uploadFiles([[path, await fs.readFile(path)]]);
+                const content = await _fs.readFile(path);
+                const str = typeof content === 'string' ? content : new TextDecoder().decode(content);
+                uploadFiles([[path, str]]);
             }
         });
     }
 }
-
-terminal.register(async (args, term) => {
-    if (args[0] === "preview") {
-        const url = `${location.origin}/WebResources/${args[1] ?? (await fs.readFile("package.json").then((r) => JSON.parse(r).webResourceKit.upload.preview))}`;
-        const newWindow = window.open(url);
-    }
-});
-
-terminal.register(async (args, term) => {
-    if (args[0] === "esbuild") {
-        const files = await bundle_in_memory(fs, {
-            entryPoints: ["./src/app.ts"],
-            bundle: true,
-            outdir: "dist",
-            minify: false,
-            format: "esm",
-            platform: "browser",
-            sourcemap: "inline",
-            splitting: false,
-            outExtension: {
-                ".js": ".mjs",
-            },
-        });
-        return `Built ${files.map((v) => v.path).join(",")}`;
-    }
-});
-
-terminal.register(async (args, term) => {
-    if (args[0] === "run") {
-        const code = await fs.readFile(args[1], { encoding: "utf8" });
-        return new Function(`
-        const module = { exports: {} };
-        const exports = module.exports;
-
-        return (async () => {
-            ${code}
-            return module.exports;
-        })();
-        `)();
-    }
-});

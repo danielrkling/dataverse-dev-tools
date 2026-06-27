@@ -1,14 +1,18 @@
+import { parseCommandWithQuotes } from "./parser.mjs";
+
 export class WebTerminal extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: "open" });
-        /**@type {(args: string[], console: WebTerminal) => any} */
+        /** @type {Set<(args: string[], term: WebTerminal) => any>} */
         this._handlers = new Set();
+        /** @type {string[]} */
         this._history = [];
+        /** @type {number} */
         this._historyIndex = -1;
 
-        // --- Create the component's internal structure and styling ---
-        this.shadowRoot.innerHTML = `
+        const root = /** @type {ShadowRoot} */ (this.shadowRoot);
+        root.innerHTML = `
             <style>
                 :host {
                     display: flex;
@@ -18,7 +22,7 @@ export class WebTerminal extends HTMLElement {
                     color: #d4d4d4;
                     padding: 1rem;
                     border-radius: 5px;
-                    min-height: 200px; /* Or set via external CSS */
+                    min-height: 200px;
                     max-height: 100vh;
                     height:100%;
                     box-sizing: border-box;
@@ -29,20 +33,19 @@ export class WebTerminal extends HTMLElement {
                     white-space: pre-wrap;
                     word-break: break-all;
                 }
-                /* Custom Scrollbar Styling */
                 #output::-webkit-scrollbar {
                     width: 8px;
                 }
                 #output::-webkit-scrollbar-track {
-                    background: #2d2d2d; /* Darker track */
+                    background: #2d2d2d;
                     border-radius: 10px;
                 }
                 #output::-webkit-scrollbar-thumb {
-                    background: #555; /* Medium grey thumb */
+                    background: #555;
                     border-radius: 10px;
                 }
                 #output::-webkit-scrollbar-thumb:hover {
-                    background: #777; /* Lighter grey on hover */
+                    background: #777;
                 }
 
                 #output  button {
@@ -53,11 +56,11 @@ export class WebTerminal extends HTMLElement {
                 }
 
                 #output button:hover {
-                    background: #555; /* Lighter grey on hover */
+                    background: #555;
                     cursor: pointer;
                 }
                 #output button:active, #output button:focus-visible {
-                    background: #555; /* Lighter grey on hover */
+                    background: #555;
                     cursor: pointer;
                 }
 
@@ -89,16 +92,26 @@ export class WebTerminal extends HTMLElement {
             </div>
         `;
 
-        this._output = this.shadowRoot.querySelector("#output");
-        /** @type {HTMLInputElement} */
-        this._input = this.shadowRoot.querySelector("#input");
-        this._prompt = this.shadowRoot.querySelector("#prompt");
+        this._output = /** @type {HTMLDivElement} */ (root.querySelector("#output"));
+        this._input = /** @type {HTMLInputElement} */ (root.querySelector("#input"));
+        this._prompt = /** @type {HTMLSpanElement} */ (root.querySelector("#prompt"));
+        /** @type {((args: string[], term: WebTerminal) => any) | null} */
+        this._dispatchHandler = null;
+    }
+
+    /**
+     * Set a single dispatch handler that takes over command processing.
+     * When set, this handler is called instead of iterating registered handlers.
+     * @param {(args: string[], term: WebTerminal) => any} handler
+     */
+    setDispatchHandler(handler) {
+        this._dispatchHandler = handler;
     }
 
     connectedCallback() {
         this._input.addEventListener("keydown", (e) => this._onKeyDown(e));
         this.addEventListener("click", (e) => {
-            if (window.getSelection().toString() !== "") return;
+            if (window.getSelection()?.toString() !== "") return;
 
             const path = e.composedPath();
 
@@ -121,19 +134,18 @@ export class WebTerminal extends HTMLElement {
     }
 
     /**
-     * Public API to register a command.
-     * @param {(args: string[], console: WebTerminal) => any} handler - The function to execute.
+     * Public API to register a command handler.
+     * @param {(args: string[], console: WebTerminal) => any} handler
      */
     register(handler) {
         this._handlers.add(handler);
     }
 
     /**
-     * Public API to log a message to the console.
-     * It appends the content and returns the container element for future manipulation.
-     * @param {string|HTMLElement} content - The string, HTML string, or HTMLElement to log.
-     * @param {Record<HTMLCollectionOf,elemenm>} [{}] - A CSS class for the log entry container.
-     * @returns {HTMLDivElement} The container div element for the new log entry.
+     * Log a message to the terminal output.
+     * @param {string|HTMLElement} content
+     * @param {Record<string, string>} [attributes]
+     * @returns {HTMLDivElement}
      */
     log(content, attributes = {}) {
         const line = document.createElement("div");
@@ -146,24 +158,30 @@ export class WebTerminal extends HTMLElement {
         }
 
         this._output.appendChild(line);
-        this._output.scrollTop = this._output.scrollHeight; // Auto-scroll
+        this._output.scrollTop = this._output.scrollHeight;
         return line;
     }
 
+    /** Clear all terminal output */
     clear() {
         this._output.innerHTML = "";
     }
 
+    /** @returns {string} */
     get prompt() {
-        return this._prompt.textContent;
+        return this._prompt.textContent ?? '';
     }
 
+    /** @param {string} text */
     set prompt(text) {
         this._prompt.textContent = text;
     }
 
     // --- Internal Methods ---
 
+    /**
+     * @param {KeyboardEvent} event
+     */
     _onKeyDown(event) {
         switch (event.key) {
             case "Enter":
@@ -197,15 +215,30 @@ export class WebTerminal extends HTMLElement {
         }
     }
 
+    /**
+     * @param {string} text
+     */
     async _processCommand(text) {
         const args = parseCommandWithQuotes(text);
-        const name = args[0];
+        const name = args[0] || '';
+
+        if (this._dispatchHandler) {
+            try {
+                const result = await this._dispatchHandler(args, this);
+                if (result !== undefined) {
+                    this.log(String(result));
+                }
+            } catch (error) {
+                this.log(error.message, { class: 'log-error' });
+                console.error(`Error executing command '${name}':`, error);
+            }
+            return;
+        }
+
         for (const handler of this._handlers) {
             try {
                 const result = handler(args, this);
 
-                // If the command is async, it might return a promise.
-                // We await it in case it returns a final value to be logged.
                 if (result instanceof Promise) {
                     const promiseResult = await result;
                     if (promiseResult !== undefined) {
@@ -213,11 +246,9 @@ export class WebTerminal extends HTMLElement {
                         return;
                     }
                 } else if (result !== undefined) {
-                    // For sync commands that return a simple value
                     this.log(result);
                     return;
                 }
-                // Note: Generators are now handled entirely within the command logic itself.
             } catch (error) {
                 this.log(error.message, { class: "log-error" });
                 console.error(`Error executing command '${name}':`, error);
@@ -230,76 +261,3 @@ export class WebTerminal extends HTMLElement {
 }
 
 customElements.define("web-terminal", WebTerminal);
-
-/**
- * Parses a command string into an array of arguments, respecting single and double quotes.
- *
- * @param {string} text The raw command string to parse.
- * @returns {string[]} An array of arguments.
- *
- * @example
- * parseCommandWithQuotes('npm install "my package" --save');
- * // Returns: ['npm', 'install', 'my package', '--save']
- *
- * @example
- * parseCommandWithQuotes("echo 'hello world' \"and you\"");
- * // Returns: ['echo', 'hello world', 'and you']
- */
-export function parseCommandWithQuotes(text) {
-    const args = [];
-    let currentArg = "";
-    let inQuote = null; // Can be null, "'", or '"'
-
-    for (let i = 0; i < text.length; i++) {
-        const char = text[i];
-
-        if (inQuote) {
-            // --- We are inside a quote ---
-            if (char === inQuote) {
-                // Closing quote found, push the argument and reset state
-                args.push(currentArg);
-                currentArg = "";
-                inQuote = null;
-            } else {
-                // Just a regular character inside the quote
-                currentArg += char;
-            }
-        } else {
-            // --- We are not inside a quote ---
-            if (char === '"' || char === "'") {
-                // Starting a new quote
-                if (currentArg) {
-                    // Push the argument collected so far (e.g., the command name)
-                    args.push(currentArg);
-                    currentArg = "";
-                }
-                inQuote = char;
-            } else if (char === " ") {
-                // Space is a delimiter
-                if (currentArg) {
-                    args.push(currentArg);
-                    currentArg = "";
-                }
-                // Ignore multiple spaces
-            } else {
-                // Just a regular character
-                currentArg += char;
-            }
-        }
-    }
-
-    // After the loop, push any remaining argument
-    if (currentArg) {
-        args.push(currentArg);
-    }
-
-    // Handle the case where the string ends with an empty quoted argument, e.g., `command ""`
-    // The loop would have pushed an empty `currentArg` already. This checks for an unclosed quote.
-    if (inQuote) {
-        console.warn("Unclosed quote in command:", text);
-        // Depending on desired behavior, you might want to throw an error
-        // or push the unfinished argument. We'll just warn for now.
-    }
-
-    return args;
-}

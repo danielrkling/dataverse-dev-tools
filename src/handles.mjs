@@ -2,6 +2,14 @@ const DB_NAME = "filesystem-db";
 const STORE_NAME = "handles";
 const DB_VERSION = 1;
 
+/**
+ * @typedef {Object} StoredHandle
+ * @property {string} id
+ * @property {FileSystemDirectoryHandle} handle
+ * @property {number} savedAt
+ */
+
+/** @returns {Promise<IDBDatabase>} */
 function openDB() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -11,7 +19,7 @@ function openDB() {
 
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, {
-          keyPath: "id"
+          keyPath: "id",
         });
       }
     };
@@ -21,6 +29,11 @@ function openDB() {
   });
 }
 
+/**
+ * @param {string} id
+ * @param {FileSystemDirectoryHandle} handle
+ * @returns {Promise<void>}
+ */
 export async function saveHandle(id, handle) {
   const db = await openDB();
 
@@ -30,7 +43,7 @@ export async function saveHandle(id, handle) {
     tx.objectStore(STORE_NAME).put({
       id,
       handle,
-      savedAt: Date.now()
+      savedAt: Date.now(),
     });
 
     tx.oncomplete = () => resolve();
@@ -38,6 +51,10 @@ export async function saveHandle(id, handle) {
   });
 }
 
+/**
+ * @param {string} id
+ * @returns {Promise<FileSystemDirectoryHandle | null>}
+ */
 export async function getHandle(id) {
   const db = await openDB();
 
@@ -53,6 +70,7 @@ export async function getHandle(id) {
   });
 }
 
+/** @returns {Promise<StoredHandle[]>} */
 export async function listHandles() {
   const db = await openDB();
 
@@ -65,6 +83,10 @@ export async function listHandles() {
   });
 }
 
+/**
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
 export async function deleteHandle(id) {
   const db = await openDB();
 

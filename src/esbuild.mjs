@@ -1,3 +1,4 @@
+// @ts-ignore - esbuild-wasm is loaded from CDN, no local types available
 import * as esbuild from "https://unpkg.com/esbuild-wasm@0.27.2/esm/browser.min.js";
 import { WebFileSystem } from "./fs.mjs";
 
@@ -43,8 +44,9 @@ const defaultConfig = {
 /**
  * Bundles a virtual file system in memory using esbuild.
  * Automatically initializes the esbuild WASM module on its first run.
- * @param {WebFileSystem} fs - A map representing the virtual file system.
- * @returns {Promise<Map<string, string>>} A promise resolving to a map of output files.
+ * @param {WebFileSystem} fs
+ * @param {import('esbuild').BuildOptions} config
+ * @returns {Promise<import('esbuild').OutputFile[]>}
  */
 export async function bundle_in_memory(fs, config) {
     // Ensure esbuild is initialized before proceeding.
@@ -70,6 +72,11 @@ export async function bundle_in_memory(fs, config) {
     return result.outputFiles || [];
 }
 
+/**
+ * @param {Record<string, string>} aliases
+ * @param {string[]} external
+ * @returns {import('esbuild').Plugin}
+ */
 const aliasPlugin = (aliases = {}, external = []) => ({
     name: "alias-plugin",
     setup(build) {
@@ -94,6 +101,7 @@ const aliasPlugin = (aliases = {}, external = []) => ({
     },
 });
 
+/** @returns {import('esbuild').Plugin} */
 const httpPlugin = () => ({
     name: "http-plugin",
     setup(build) {
@@ -125,12 +133,20 @@ const httpPlugin = () => ({
     },
 });
 
+/**
+ * @param {string} path
+ * @returns {string}
+ */
 function pathDirname(path) {
     const parts = path.split("/").filter(Boolean);
     parts.pop();
     return parts.join("/");
 }
 
+/**
+ * @param {string} path
+ * @returns {string}
+ */
 function normalizePath(path) {
     const parts = path.split("/");
     const result = [];
@@ -144,7 +160,12 @@ function normalizePath(path) {
     return result.join("/");
 }
 
-// Helper function to map a Content-Type header to a valid esbuild loader.
+/**
+ * Maps a Content-Type header or URL extension to a valid esbuild loader.
+ * @param {string} contentType
+ * @param {string} url
+ * @returns {string}
+ */
 function getLoaderFromContentType(contentType, url) {
     // If we have no header, we can try to guess from the URL's file extension.
     if (!contentType) {
@@ -174,6 +195,11 @@ function getLoaderFromContentType(contentType, url) {
     return "text";
 }
 
+/**
+ * @param {import('./fs.mjs').WebFileSystem} fs
+ * @param {string} path
+ * @returns {Promise<string|null>}
+ */
 async function resolveFile(fs, path) {
     for (const ext of extensions) {
         const stat = await fs.stat(path + ext);
@@ -185,12 +211,17 @@ async function resolveFile(fs, path) {
     return null;
 }
 
+/**
+ * @param {import('./fs.mjs').WebFileSystem} fs
+ * @param {string} dir
+ * @returns {Promise<string|null>}
+ */
 async function resolveDirectory(fs, dir) {
     const pkg = join(dir, "package.json");
 
     if (await fs.stat(pkg)) {
         try {
-            const json = JSON.parse(await fs.readFile(pkg));
+            const json = JSON.parse(/** @type {string} */ (await fs.readFile(pkg, { encoding: 'utf8' })));
 
             const entry = json.module ?? json.main;
 
@@ -208,6 +239,12 @@ async function resolveDirectory(fs, dir) {
     return resolveFile(fs, join(dir, "index"));
 }
 
+/**
+ * @param {import('./fs.mjs').WebFileSystem} fs
+ * @param {string} specifier
+ * @param {string} importerDir
+ * @returns {Promise<string|null>}
+ */
 async function resolveNodeModule(fs, specifier, importerDir) {
     const parts = specifier.split("/");
 
@@ -224,7 +261,7 @@ async function resolveNodeModule(fs, specifier, importerDir) {
             let pkg;
 
             try {
-                pkg = JSON.parse(await fs.readFile(join(root, "package.json")));
+                pkg = JSON.parse(/** @type {string} */ (await fs.readFile(join(root, "package.json"), { encoding: 'utf8' })));
             } catch {
                 return null;
             }
@@ -252,6 +289,10 @@ async function resolveNodeModule(fs, specifier, importerDir) {
     return null;
 }
 
+/**
+ * @param {string} path
+ * @returns {string}
+ */
 function dirname(path) {
     const i = path.lastIndexOf("/");
 
@@ -262,10 +303,18 @@ function dirname(path) {
     return path.slice(0, i);
 }
 
+/**
+ * @param {...string} parts
+ * @returns {string}
+ */
 function join(...parts) {
     return normalize(parts.join("/"));
 }
 
+/**
+ * @param {string} path
+ * @returns {string}
+ */
 function normalize(path) {
     const out = [];
 
@@ -284,6 +333,11 @@ function normalize(path) {
     return out.join("/");
 }
 
+/**
+ * @param {import('./fs.mjs').WebFileSystem} fs
+ * @param {import('esbuild').BuildOptions} config
+ * @returns {import('esbuild').Plugin}
+ */
 export function fsPlugin(fs, config = {}) {
     const externals = config.external ?? [];
 
@@ -333,7 +387,8 @@ export function fsPlugin(fs, config = {}) {
                     namespace: "browser-fs",
                 },
                 async (args) => {
-                    const contents = await fs.readFile(args.path, { encoding: "utf-8" });
+                    const raw = await fs.readFile(args.path, { encoding: "utf-8" });
+                    const contents = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
                     console.log(contents);
                     return {
                         contents,

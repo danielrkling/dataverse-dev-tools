@@ -4,9 +4,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "vite": "^5.0.0"
   },
   "dependencies": {
