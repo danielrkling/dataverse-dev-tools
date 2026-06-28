@@ -159,7 +159,7 @@ async function setupFileWatching() {
         }
 
         try {
-            await publishWebResources(validWrs);
+            await publishWebResources(validWrs, upload.solution || undefined);
             for (const [path] of filesToUpload) {
                 const line = lines.get(path);
                 if (line && !line.innerHTML.includes('✖')) {

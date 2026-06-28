@@ -13,16 +13,33 @@ export default {
       handler: async (args, term, { fs }) => {
         if (!args[0]) return 'Usage: upload <path>';
         const path = args[0];
-        term.log(`Uploading ${path}...`);
+        let prefix = '';
+        let solution;
+        try {
+          const raw = await fs.readFile('dataverse.config.json', { encoding: 'utf8' });
+          const config = JSON.parse(/** @type {string} */ (raw));
+          prefix = config.upload?.prefix || '';
+          solution = config.upload?.solution || undefined;
+        } catch {
+          // no config — prefix stays empty
+        }
+        if (!prefix) {
+          return 'No prefix configured. Set upload.prefix in dataverse.config.json or include the full web resource name in the path.';
+        }
+        const name = `${prefix}${path.startsWith("/") ? "" : "/"}${path}`;
+        term.log(`Uploading ${name}...`);
         try {
           const wr = await uploadWebResource(
-            `Dev_Tools/${path}`,
+            name,
             /** @type {string} */ (await fs.readFile(path, { encoding: 'utf8' })),
-            'NNSY_Dev_Tools',
+            solution,
           );
-          term.log(`Uploaded ${path}`);
-          await publishWebResources([wr].filter(/** @return {wr is import('../wr.mjs').WebResource} */ (wr) => wr != null));
-          return `Published ${path}`;
+          term.log(`Uploaded ${name}`);
+          await publishWebResources(
+            [wr].filter(/** @return {wr is import('../wr.mjs').WebResource} */ (wr) => wr != null),
+            solution,
+          );
+          return `Published ${name}`;
         } catch (e) {
           return `Upload failed: ${e.message}`;
         }
