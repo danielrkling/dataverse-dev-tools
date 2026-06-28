@@ -63,25 +63,20 @@ export class WebFileSystem {
      * @param {string} path The path to resolve.
      * @returns {string} The resolved absolute path.
      */
-    _resolvePath(path) {
+     _resolvePath(path) {
+        if (typeof path !== "string" || !path) path = this.cwd;
+        const parts = path.split("/");
+        const resolved = [];
+        for (const part of parts) {
+            if (part === "" || part === ".") continue;
+            if (part === "..") { resolved.pop(); continue; }
+            resolved.push(part);
+        }
         if (path.startsWith("/")) {
-            return path; // Already an absolute path
+            return "/" + resolved.join("/");
         }
-
         const cwdParts = this.cwd.split("/").filter(Boolean);
-        const targetParts = path.split("/").filter(Boolean);
-
-        for (const part of targetParts) {
-            if (part === ".") {
-                continue;
-            }
-            if (part === "..") {
-                cwdParts.pop(); // Go up one level
-            } else {
-                cwdParts.push(part); // Go down into a directory/file
-            }
-        }
-        return "/" + cwdParts.join("/");
+        return "/" + [...cwdParts, ...resolved].join("/");
     }
 
     /**

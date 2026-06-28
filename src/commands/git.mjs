@@ -5,19 +5,52 @@ import * as git from 'https://esm.sh/isomorphic-git@1.27.1';
  * @param {import('../fs.mjs').WebFileSystem} fs
  */
 function makeGitFs(fs) {
-  return {
-    promises: new Proxy(fs.promises, {
-      get(target, prop) {
-        if (prop === 'readlink') {
-          return async () => { const e = new Error('no such symlink'); e.code = 'ENOENT'; throw e; };
-        }
-        if (prop === 'symlink') {
-          return async () => {};
-        }
-        return target[prop];
-      },
-    }),
+  const shims = {
+    readlink: async () => { const e = new Error('no such symlink'); e.code = 'ENOENT'; throw e; },
+    symlink: async () => {},
+    chmod: async () => {},
   };
+  const direct = ['readFile', 'writeFile', 'unlink', 'readdir', 'mkdir', 'rmdir', 'stat', 'lstat', 'rename'];
+  const obj = {};
+  for (const m of direct) {
+    const fn = fs[m].bind(fs);
+    obj[m] = async (...args) => {
+      try {
+        const result = await fn(...args);
+        if (m === 'stat' || m === 'lstat') {
+          return { ...result, isDirectory: () => result.isDirectory, isFile: () => result.isFile, isSymbolicLink: () => result.isSymbolicLink };
+        }
+        return result;
+      } catch (e) {
+        console.log(`gitfs.${m}(${args.map(a => JSON.stringify(a)).join(', ')}) threw:`, e);
+        throw e;
+      }
+    };
+  }
+  obj.readlink = shims.readlink;
+  obj.symlink = shims.symlink;
+  obj.chmod = shims.chmod;
+  obj.promises = new Proxy(fs.promises, {
+    get(target, prop) {
+      if (prop === 'readlink') return shims.readlink;
+      if (prop === 'symlink') return shims.symlink;
+      if (prop === 'chmod') return shims.chmod;
+      const fn = target[prop];
+      return async (...args) => {
+        try {
+          const result = await fn(...args);
+          if (prop === 'stat' || prop === 'lstat') {
+            return { ...result, isDirectory: () => result.isDirectory, isFile: () => result.isFile, isSymbolicLink: () => result.isSymbolicLink };
+          }
+          return result;
+        } catch (e) {
+          console.log(`gitfs.promises.${prop}(${args.map(a => JSON.stringify(a)).join(', ')}) threw:`, e);
+          throw e;
+        }
+      };
+    },
+  });
+  return obj;
 }
 
 /**

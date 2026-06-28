@@ -19,7 +19,8 @@ export default {
           return 'No esbuild.config.json found. Run init-config to create it.';
         }
         try {
-          const files = await bundle_in_memory(fs, config);
+          const { watch: _watch, ...buildConfig } = config;
+          const files = await bundle_in_memory(fs, buildConfig);
           return `Built ${files.map(v => v.path).join(', ')}`;
         } catch (e) {
           return `esbuild failed: ${e.message}`;
