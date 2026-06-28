@@ -105,84 +105,82 @@ async function setupFileWatching() {
     }
     const config = JSON.parse(/** @type {string} */ (raw));
     const upload = config.upload;
-    if (!upload?.prefix || !upload?.watch) {
-        terminal.info('No valid upload config found in dataverse.config.json — file watching disabled.');
-        return;
-    }
 
-    /**
-     * @param {Array<[string, string]>} filesToUpload
-     */
-    const uploadFiles = async (filesToUpload) => {
-        if (filesToUpload.length === 0) return;
+    if (upload?.prefix && upload?.watch) {
+        /**
+         * @param {Array<[string, string]>} filesToUpload
+         */
+        const uploadFiles = async (filesToUpload) => {
+            if (filesToUpload.length === 0) return;
 
-        /** @type {Map<string, HTMLDivElement>} */
-        const lines = new Map();
-        for (const [path] of filesToUpload) {
-            lines.set(path, terminal.log(`${path} — ○ queued`));
-        }
-
-        const uploadResults = await Promise.allSettled(
-            filesToUpload.map(async ([path, content]) => {
-                const line = lines.get(path);
-                try {
-                    if (line) line.innerHTML = `${path} — ○ uploading...`;
-                    const wr = await uploadWebResource(
-                        `${upload.prefix}${path.startsWith("/") ? "" : "/"}${path}`,
-                        content,
-                        upload.solution,
-                    );
-                    if (line) line.innerHTML = `${path} — <span style="color:#4ec9b0">● uploaded</span>`;
-                    return wr;
-                } catch (e) {
-                    if (line) line.innerHTML = `${path} — <span style="color:#f48771">✖ failed: ${e.message}</span>`;
-                    return undefined;
-                }
-            }),
-        );
-
-        const validWrs = uploadResults
-            .map(r => r.status === 'fulfilled' ? r.value : undefined)
-            .filter(/** @return {wr is import('./wr.mjs').WebResource} */ (wr) => wr != null);
-
-        if (validWrs.length === 0) {
-            terminal.error('All uploads failed.');
-            return;
-        }
-
-        if (upload.refresh === "onUpload") refreshPreviews();
-
-        for (const [path] of filesToUpload) {
-            const line = lines.get(path);
-            if (line && !line.innerHTML.includes('✖')) {
-                line.innerHTML = `${path} — <span style="color:#569cd6">● publishing...</span>`;
+            /** @type {Map<string, HTMLDivElement>} */
+            const lines = new Map();
+            for (const [path] of filesToUpload) {
+                lines.set(path, terminal.log(`${path} — ○ queued`));
             }
-        }
 
-        try {
-            await publishWebResources(validWrs, upload.solution || undefined);
+            const uploadResults = await Promise.allSettled(
+                filesToUpload.map(async ([path, content]) => {
+                    const line = lines.get(path);
+                    try {
+                        if (line) line.innerHTML = `${path} — ○ uploading...`;
+                        const wr = await uploadWebResource(
+                            `${upload.prefix}${path.startsWith("/") ? "" : "/"}${path}`,
+                            content,
+                            upload.solution,
+                        );
+                        if (line) line.innerHTML = `${path} — <span style="color:#4ec9b0">● uploaded</span>`;
+                        return wr;
+                    } catch (e) {
+                        if (line) line.innerHTML = `${path} — <span style="color:#f48771">✖ failed: ${e.message}</span>`;
+                        return undefined;
+                    }
+                }),
+            );
+
+            const validWrs = uploadResults
+                .map(r => r.status === 'fulfilled' ? r.value : undefined)
+                .filter(/** @return {wr is import('./wr.mjs').WebResource} */ (wr) => wr != null);
+
+            if (validWrs.length === 0) {
+                terminal.error('All uploads failed.');
+                return;
+            }
+
+            if (upload.refresh === "onUpload") refreshPreviews();
+
             for (const [path] of filesToUpload) {
                 const line = lines.get(path);
                 if (line && !line.innerHTML.includes('✖')) {
-                    line.innerHTML = `${path} — <span style="color:#569cd6">● published</span>`;
+                    line.innerHTML = `${path} — <span style="color:#569cd6">● publishing...</span>`;
                 }
             }
-            if (upload.refresh === "onPublish") refreshPreviews();
-        } catch (e) {
-            terminal.error(`Publish failed: ${e.message}`);
-        }
-    };
 
-    for (const watch of upload.watch) {
-        const files = await fs.getFilesFromDirectory(watch);
-        uploadFiles(Object.entries(files));
-        fs.watch(watch, { recursive: true, debounce: 200 }, async (path, type) => {
-            if (type === "modified") {
-                const content = await fs.readFile(path);
-                const str = typeof content === 'string' ? content : new TextDecoder().decode(content);
-                uploadFiles([[path, str]]);
+            try {
+                await publishWebResources(validWrs, upload.solution || undefined);
+                for (const [path] of filesToUpload) {
+                    const line = lines.get(path);
+                    if (line && !line.innerHTML.includes('✖')) {
+                        line.innerHTML = `${path} — <span style="color:#569cd6">● published</span>`;
+                    }
+                }
+                if (upload.refresh === "onPublish") refreshPreviews();
+            } catch (e) {
+                terminal.error(`Publish failed: ${e.message}`);
             }
-        });
+        };
+
+        for (const watch of upload.watch) {
+            const files = await fs.getFilesFromDirectory(watch);
+            uploadFiles(Object.entries(files));
+            fs.watch(watch, { recursive: true, debounce: 200 }, async (path, type) => {
+                if (type === "modified") {
+                    const content = await fs.readFile(path);
+                    const str = typeof content === 'string' ? content : new TextDecoder().decode(content);
+                    uploadFiles([[path, str]]);
+                }
+            });
+        }
     }
 
     // esbuild watch — rebuild on source file changes
