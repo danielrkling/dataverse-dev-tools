@@ -6,17 +6,19 @@ export default {
       name: 'init-config',
       aliases: ['ic'],
       description: 'Create default config files',
-      usage: 'init-config [prefix] [--tailwind]',
+      usage: 'init-config [prefix] [--tailwind] [--tsc]',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
         const withTailwind = args.includes('--tailwind');
+        const withTsc = args.includes('--tsc');
         const prefix = args.find(a => !a.startsWith('--')) || '';
 
         const dcExists = await fs.exists('dataverse.config.json');
         const ecExists = await fs.exists('esbuild.config.json');
         const tcExists = await fs.exists('tailwind.config.json');
 
-        if (dcExists && ecExists && (!withTailwind || tcExists)) {
+        const tscExists = await fs.exists('tsconfig.json');
+        if (dcExists && ecExists && (!withTailwind || tcExists) && (!withTsc || tscExists)) {
           return 'Config files already exist. Delete them first to regenerate.';
         }
 
@@ -51,6 +53,26 @@ export default {
           };
           await fs.writeFile('esbuild.config.json', JSON.stringify(esbuildConfig, null, 2));
           term.success('Created esbuild.config.json');
+        }
+
+        if (withTsc) {
+          const tsconfig = {
+            compilerOptions: {
+              target: 'ES2022',
+              module: 'ES2022',
+              moduleResolution: 'bundler',
+              strict: true,
+              jsx: 'preserve',
+              esModuleInterop: true,
+              skipLibCheck: true,
+              outDir: './dist',
+              rootDir: './src',
+            },
+            include: ['./src'],
+            exclude: ['node_modules', 'dist'],
+          };
+          await fs.writeFile('tsconfig.json', JSON.stringify(tsconfig, null, 2));
+          term.success('Created tsconfig.json');
         }
 
         if (withTailwind && !tcExists) {

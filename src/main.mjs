@@ -40,6 +40,7 @@ await pm.loadPlugin('init-config', () => import('./commands/init-config.mjs'));
 await pm.loadPlugin('npm', () => import('./commands/npm.mjs'));
 await pm.loadPlugin('git', () => import('./commands/git.mjs'));
 await pm.loadPlugin('tailwind', () => import('./commands/tailwind.mjs'));
+await pm.loadPlugin('tsc', () => import('./commands/tsc.mjs'));
 
 terminal.setDispatchHandler((args, term) => pm.execute(args, term));
 terminal._input.disabled = false;
