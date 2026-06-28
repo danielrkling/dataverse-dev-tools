@@ -442,7 +442,8 @@ export class WebFileSystem {
      * @returns {Promise<{disconnect: () => void}>}
      */
     async watch(path, options, callback) {
-        const handle = await this._getHandle(path);
+        const absPath = this._resolvePath(path);
+        const handle = await this._getHandle(absPath);
 
         /** @type {Map<string, ReturnType<typeof setTimeout>>} */
         const timeoutMap = new Map();

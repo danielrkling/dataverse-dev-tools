@@ -5,6 +5,18 @@ import { listHandles, saveHandle } from "./handles.mjs";
 import { uploadWebResource, publishWebResources } from "./wr.mjs";
 import { bundle_in_memory } from "./esbuild.mjs";
 import { previewWindows } from "./preview-state.mjs";
+import { watchDir, collectContent } from "./tailwind-utils.mjs";
+
+const TW_CDN = 'https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser.js';
+/** @type {import('tailwindcss-iso').generateTailwindCSS | null} */
+let _generateTailwindCSS = null;
+async function getGenerateTailwindCSS() {
+  if (!_generateTailwindCSS) {
+    const mod = await import(TW_CDN);
+    _generateTailwindCSS = mod.generateTailwindCSS;
+  }
+  return _generateTailwindCSS;
+}
 
 /** @type {WebTerminal} */
 export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-terminal"));
@@ -27,6 +39,7 @@ await pm.loadPlugin('run', () => import('./commands/run.mjs'));
 await pm.loadPlugin('init-config', () => import('./commands/init-config.mjs'));
 await pm.loadPlugin('npm', () => import('./commands/npm.mjs'));
 await pm.loadPlugin('git', () => import('./commands/git.mjs'));
+await pm.loadPlugin('tailwind', () => import('./commands/tailwind.mjs'));
 
 terminal.setDispatchHandler((args, term) => pm.execute(args, term));
 terminal._input.disabled = false;
@@ -207,6 +220,58 @@ async function setupFileWatching() {
                     }
                 });
             }
+        }
+    }
+
+    // tailwind watch — rebuild tailwind CSS on source changes
+    let twRaw;
+    try {
+        twRaw = await fs.readFile("tailwind.config.json", { encoding: "utf8" });
+    } catch {
+        // No tailwind config found — skip tailwind watching
+    }
+
+    if (twRaw) {
+        const twConfig = JSON.parse(twRaw);
+        const dirs = /** @type {string[]} */ (twConfig.content || ['.']);
+        const extensions = /** @type {string[]|null} */ (twConfig.extensions || null);
+        const watchedDirs = new Set();
+        for (const entry of dirs) {
+            const dir = await watchDir(fs, entry);
+            if (!dir || watchedDirs.has(dir)) continue;
+            watchedDirs.add(dir);
+            fs.watch(dir, { recursive: true, debounce: 300 }, async (path, type) => {
+                if (type !== "modified" && type !== "created") return;
+                if (extensions) {
+                    const dot = path.lastIndexOf('.');
+                    if (dot === -1) return;
+                    if (!extensions.includes(path.slice(dot + 1))) return;
+                }
+                try {
+                    const generateTailwindCSS = await getGenerateTailwindCSS();
+                    terminal.log(`tailwind: ${path} changed — rebuilding...`);
+                    const content = await collectContent(fs, dirs, extensions);
+                    let css = '';
+                    if (twConfig.css) {
+                        try { css = await fs.readFile(twConfig.css, { encoding: 'utf8' }); } catch {}
+                    }
+                    if (twConfig.plugins) {
+                        for (const p of twConfig.plugins) {
+                            try { css += '\n' + await fs.readFile(p, { encoding: 'utf8' }); } catch {}
+                        }
+                    }
+                    const result = await generateTailwindCSS({
+                        content: content || ' ',
+                        css,
+                        importCSS: twConfig.importCSS || '@import "tailwindcss";',
+                    });
+                    const outfile = twConfig.outfile || './dist/tailwind.css';
+                    await fs.writeFile(outfile, result);
+                    terminal.success(`tailwind: rebuilt ${outfile} (${result.length} bytes)`);
+                } catch (e) {
+                    terminal.error(`tailwind rebuild failed: ${e.message}`);
+                }
+            }).catch(() => {});
         }
     }
 }
