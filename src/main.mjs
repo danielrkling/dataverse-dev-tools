@@ -3,9 +3,9 @@ import { WebFileSystem } from "./fs.mjs";
 import { PluginManager } from "./plugin.mjs";
 import { listHandles, saveHandle } from "./handles.mjs";
 import { uploadWebResource, publishWebResources } from "./wr.mjs";
-import { bundle_in_memory } from "./esbuild.mjs";
+import { bundle_in_memory } from "./commands/esbuild.mjs";
 import { previewWindows } from "./preview-state.mjs";
-import { watchDir, collectContent } from "./tailwind-utils.mjs";
+import { watchDir, collectContent } from "./commands/tailwind.mjs";
 
 const TW_CDN = 'https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser.js';
 /** @type {import('tailwindcss-iso').generateTailwindCSS | null} */
