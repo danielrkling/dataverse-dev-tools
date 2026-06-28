@@ -26,6 +26,7 @@ await pm.loadPlugin('esbuild', () => import('./commands/esbuild.mjs'));
 await pm.loadPlugin('run', () => import('./commands/run.mjs'));
 await pm.loadPlugin('init-config', () => import('./commands/init-config.mjs'));
 await pm.loadPlugin('npm', () => import('./commands/npm.mjs'));
+await pm.loadPlugin('git', () => import('./commands/git.mjs'));
 
 terminal.setDispatchHandler((args, term) => pm.execute(args, term));
 terminal._input.disabled = false;
