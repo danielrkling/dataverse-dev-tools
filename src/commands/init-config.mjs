@@ -1,24 +1,25 @@
-/** @type {import('../plugin.mjs').Plugin} */
-export default {
-  name: 'init-config',
-  commands: [
+import { Plugin } from '../plugin.mjs';
+
+export default class InitConfigPlugin extends Plugin {
+  get name() { return 'init-config' }
+  get commands() { return [
     {
       name: 'init-config',
       aliases: ['ic'],
       description: 'Create default config files',
-      usage: 'init-config [prefix] [--tailwind] [--tsc]',
+      usage: 'init-config [prefix] [--esbuild] [--tailwind] [--tsc]',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
+        const withEsbuild = args.includes('--esbuild');
         const withTailwind = args.includes('--tailwind');
         const withTsc = args.includes('--tsc');
         const prefix = args.find(a => !a.startsWith('--')) || '';
 
         const dcExists = await fs.exists('dataverse.config.json');
-        const ecExists = await fs.exists('esbuild.config.json');
-        const tcExists = await fs.exists('tailwind.config.json');
-
-        const tscExists = await fs.exists('tsconfig.json');
-        if (dcExists && ecExists && (!withTailwind || tcExists) && (!withTsc || tscExists)) {
+        const ecExists = !withEsbuild || await fs.exists('esbuild.config.json');
+        const tcExists = !withTailwind || await fs.exists('tailwind.config.json');
+        const tscExists = !withTsc || await fs.exists('tsconfig.json');
+        if (dcExists && ecExists && tcExists && tscExists) {
           return 'Config files already exist. Delete them first to regenerate.';
         }
 
@@ -39,7 +40,7 @@ export default {
           }
         }
 
-        if (!ecExists) {
+        if (withEsbuild && !ecExists) {
           const esbuildConfig = {
             entryPoints: ['./src/app.ts'],
             outdir: 'dist',
@@ -98,5 +99,6 @@ export default {
         return '';
       },
     },
-  ],
-};
+    ];
+  }
+}

@@ -1,5 +1,6 @@
 // @ts-ignore - isomorphic-git loaded from CDN
 import * as git from 'https://esm.sh/isomorphic-git@1.27.1';
+import { Plugin } from '../plugin.mjs';
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
@@ -220,10 +221,9 @@ const subcommands = {
   },
 };
 
-/** @type {import('../plugin.mjs').Plugin} */
-export default {
-  name: 'git',
-  commands: [
+export default class GitPlugin extends Plugin {
+  get name() { return 'git' }
+  get commands() { return [
     {
       name: 'git',
       aliases: ['g'],
@@ -249,5 +249,6 @@ export default {
         }
       },
     },
-  ],
-};
+    ];
+  }
+}

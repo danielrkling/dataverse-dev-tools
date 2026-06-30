@@ -1,3 +1,6 @@
+import { Plugin } from '../plugin.mjs';
+import { readJSON } from '../utils/json.mjs';
+
 const TS_CDN = 'https://cdn.jsdelivr.net/npm/typescript@5.7.2/lib/typescript.js';
 const LIB_CDN = 'https://cdn.jsdelivr.net/npm/typescript@5.7.2/lib/';
 
@@ -77,15 +80,28 @@ const ES2022_LIBS = [
 ];
 
 async function initLibs() {
+  // Strip /// <reference lib="..." /> directives so the aggregated file has no external deps
+  const stripRefs = (text) => text.replace(/\/\/\/\s*<reference\s+lib\s*=\s*"[^"]*"\s*\/>\s*/g, '');
+
   const results = await Promise.allSettled(
     ES2022_LIBS.map(async (name) => {
       const resp = await fetch(LIB_CDN + name);
       if (!resp.ok) throw new Error('Failed to fetch ' + name + ': ' + resp.status);
-      libCache.set('/' + name, await resp.text());
+      const text = await resp.text();
+      libCache.set('/' + name, text);
+      return stripRefs(text);
     })
   );
+  const parts = [];
   for (const r of results) {
-    if (r.status === 'rejected') console.error('[tsc] lib fetch:', r.reason);
+    if (r.status === 'fulfilled') {
+      parts.push(r.value);
+    } else {
+      console.error('[tsc] lib fetch:', r.reason);
+    }
+  }
+  if (parts.length > 0) {
+    libCache.set('/lib.d.ts', parts.join('\n'));
   }
 }
 
@@ -107,27 +123,21 @@ self.onmessage = async (e) => {
 
       const rawOpts = tsconfig?.compilerOptions || {};
 
-      const libName = rawOpts.lib?.[0]
-        ? 'lib.' + rawOpts.lib[0].toLowerCase() + '.d.ts'
-        : 'lib.es2022.d.ts';
-
       const compilerOptions = {
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.ES2022,
         strict: true,
         skipLibCheck: true,
         noEmit: true,
-        lib: [libName.replace(/^lib\./, '').replace(/\.d\.ts$/, '')],
         ...rawOpts,
         noEmit: true,
       };
 
       const allFiles = new Map(Object.entries(files));
 
-      // Seed allFiles with lib cache so fileExists/getSourceFile find them
-      for (const [k, v] of libCache) {
-        if (!allFiles.has(k)) allFiles.set(k, v);
-      }
+      // Seed only the aggregated lib.d.ts — individual libs are stripped of refs
+      const agglib = libCache.get('/lib.d.ts');
+      if (agglib) allFiles.set('/lib.d.ts', agglib);
 
       const rootNames = Object.keys(files).filter(f =>
         f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.mts')
@@ -138,20 +148,32 @@ self.onmessage = async (e) => {
         return;
       }
 
+      function findFile(fileName) {
+        let c = allFiles.get(fileName);
+        if (c !== undefined) return c;
+        const lower = fileName.toLowerCase();
+        for (const [k, v] of allFiles) {
+          if (k.toLowerCase() === lower) return v;
+        }
+        return undefined;
+      }
+
+      function hasFile(fileName) {
+        if (allFiles.has(fileName)) return true;
+        const lower = fileName.toLowerCase();
+        for (const k of allFiles.keys()) {
+          if (k.toLowerCase() === lower) return true;
+        }
+        return false;
+      }
+
       const program = ts.createProgram({
         rootNames,
         options: compilerOptions,
         host: {
           getSourceFile(fileName, languageVersion) {
-            const content = allFiles.get(fileName);
-            if (content === undefined) {
-              // Try lowercase key (case-insensitive fallback)
-              const lower = fileName.toLowerCase();
-              for (const [k, v] of allFiles) {
-                if (k.toLowerCase() === lower) return ts.createSourceFile(fileName, v, languageVersion);
-              }
-              return undefined;
-            }
+            const content = findFile(fileName);
+            if (content === undefined) return undefined;
             return ts.createSourceFile(fileName, content, languageVersion);
           },
           getDefaultLibFileName() { return '/lib.d.ts'; },
@@ -160,28 +182,21 @@ self.onmessage = async (e) => {
           getCanonicalFileName(f) { return f; },
           useCaseSensitiveFileNames() { return true; },
           getNewLine() { return '\\n'; },
-          fileExists(fileName) {
-            if (allFiles.has(fileName)) return true;
-            const lower = fileName.toLowerCase();
-            for (const k of allFiles.keys()) {
-              if (k.toLowerCase() === lower) return true;
-            }
-            return false;
-          },
-          readFile(fileName) {
-            let c = allFiles.get(fileName);
-            if (c !== undefined) return c;
-            const lower = fileName.toLowerCase();
-            for (const [k, v] of allFiles) {
-              if (k.toLowerCase() === lower) return v;
-            }
-            return undefined;
-          },
+          fileExists(fileName) { return hasFile(fileName); },
+          readFile(fileName) { return findFile(fileName); },
           readDirectory(path, extensions, exclude, include, depth) {
-            const names = [...allFiles.keys()].filter(f => f.startsWith(path));
-            return names;
+            return [...allFiles.keys()].filter(f => f.startsWith(path));
           },
           getDirectories() { return []; },
+          resolveTypeReferenceDirectives(typeNames) {
+            // All lib references resolve to the aggregated lib.d.ts
+            return typeNames.map(() => {
+              if (allFiles.has('/lib.d.ts')) {
+                return { resolvedFileName: '/lib.d.ts', primary: true };
+              }
+              return undefined;
+            });
+          },
         },
       });
 
@@ -248,12 +263,7 @@ async function runCheck(fs) {
 
   const files = {};
 
-  let tsconfigRaw;
-  let tsconfig = null;
-  try {
-    tsconfigRaw = await fs.readFile('tsconfig.json', { encoding: 'utf8' });
-    tsconfig = JSON.parse(typeof tsconfigRaw === 'string' ? tsconfigRaw : new TextDecoder().decode(tsconfigRaw));
-  } catch {}
+  let tsconfig = await readJSON(fs, 'tsconfig.json');
 
   const excludedDirs = new Set(tsconfig?.exclude || ['node_modules', 'dist', '.git']);
   const scanDirs = tsconfig?.include || ['.'];
@@ -300,44 +310,45 @@ async function runCheck(fs) {
   });
 }
 
-/** @type {import('../plugin.mjs').Plugin} */
-export default {
-  name: 'tsc',
-  commands: [
-    {
-      name: 'tsc',
-      aliases: ['typecheck', 'tc'],
-      description: 'Type-check TypeScript files',
-      usage: 'tsc',
-      handler: async (args, term, { fs }) => {
-        term.log('Loading TypeScript compiler...');
-        try {
-          const result = await runCheck(fs);
-          const diags = result?.diagnostics || [];
-          const errors = diags.filter(d => d.severity === 'error');
-          const warnings = diags.filter(d => d.severity !== 'error');
+export default class TscPlugin extends Plugin {
+  get name() { return 'tsc' }
+  get commands() {
+    return [
+      {
+        name: 'tsc',
+        aliases: ['typecheck', 'tc'],
+        description: 'Type-check TypeScript files',
+        usage: 'tsc',
+        handler: async (args, term, { fs }) => {
+          term.log('Loading TypeScript compiler...');
+          try {
+            const result = await runCheck(fs);
+            const diags = result?.diagnostics || [];
+            const errors = diags.filter(d => d.severity === 'error');
+            const warnings = diags.filter(d => d.severity !== 'error');
 
-          if (diags.length === 0) {
-            term.success('No type errors found.');
+            if (diags.length === 0) {
+              term.success('No type errors found.');
+              return '';
+            }
+
+            for (const d of diags) {
+              const loc = d.file ? d.file + (d.line != null ? ':' + d.line + ':' + (d.col || 1) : '') : '';
+              const icon = d.severity === 'error' ? '✖' : '⚠';
+              term.log(icon + ' ' + loc + '  ' + d.message + '  (TS' + d.code + ')');
+            }
+
+            if (errors.length > 0) {
+              term.error('Found ' + errors.length + ' error(s), ' + warnings.length + ' warning(s)');
+            } else {
+              term.success(warnings.length + ' warning(s) found');
+            }
             return '';
+          } catch (e) {
+            return 'tsc failed: ' + e.message;
           }
-
-          for (const d of diags) {
-            const loc = d.file ? d.file + (d.line != null ? ':' + d.line + ':' + (d.col || 1) : '') : '';
-            const icon = d.severity === 'error' ? '✖' : '⚠';
-            term.log(icon + ' ' + loc + '  ' + d.message + '  (TS' + d.code + ')');
-          }
-
-          if (errors.length > 0) {
-            term.error('Found ' + errors.length + ' error(s), ' + warnings.length + ' warning(s)');
-          } else {
-            term.success(warnings.length + ' warning(s) found');
-          }
-          return '';
-        } catch (e) {
-          return 'tsc failed: ' + e.message;
-        }
+        },
       },
-    },
-  ],
-};
+    ];
+  }
+}

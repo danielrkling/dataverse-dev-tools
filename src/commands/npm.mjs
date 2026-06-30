@@ -1,3 +1,7 @@
+import { Plugin } from '../plugin.mjs';
+import { readJSON } from '../utils/json.mjs';
+import { dirname } from '../utils/path.mjs';
+
 // ---- tar extraction (inlined) ----
 
 /**
@@ -248,9 +252,8 @@ async function installOne(fs, term, name, version, tsOnly) {
 
     for (const file of filtered) {
         const fp = `${targetDir}/${file.path}`;
-        const parts = fp.split('/');
-        parts.pop();
-        await fs.mkdir(parts.join('/'), { recursive: true });
+        const dir = dirname(fp);
+        if (dir) await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(fp, file.data);
     }
 
@@ -273,22 +276,15 @@ async function installOne(fs, term, name, version, tsOnly) {
  */
 async function updatePackageJson(fs, name, version) {
     /** @type {Record<string, any>} */
-    let pkg = {};
-    try {
-        const raw = await fs.readFile('package.json', { encoding: 'utf8' });
-        pkg = JSON.parse(/** @type {string} */ (raw));
-    } catch {
-        pkg = {};
-    }
+    const pkg = (await readJSON(fs, 'package.json')) || {};
     pkg.dependencies = pkg.dependencies || {};
     pkg.dependencies[name] = `^${version}`;
     await fs.writeFile('package.json', JSON.stringify(pkg, null, 2));
 }
 
-/** @type {import('../plugin.mjs').Plugin} */
-export default {
-    name: 'npm',
-    commands: [
+export default class NpmPlugin extends Plugin {
+    get name() { return 'npm' }
+    get commands() { return [
         {
             name: 'npm',
             aliases: ['n'],
@@ -351,5 +347,6 @@ export default {
                 return '';
             },
         },
-    ],
-};
+    ];
+  }
+}

@@ -74,6 +74,9 @@ export async function deleteWebResource(name) {
   });
 }
 
+/** @type {Map<string, string>} */
+const wrIdCache = new Map();
+
 /**
  *
  * @param {string} name
@@ -82,25 +85,32 @@ export async function deleteWebResource(name) {
  * @returns {Promise<WebResource | undefined>}
  */
 export async function uploadWebResource(name, text, solution) {
-  if (isValidWebResource(name) && text) {
+  if (!isValidWebResource(name) || !text) return;
+
+  let webresourceid = wrIdCache.get(name);
+  if (!webresourceid) {
     const wr = await getWebResource(name);
-    const webresourcetype = getWebResourceType(name);
-    const result = await fetch(
-      `/api/data/v9.2/webresourceset(${
-        wr?.webresourceid ?? ""
-      })?$select=name,webresourceid`,
-      {
-        headers: getHeaders(solution),
-        method: wr ? "PATCH" : "POST",
-        body: JSON.stringify({
-          content: b64EncodeUnicode(text),
-          webresourcetype,
-          name,
-        }),
-      },
-    ).then((r) => r.json());
-    return result;
+    webresourceid = wr?.webresourceid;
+    if (webresourceid) wrIdCache.set(name, webresourceid);
   }
+
+  const webresourcetype = getWebResourceType(name);
+  const url = webresourceid
+    ? `/api/data/v9.2/webresourceset(${webresourceid})?$select=name,webresourceid`
+    : `/api/data/v9.2/webresourceset?$select=name,webresourceid`;
+
+  const result = await fetch(url, {
+    headers: getHeaders(solution),
+    method: webresourceid ? "PATCH" : "POST",
+    body: JSON.stringify({
+      content: b64EncodeUnicode(text),
+      webresourcetype,
+      name,
+    }),
+  }).then((r) => r.json());
+
+  if (result?.webresourceid) wrIdCache.set(name, result.webresourceid);
+  return result;
 }
 
 /**

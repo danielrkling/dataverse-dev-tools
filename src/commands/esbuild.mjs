@@ -1,4 +1,7 @@
 import { WebFileSystem } from '../fs.mjs';
+import { Plugin } from '../plugin.mjs';
+import { dirname, join, EXTENSIONS } from '../utils/path.mjs';
+import { readJSON } from '../utils/json.mjs';
 
 // ---- esbuild-wasm (lazy loaded) ----
 const ESBUILD_CDN = 'https://unpkg.com/esbuild-wasm@0.27.2/esm/browser.min.js';
@@ -11,48 +14,117 @@ async function getEsbuild() {
   return esbuildModule;
 }
 
-// --- PATH UTILITIES ---
+// --- CLI ARG PARSING ---
 
-const extensions = ['', '.ts', '.mts', '.tsx', '.js', '.jsx', '.mjs', '.json'];
+function parseCLIArgs(args) {
+  const config = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) continue;
 
-function pathDirname(path) {
-  const parts = path.split('/').filter(Boolean);
-  parts.pop();
-  return parts.join('/');
-}
+    const key = arg.slice(2);
+    if (key === 'help') { config._help = true; continue; }
+    if (key === 'minify' || key === 'no-minify') { config.minify = key === 'minify'; continue; }
+    if (key === 'bundle' || key === 'no-bundle') { config.bundle = key === 'bundle'; continue; }
+    if (key === 'splitting' || key === 'no-splitting') { config.splitting = key === 'splitting'; continue; }
+    if (key === 'tsconfig') { config._tsconfig = true; continue; }
 
-function dirname(path) {
-  const i = path.lastIndexOf('/');
-  if (i === -1) return '';
-  return path.slice(0, i);
-}
+    if (key.startsWith('no-')) {
+      config[key.slice(3)] = false;
+      continue;
+    }
 
-function join(...parts) {
-  return normalize(parts.join('/'));
-}
+    const next = i + 1 < args.length ? args[i + 1] : null;
+    if (!next || next.startsWith('--')) continue;
+    i++;
 
-function normalize(path) {
-  const out = [];
-  for (const part of path.split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') out.pop();
-    else out.push(part);
-  }
-  return out.join('/');
-}
-
-function normalizePath(path) {
-  const parts = path.split('/');
-  const result = [];
-  for (const part of parts) {
-    if (part === '..') {
-      if (result.length > 0) result.pop();
-    } else if (part !== '.' && part !== '') {
-      result.push(part);
+    switch (key) {
+      case 'entry-points':
+        config.entryPoints = next.split(',').map(s => s.trim());
+        break;
+      case 'outdir':
+        config.outdir = next;
+        break;
+      case 'format':
+        config.format = next;
+        break;
+      case 'platform':
+        config.platform = next;
+        break;
+      case 'sourcemap':
+        config.sourcemap = next === 'true' ? true : next === 'false' ? false : next;
+        break;
+      case 'external':
+        config.external = [...(config.external || []), ...next.split(',').map(s => s.trim())];
+        break;
+      case 'define': {
+        const eq = next.indexOf('=');
+        if (eq !== -1) {
+          config.define = { ...(config.define || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+        }
+        break;
+      }
+      case 'loader': {
+        const eq = next.indexOf('=');
+        if (eq !== -1) {
+          config.loader = { ...(config.loader || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+        }
+        break;
+      }
+      case 'out-extension': {
+        const eq = next.indexOf('=');
+        if (eq !== -1) {
+          config.outExtension = { ...(config.outExtension || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+        }
+        break;
+      }
+      case 'alias': {
+        const eq = next.indexOf('=');
+        if (eq !== -1) {
+          config.alias = { ...(config.alias || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+        }
+        break;
+      }
+      case 'target':
+        config.target = next;
+        break;
     }
   }
-  return result.join('/');
+  return config;
 }
+
+// --- TSCONFIG MERGING ---
+
+/** @param {import('../fs.mjs').WebFileSystem} fs */
+async function mergeTsconfig(fs, config) {
+  const tsconfig = await readJSON(fs, 'tsconfig.json');
+  if (!tsconfig?.compilerOptions) return config;
+
+  const overrides = {};
+  const { target, jsx, jsxFactory, jsxFragmentFactory, outDir, baseUrl } = tsconfig.compilerOptions;
+
+  if (target) overrides.target = target.toLowerCase();
+  if (jsx) overrides.jsx = jsx;
+  if (jsxFactory) overrides.jsxFactory = jsxFactory;
+  if (jsxFragmentFactory) overrides.jsxFragment = jsxFragmentFactory;
+  if (outDir) overrides.outdir = outDir;
+  if (baseUrl) {
+    overrides.baseUrl = baseUrl;
+    overrides.alias = { ...config.alias };
+    const paths = tsconfig.compilerOptions.paths;
+    if (paths) {
+      for (const [alias, [resolved]] of Object.entries(paths)) {
+        const aliasName = alias.replace(/\/\*$/, '');
+        const resolvedPath = resolved.replace(/\/\*$/, '');
+        overrides.alias[aliasName] = join(baseUrl, resolvedPath);
+      }
+    }
+  }
+
+  return { ...config, ...overrides };
+}
+
+// --- RESOLVE HELPERS ---
 
 function getLoaderFromContentType(contentType, url) {
   if (!contentType) {
@@ -70,7 +142,7 @@ function getLoaderFromContentType(contentType, url) {
 // --- RESOLVE HELPERS ---
 
 async function resolveFile(fs, path) {
-  for (const ext of extensions) {
+  for (const ext of EXTENSIONS) {
     const stat = await fs.stat(path + ext);
     if (stat.type === 'file') {
       return path + ext;
@@ -82,14 +154,14 @@ async function resolveFile(fs, path) {
 async function resolveDirectory(fs, dir) {
   const pkg = join(dir, 'package.json');
   if (await fs.stat(pkg)) {
-    try {
-      const json = JSON.parse(/** @type {string} */ (await fs.readFile(pkg, { encoding: 'utf8' })));
+    const json = await readJSON(fs, pkg);
+    if (json) {
       const entry = json.module ?? json.main;
       if (entry) {
         const resolved = (await resolveFile(fs, join(dir, entry))) ?? (await resolveDirectory(fs, join(dir, entry)));
         if (resolved) return resolved;
       }
-    } catch {}
+    }
   }
   return resolveFile(fs, join(dir, 'index'));
 }
@@ -103,10 +175,8 @@ async function resolveNodeModule(fs, specifier, importerDir) {
   while (true) {
     const root = join(current, 'node_modules', packageName);
     if (await fs.stat(join(root, 'package.json'))) {
-      let pkg;
-      try {
-        pkg = JSON.parse(/** @type {string} */ (await fs.readFile(join(root, 'package.json'), { encoding: 'utf8' })));
-      } catch { return null; }
+      const pkg = await readJSON(fs, join(root, 'package.json'));
+      if (!pkg) return null;
 
       if (subpath) {
         return (await resolveFile(fs, join(root, subpath))) ?? (await resolveDirectory(fs, join(root, subpath)));
@@ -180,8 +250,9 @@ function httpPlugin() {
   };
 }
 
-function fsPlugin(fs, config = {}) {
+function fsPlugin(fs, config = {}, trackedFiles) {
   const externals = /** @type {string[]} */ (config.external) ?? [];
+  const track = trackedFiles instanceof Set;
 
   return {
     name: 'browser-fs',
@@ -205,6 +276,7 @@ function fsPlugin(fs, config = {}) {
           return { errors: [{ text: `Cannot resolve '${args.path}'` }] };
         }
 
+        if (track) trackedFiles.add(resolved);
         return { path: resolved, namespace: 'browser-fs' };
       });
 
@@ -245,64 +317,173 @@ const defaultConfig = {
   format: 'esm',
 };
 
-/**
- * Bundles a virtual file system in memory using esbuild.
- * @param {WebFileSystem} fs
- * @param {import('esbuild').BuildOptions} config
- * @returns {Promise<import('esbuild').OutputFile[]>}
- */
-export async function bundle_in_memory(fs, config) {
-  await initializeEsbuildInternal();
-  const esbuild = await getEsbuild();
-
-  const result = await esbuild.build({
+function buildOptions(config, fs, trackedFiles) {
+  return {
     ...defaultConfig,
     ...config,
     write: false,
     plugins: [
       aliasPlugin(config.alias, config.external),
       httpPlugin(),
-      fsPlugin(fs, config),
+      fsPlugin(fs, config, trackedFiles),
     ],
-  });
+  };
+}
 
-  const decoder = new TextDecoder();
+async function writeOutputs(fs, result) {
   for (const file of result.outputFiles || []) {
-    console.log(file);
     await fs.writeFile(file.path, file.contents);
   }
-
   return result.outputFiles || [];
+}
+
+/** @type {import('esbuild').BuildContext | null} */
+let buildContext = null;
+
+/**
+ * Bundles a virtual file system in memory using esbuild.
+ * For watch mode, pass useContext=true to reuse the cached context.
+ * @param {WebFileSystem} fs
+ * @param {import('esbuild').BuildOptions} config
+ * @param {boolean} [useContext]
+ * @returns {Promise<import('esbuild').OutputFile[]>}
+ */
+export async function bundle_in_memory(fs, config, useContext, trackedFiles) {
+  await initializeEsbuildInternal();
+  const esbuild = await getEsbuild();
+
+  if (useContext && buildContext) {
+    const result = await buildContext.rebuild();
+    return writeOutputs(fs, result);
+  }
+
+  if (useContext) {
+    buildContext = await esbuild.context(buildOptions(config, fs, trackedFiles));
+    const result = await buildContext.rebuild();
+    return writeOutputs(fs, result);
+  }
+
+  const result = await esbuild.build(buildOptions(config, fs, trackedFiles));
+  return writeOutputs(fs, result);
+}
+
+/**
+ * Bundle code to a string without writing to the filesystem.
+ * Returns the output file contents as decoded strings.
+ * @param {WebFileSystem} fs
+ * @param {import('esbuild').BuildOptions} config
+ * @returns {Promise<Array<{path: string, text: string}>>}
+ */
+export async function bundleToString(fs, config, trackedFiles) {
+  await initializeEsbuildInternal();
+  const esbuild = await getEsbuild();
+  const result = await esbuild.build(buildOptions(config, fs, trackedFiles));
+  const decoder = new TextDecoder();
+  return (result.outputFiles || []).map(f => ({
+    path: f.path,
+    text: decoder.decode(f.contents),
+  }));
 }
 
 // --- COMMAND ---
 
-/** @type {import('../plugin.mjs').Plugin} */
-export default {
-  name: 'esbuild',
-  commands: [
-    {
-      name: 'esbuild',
-      aliases: ['build'],
-      description: 'Bundle files using esbuild',
-      usage: 'esbuild',
-      /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
-      handler: async (args, term, { fs }) => {
-        let config;
-        try {
-          const raw = await fs.readFile('esbuild.config.json', { encoding: 'utf8' });
-          config = JSON.parse(/** @type {string} */ (raw));
-        } catch {
-          return 'No esbuild.config.json found. Run init-config to create it.';
-        }
-        try {
-          const { watch: _watch, ...buildConfig } = config;
-          const files = await bundle_in_memory(fs, buildConfig);
-          return `Built ${files.map(v => v.path).join(', ')}`;
-        } catch (e) {
-          return `esbuild failed: ${e.message}`;
-        }
+export default class EsbuildPlugin extends Plugin {
+  get name() { return 'esbuild' }
+  get commands() {
+    return [
+      {
+        name: 'esbuild',
+        aliases: ['build'],
+        description: 'Bundle files using esbuild',
+        usage: 'esbuild [options]',
+        /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
+        handler: async (args, term, { fs }) => {
+          const cli = parseCLIArgs(args);
+          if (cli._help) {
+            return `Usage: esbuild [options]
+
+Options:
+  --entry-points <files>   Comma-separated list of entry points
+  --outdir <dir>           Output directory
+  --format <format>        Module format (esm, cjs, iife)
+  --platform <platform>    Platform (browser, node, neutral)
+  --minify / --no-minify   Minify output
+  --bundle / --no-bundle   Bundle modules
+  --sourcemap <mode>       Sourcemap mode (inline, external, both)
+  --external <pkgs>        Comma-separated external packages
+  --define <key=value>     Define a global constant
+  --loader <ext=loader>    Set loader for file extension
+  --target <target>        Language target (es2020, esnext, etc.)
+  --tsconfig               Merge options from tsconfig.json
+  --splitting              Enable code splitting
+  --out-extension <ext=ext> Output file extension mapping
+  --alias <from=to>        Path alias`;
+          }
+
+          const fileConfig = await readJSON(fs, 'esbuild.config.json') || {};
+          const { watch: _watch, ...baseConfig } = fileConfig;
+
+          const { _help: _h, _tsconfig: useTsconfig, ...cliOverrides } = cli;
+          let merged = { ...baseConfig, ...cliOverrides };
+          if (useTsconfig) merged = await mergeTsconfig(fs, merged);
+
+          try {
+            const files = await bundle_in_memory(fs, merged);
+            return `Built ${files.map(v => v.path).join(', ')}`;
+          } catch (e) {
+            return `esbuild failed: ${e.message}`;
+          }
+        },
       },
-    },
-  ],
-};
+    ];
+  }
+  /** @param {import('../plugin.mjs').InitContext} ctx */
+  async init({ fs, pm, terminal: term }) {
+    const config = await readJSON(fs, 'esbuild.config.json');
+    if (!config) return;
+
+    const trackedFiles = new Set();
+    let watchDirs = [];
+
+    function computeWatchDirs() {
+      const dirs = new Set();
+      for (const file of trackedFiles) {
+        let dir = dirname(file);
+        while (dir) {
+          dirs.add(dir);
+          const parent = dirname(dir);
+          if (parent === dir) break;
+          dir = parent;
+        }
+      }
+      return [...dirs].sort((a, b) => b.length - a.length);
+    }
+
+    // Build once to warm the context
+    try {
+      const files = await bundle_in_memory(fs, config, true, trackedFiles);
+      if (files.length > 0) term.log(`esbuild built: ${files.map(f => f.path).join(', ')}`);
+      watchDirs = computeWatchDirs();
+    } catch (e) {
+      term.info(`esbuild: ${e.message}`);
+    }
+
+    const unsub = pm.on('fs:change', ({ path, type }) => {
+      if (type !== 'modified') return;
+      if (watchDirs.length > 0 && !watchDirs.some(dir => path.startsWith(dir))) return;
+
+      bundle_in_memory(fs, config, true, trackedFiles)
+        .then(files => {
+          term.log(`esbuild rebuilt: ${files.map(f => f.path).join(', ')}`);
+          watchDirs = computeWatchDirs();
+          pm.emit('build:complete', { files, builder: 'esbuild' });
+        })
+        .catch(e => {
+          term.error(`esbuild rebuild failed: ${e.message}`);
+          pm.emit('build:error', { error: e.message, builder: 'esbuild' });
+        });
+    });
+
+    return unsub;
+  }
+}

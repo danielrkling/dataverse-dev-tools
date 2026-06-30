@@ -4,7 +4,8 @@
 - When esbuild or tailwind compeletes it can dispatch an event that upload could listen to directly
 - When upload or publish completes it can dispatch an event that the preview plugin is listening to
 - Move feature initialization into plugin instead of main (setting up event listeners etc). can be triggered by event or direct method
-- Allow glob matching on the event listeners
+- ✅ Allow glob matching on the event listeners (data filters: string glob→path, or obj key→glob)
+- Move things into utils folder that could be shared
 
 # Feature Changes
 ## Uploading
@@ -19,7 +20,7 @@
 - Allow cli arguments to override existing config
 - Allow reading of tsconfig
 - use esbuild context and rebuild when watch is involved
-- may be possible to use the fs plugin to track which files to listen to for watch instead of list
+- ✅ use the fs plugin to track which files to listen to for watch instead of list (removed config.watch requirement)
 - explore how to add something like solid-plugin
 - allow transform as well
 
@@ -28,15 +29,20 @@
 - capture console logs and duplicate to terminal during run (maybe default with flag)
 
 ## Init-Config
-- esbuild file should be optional like tailwind/tsc
+- ✅ esbuild file is optional (init returns gracefully if no config)
 
 ## Tailwind
-- importCss and css just get merged, we dont need both.
-  - We should just have config setting "css" that is an array of filenames/urls.
-  - we just join them with "\n" and but pass it to importCSS
-  - url support for cdn's "plugins" like daisyui
-- deafult extensions should include .mjs, and .ts
-- Explore using tailwind "complile" directly with either regex class parser or tailwind v3 parser or tailwindcss-iso class parser.
-  - I think this would allow @imports
-  - We can also use plugins if we import() a bundled code or from https
+- ✅ importCss and css just get merged, we dont need both.
+  - ✅ Config "css" is now an array of filenames/urls/raw-styles
+  - ✅ Joined with "\n" and passed to compile()
+  - ✅ URL/CDN support via loadStylesheet (fetches from CDN)
+- ✅ deafult extensions should include .mjs, and .ts
+- ✅ Explore using tailwind "compile" directly with WasmScanner class parser.
+  - ✅ Switched from generateTailwindCSS to real compile() API
+  - ✅ @import support via custom loadStylesheet resolver (reads from virtual fs, fetches URLs, or resolves tailwindcss internal CSS from CDN)
+  - ✅ @plugin support via custom loadModule resolver (bundles local files with esbuild, imports npm packages from esm.sh)
+  - ✅ WasmScanner from tailwindcss-iso for class extraction from content files
 
+# New features
+## Flatten
+- command to combine files in glob/folder into one markdown file with timestamp. purpose is to condense project into one file for easy upload to ai/llm

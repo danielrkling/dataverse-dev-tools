@@ -9,16 +9,54 @@
  */
 
 /**
- * @typedef {Object} Plugin
- * @property {string} name
- * @property {Command[]} commands
- */
-
-/**
  * @typedef {Object} ExecuteContext
  * @property {import('./fs.mjs').WebFileSystem} fs
  * @property {PluginManager} pm
  */
+
+/**
+ * @typedef {Object} InitContext
+ * @property {import('./fs.mjs').WebFileSystem} fs
+ * @property {PluginManager} pm
+ * @property {import('./terminal.mjs').WebTerminal} terminal
+ */
+
+export class Plugin {
+  /** @returns {string} */
+  get name() { throw new Error('Plugin subclasses must override name getter') }
+
+  /** @returns {Command[]} */
+  get commands() { return [] }
+
+  /**
+   * @param {InitContext} ctx
+   * @returns {void | Promise<void> | (() => void)}
+   */
+  init(ctx) {}
+}
+
+function matchGlob(str, pattern) {
+  if (pattern === '**') return true;
+  const regex = '^' + pattern.replace(/([.+^${}()|[\]\\])/g, '\\$1').replace(/\*\*/g, '.*').replace(/\*/g, '[^:]*').replace(/\?/g, '.') + '$';
+  return new RegExp(regex).test(str);
+}
+
+function matchFilter(filter, data) {
+  if (typeof filter === 'string') {
+    const val = data && typeof data === 'object' && 'path' in data ? data.path : data;
+    if (typeof val !== 'string') return false;
+    return matchGlob(val, filter);
+  }
+  if (typeof filter === 'object' && filter !== null) {
+    for (const [key, pattern] of Object.entries(filter)) {
+      const val = data && typeof data === 'object' ? data[key] : undefined;
+      if (val === undefined || typeof val !== 'string') return false;
+      if (!matchGlob(val, pattern)) return false;
+    }
+    return true;
+  }
+  return true;
+}
 
 /**
  * @callback CommandHandler
@@ -91,6 +129,10 @@ export class PluginManager {
   #registry = new CommandRegistry();
   /** @type {Map<string, Plugin>} */
   #plugins = new Map();
+  /** @type {Map<string, Set<Function>>} */
+  #listeners = new Map();
+  /** @type {Map<string, Function>} */
+  #cleanups = new Map();
   /** @type {import('./terminal.mjs').WebTerminal | null} */
   #terminal = null;
   /** @type {import('./fs.mjs').WebFileSystem} */
@@ -135,6 +177,93 @@ export class PluginManager {
   }
 
   /**
+   * Subscribe to events. Accepts 2 or 3 arguments:
+   *   on(eventName, callback)
+   *   on(eventName, filter, callback)
+   *
+   * The eventName supports glob patterns (* and **).
+   * The filter can be:
+   *   - A glob string: matched against `data.path` (if data is an object) or `data` itself
+   *   - An object of { key: globPattern }: each key's value in data is matched against the pattern
+   *
+   * @param {string} eventName
+   * @param {((data: any, event: string) => void) | string | Record<string,string>} filterOrCallback
+   * @param {(data: any, event: string) => void} [callback]
+   * @returns {() => void} Unsubscribe function
+   */
+  on(eventName, filterOrCallback, callback) {
+    let filter = null;
+    let cb;
+
+    if (typeof filterOrCallback === 'function') {
+      cb = filterOrCallback;
+    } else {
+      filter = filterOrCallback;
+      cb = callback;
+      if (typeof cb !== 'function') throw new Error('on() requires a callback function');
+    }
+
+    const entry = { eventName, filter, callback: cb };
+    const key = eventName + '|' + (filter ? JSON.stringify(filter) : '');
+    if (!this.#listeners.has(key)) {
+      this.#listeners.set(key, new Set());
+    }
+    this.#listeners.get(key).add(entry);
+    return () => this.off(eventName, filter, cb);
+  }
+
+  /**
+   * @param {string} eventName
+   * @param {((data: any, event: string) => void) | string | Record<string,string>} [filterOrCallback]
+   * @param {(data: any, event: string) => void} [callback]
+   */
+  off(eventName, filterOrCallback, callback) {
+    let filter = null;
+    let cb;
+
+    if (typeof filterOrCallback === 'function') {
+      cb = filterOrCallback;
+    } else if (filterOrCallback !== undefined) {
+      filter = filterOrCallback;
+      cb = callback;
+    } else {
+      // Remove all listeners for this event
+      for (const [key] of this.#listeners) {
+        if (key.startsWith(eventName + '|')) {
+          this.#listeners.delete(key);
+        }
+      }
+      return;
+    }
+
+    const key = eventName + '|' + (filter ? JSON.stringify(filter) : '');
+    const set = this.#listeners.get(key);
+    if (set) {
+      for (const entry of set) {
+        if (entry.callback === cb) {
+          set.delete(entry);
+          if (set.size === 0) this.#listeners.delete(key);
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * @param {string} event
+   * @param {any} data
+   */
+  emit(event, data) {
+    for (const [, entries] of this.#listeners) {
+      for (const entry of entries) {
+        if (!matchGlob(event, entry.eventName)) continue;
+        if (entry.filter && !matchFilter(entry.filter, data)) continue;
+        try { entry.callback(data, event); } catch (e) { console.error(`Event handler error for '${entry.eventName}':`, e); }
+      }
+    }
+  }
+
+  /**
    * @param {Plugin} plugin
    */
   registerPlugin(plugin) {
@@ -149,11 +278,11 @@ export class PluginManager {
 
   /**
    * @param {string} name
-   * @param {() => Promise<{default: Plugin}>} importFn
+   * @param {{default?: any}} module
    */
-  async loadPlugin(name, importFn) {
-    const module = await importFn();
-    const plugin = module.default || module;
+  loadPlugin(name, module) {
+    const exported = module.default || module;
+    const plugin = typeof exported === 'function' && exported.prototype instanceof Plugin ? new exported() : exported;
     this.registerPlugin(plugin);
   }
 
@@ -167,6 +296,30 @@ export class PluginManager {
         this.#registry.unregister(cmd.name);
       }
       this.#plugins.delete(name);
+    }
+  }
+
+  /**
+   * Clean up old listeners and re-run init on all plugins that have an init method.
+   * Called when the file system is ready or changes.
+   */
+  async initPlugins() {
+    for (const [name, plugin] of this.#plugins) {
+      const oldCleanup = this.#cleanups.get(name);
+      if (oldCleanup) {
+        try { oldCleanup(); } catch (e) { console.error(`Cleanup error for '${name}':`, e); }
+      }
+      this.#cleanups.delete(name);
+      if (typeof plugin.init === 'function') {
+        try {
+          const result = await plugin.init({ fs: this.#fs, pm: this, terminal: this.#terminal });
+          if (typeof result === 'function') {
+            this.#cleanups.set(name, result);
+          }
+        } catch (e) {
+          console.error(`Plugin '${name}' init error:`, e);
+        }
+      }
     }
   }
 

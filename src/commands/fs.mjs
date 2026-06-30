@@ -1,7 +1,8 @@
-/** @type {import('../plugin.mjs').Plugin} */
-export default {
-  name: 'fs',
-  commands: [
+import { Plugin } from '../plugin.mjs';
+
+export default class FsPlugin extends Plugin {
+  get name() { return 'fs' }
+  get commands() { return [
     {
       name: 'ls',
       aliases: ['dir'],
@@ -161,5 +162,6 @@ export default {
         }
       },
     },
-  ],
-};
+    ];
+  }
+}
