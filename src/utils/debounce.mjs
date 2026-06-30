@@ -1,3 +1,7 @@
+/**
+ * @param {number} [delay]
+ * @returns {(key: string, fn: () => void) => void}
+ */
 export function createDebouncer(delay = 150) {
   const timers = new Map();
   return (key, fn) => {

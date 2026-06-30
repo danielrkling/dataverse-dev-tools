@@ -9,7 +9,12 @@
     "test:ui": "playwright test --ui"
   },
   "devDependencies": {
+    "@optique/core": "^1.1.1",
     "@playwright/test": "^1.61.1",
+    "isomorphic-git": "^1.27.1",
+    "optique": "^0.1.0",
+    "tailwindcss": "^4.1.6",
+    "typescript": "^5.7.2",
     "vite": "^5.0.0"
   },
   "dependencies": {

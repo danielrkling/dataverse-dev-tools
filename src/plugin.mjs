@@ -30,17 +30,27 @@ export class Plugin {
 
   /**
    * @param {InitContext} ctx
-   * @returns {void | Promise<void> | (() => void)}
+   * @returns {void | (() => void) | Promise<(() => void) | void>}
    */
   init(ctx) {}
 }
 
+/**
+ * @param {string} str
+ * @param {string} pattern
+ * @returns {boolean}
+ */
 function matchGlob(str, pattern) {
   if (pattern === '**') return true;
   const regex = '^' + pattern.replace(/([.+^${}()|[\]\\])/g, '\\$1').replace(/\*\*/g, '.*').replace(/\*/g, '[^:]*').replace(/\?/g, '.') + '$';
   return new RegExp(regex).test(str);
 }
 
+/**
+ * @param {string | Record<string,string> | null} filter
+ * @param {any} data
+ * @returns {boolean}
+ */
 function matchFilter(filter, data) {
   if (typeof filter === 'string') {
     const val = data && typeof data === 'object' && 'path' in data ? data.path : data;
@@ -129,7 +139,7 @@ export class PluginManager {
   #registry = new CommandRegistry();
   /** @type {Map<string, Plugin>} */
   #plugins = new Map();
-  /** @type {Map<string, Set<Function>>} */
+  /** @type {Map<string, Set<{eventName: string, filter: any, callback: Function}>>} */
   #listeners = new Map();
   /** @type {Map<string, Function>} */
   #cleanups = new Map();
@@ -193,13 +203,14 @@ export class PluginManager {
    */
   on(eventName, filterOrCallback, callback) {
     let filter = null;
+    /** @type {(data: any, event: string) => void} */
     let cb;
 
     if (typeof filterOrCallback === 'function') {
       cb = filterOrCallback;
     } else {
       filter = filterOrCallback;
-      cb = callback;
+      cb = /** @type {(data: any, event: string) => void} */ (callback);
       if (typeof cb !== 'function') throw new Error('on() requires a callback function');
     }
 
@@ -208,17 +219,20 @@ export class PluginManager {
     if (!this.#listeners.has(key)) {
       this.#listeners.set(key, new Set());
     }
-    this.#listeners.get(key).add(entry);
+    const listeners = this.#listeners.get(key);
+    if (listeners) listeners.add(entry);
     return () => this.off(eventName, filter, cb);
   }
 
   /**
    * @param {string} eventName
-   * @param {((data: any, event: string) => void) | string | Record<string,string>} [filterOrCallback]
+   * @param {((data: any, event: string) => void) | string | Record<string,string> | null} [filterOrCallback]
    * @param {(data: any, event: string) => void} [callback]
    */
   off(eventName, filterOrCallback, callback) {
+    /** @type {string | Record<string, string> | null} */
     let filter = null;
+    /** @type {(data: any, event: string) => void | undefined} */
     let cb;
 
     if (typeof filterOrCallback === 'function') {
@@ -278,7 +292,7 @@ export class PluginManager {
 
   /**
    * @param {string} name
-   * @param {{default?: any}} module
+   * @param {any} module
    */
   loadPlugin(name, module) {
     const exported = module.default || module;
@@ -312,7 +326,7 @@ export class PluginManager {
       this.#cleanups.delete(name);
       if (typeof plugin.init === 'function') {
         try {
-          const result = await plugin.init({ fs: this.#fs, pm: this, terminal: this.#terminal });
+          const result = await plugin.init({ fs: this.#fs, pm: this, terminal: /** @type {import('./terminal.mjs').WebTerminal} */ (this.#terminal) });
           if (typeof result === 'function') {
             this.#cleanups.set(name, result);
           }
@@ -345,3 +359,4 @@ export class PluginManager {
     }
   }
 }
+

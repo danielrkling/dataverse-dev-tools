@@ -4,6 +4,7 @@ import { readJSON } from '../utils/json.mjs';
 const TS_CDN = 'https://cdn.jsdelivr.net/npm/typescript@5.7.2/lib/typescript.js';
 const LIB_CDN = 'https://cdn.jsdelivr.net/npm/typescript@5.7.2/lib/';
 
+/** @type {Worker | null} */
 let workerRef = null;
 let workerReady = false;
 let requestId = 0;
@@ -258,6 +259,10 @@ self.onmessage = async (e) => {
   });
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {Promise<{ diagnostics: Array<{file: string, line: number, col: number, message: string, severity: string, code: number}> }>}
+ */
 async function runCheck(fs) {
   await getWorker();
 

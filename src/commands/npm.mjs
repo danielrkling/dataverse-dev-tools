@@ -1,6 +1,7 @@
 import { Plugin } from '../plugin.mjs';
 import { readJSON } from '../utils/json.mjs';
 import { dirname } from '../utils/path.mjs';
+import { parseArgs } from '../utils/args.mjs';
 
 // ---- tar extraction (inlined) ----
 
@@ -180,11 +181,6 @@ function satisfies(sv, range) {
  * @param {string} range
  * @returns {string | undefined}
  */
-/**
- * @param {string[]} versions
- * @param {string} range
- * @returns {string | undefined}
- */
 function pickBestVersion(versions, range) {
     /** @type {Array<{ major: number, minor: number, patch: number }>} */
     const parsed = [];
@@ -292,16 +288,14 @@ export default class NpmPlugin extends Plugin {
             usage: 'npm install [package@version] [--ts-only]',
             /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
             handler: async (args, term, { fs }) => {
-                const tsOnly = args.includes('--ts-only');
-                const cleanArgs = args.filter(a => a !== '--ts-only');
+                const { flags, positional } = parseArgs(args);
+                const tsOnly = flags['ts-only'];
 
-                const sub = cleanArgs[0];
-
-                if (sub !== 'install') {
+                if (positional[0] !== 'install') {
                     return 'Usage: npm install [package@version] [--ts-only]';
                 }
 
-                const spec = cleanArgs[1];
+                const spec = positional[1];
 
                 if (spec) {
                     // Single package install

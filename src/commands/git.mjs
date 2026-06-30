@@ -1,6 +1,6 @@
-// @ts-ignore - isomorphic-git loaded from CDN
-import * as git from 'https://esm.sh/isomorphic-git@1.27.1';
+import * as git from 'isomorphic-git';
 import { Plugin } from '../plugin.mjs';
+import { parseArgs } from '../utils/args.mjs';
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
@@ -145,9 +145,9 @@ const subcommands = {
   },
 
   async commit(args, term, { fs }) {
-    const msgIndex = args.indexOf('-m');
-    if (msgIndex === -1 || !args[msgIndex + 1]) return 'Usage: git commit -m "message"';
-    const message = args[msgIndex + 1];
+    const { values } = parseArgs(args, { string: ['m'] });
+    const message = values.m;
+    if (!message) return 'Usage: git commit -m "message"';
     const gitFs = makeGitFs(fs);
     const author = await getAuthor(fs);
     const sha = await git.commit({

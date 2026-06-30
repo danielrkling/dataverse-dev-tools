@@ -1,13 +1,6 @@
 import { test, expect } from '@playwright/test';
-import {
-    pathDirname,
-    normalizePath,
-    getLoaderFromContentType,
-    dirname,
-    join,
-    normalize,
-    fsPlugin,
-} from '../src/esbuild-utils.mjs';
+import { dirname, join, normalize } from '../src/utils/path.mjs';
+import { getLoaderFromContentType, fsPlugin } from '../src/commands/esbuild.mjs';
 
 test.describe('path helpers', () => {
     test('dirname extracts parent directory', () => {
@@ -31,16 +24,16 @@ test.describe('path helpers', () => {
         expect(normalize('a//b///c')).toBe('a/b/c');
     });
 
-    test('pathDirname extracts parent from absolute-style path', () => {
-        expect(pathDirname('a/b/c.ts')).toBe('a/b');
-        expect(pathDirname('file.ts')).toBe('');
-        expect(pathDirname('a/b/c/d.ts')).toBe('a/b/c');
+    test('dirname extracts parent from absolute-style path', () => {
+        expect(dirname('a/b/c.ts')).toBe('a/b');
+        expect(dirname('file.ts')).toBe('');
+        expect(dirname('a/b/c/d.ts')).toBe('a/b/c');
     });
 
-    test('normalizePath resolves dot segments', () => {
-        expect(normalizePath('a/b/../c')).toBe('a/c');
-        expect(normalizePath('a/./b')).toBe('a/b');
-        expect(normalizePath('a/b/c/../../d')).toBe('a/d');
+    test('normalize resolves dot segments', () => {
+        expect(normalize('a/b/../c')).toBe('a/c');
+        expect(normalize('a/./b')).toBe('a/b');
+        expect(normalize('a/b/c/../../d')).toBe('a/d');
     });
 });
 

@@ -10,6 +10,10 @@ const ISO_URL = 'https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser
 const CSS_BASE = `https://cdn.jsdelivr.net/npm/tailwindcss@${TAILWIND_VERSION}`;
 
 const cssCache = new Map();
+/**
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
 async function getCSSAsset(name) {
   if (cssCache.has(name)) return cssCache.get(name);
   const url = `${CSS_BASE}/${name}.css`;
@@ -20,10 +24,10 @@ async function getCSSAsset(name) {
   return text;
 }
 
+/** @type {((css: string, opts: any) => any) | null} */
 let _compile = null;
-let _WasmScanner = null;
-let _WasmChangedContent = null;
-let _scanner = null;
+/** @type {((opts: any) => any[]) | null} */
+let _getTailwindClasses = null;
 
 async function getCompile() {
   if (!_compile) {
@@ -34,14 +38,16 @@ async function getCompile() {
 }
 
 async function ensureWasmLoaded() {
-  if (!_WasmScanner) {
+  if (!_getTailwindClasses) {
     const mod = await import(ISO_URL);
-    _WasmScanner = mod.WasmScanner;
-    _WasmChangedContent = mod.WasmChangedContent;
-    _scanner = new _WasmScanner();
+    _getTailwindClasses = mod.getTailwindClasses;
   }
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {(id: string, base: string) => Promise<{path: string, base: string, content: string}>}
+ */
 function createLoadStylesheet(fs) {
   return async (id, base) => {
     const name = id.replace(/\.css$/, '');
@@ -69,6 +75,10 @@ function createLoadStylesheet(fs) {
   };
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {(id: string, base: string, resourceHint?: any) => Promise<{path: string, base: string, module: any}>}
+ */
 function createLoadModule(fs) {
   return async (id, base, resourceHint) => {
     if (id.startsWith('http://') || id.startsWith('https://')) {
@@ -99,6 +109,10 @@ function createLoadModule(fs) {
   };
 }
 
+/**
+ * @param {any} config
+ * @returns {string}
+ */
 function buildCSSInput(config) {
   if (Array.isArray(config.css)) {
     return config.css.map(item => {
@@ -123,10 +137,17 @@ function buildCSSInput(config) {
   return parts.join('\n');
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string[]} dirs
+ * @param {string[]} extensions
+ * @returns {Promise<string[]>}
+ */
 async function extractClasses(fs, dirs, extensions) {
   await ensureWasmLoaded();
   const classes = new Set();
 
+  /** @type {Record<string, string[]>} */
   const byExt = {};
   for (const entry of dirs) {
     let files;
@@ -145,10 +166,9 @@ async function extractClasses(fs, dirs, extensions) {
   }
 
   for (const [ext, contents] of Object.entries(byExt)) {
-    const cc = new _WasmChangedContent(contents.join('\n'), ext);
-    const results = _scanner.getCandidatesWithPositions(cc);
+    const results = await /** @type {Function} */ (_getTailwindClasses)({ content: contents.join('\n'), extension: ext });
     for (const r of results) {
-      classes.add(r.candidate);
+      classes.add(r);
     }
   }
 
@@ -164,6 +184,7 @@ export default class TailwindPlugin extends Plugin {
         aliases: ['tw'],
         description: 'Generate Tailwind CSS using compile() API with WasmScanner',
         usage: 'tailwind [build|watch]',
+        /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
         handler: async (args, term, { fs }) => {
           const sub = args[0];
           try {
@@ -177,6 +198,7 @@ export default class TailwindPlugin extends Plugin {
     ];
   }
 
+  /** @param {import('../plugin.mjs').InitContext} ctx */
   async init({ fs, pm, terminal: term }) {
     const config = await readJSON(fs, 'tailwind.config.json');
     if (!config) return;
@@ -185,6 +207,7 @@ export default class TailwindPlugin extends Plugin {
     const extensions = config.extensions && config.extensions.length > 0 ? config.extensions : DEFAULT_EXTENSIONS;
 
     const watchedDirs = new Set();
+    /** @type {string[]} */
     const resolvedDirs = [];
     for (const entry of dirs) {
       const dir = await watchDir(fs, entry);
@@ -195,23 +218,11 @@ export default class TailwindPlugin extends Plugin {
     }
     if (resolvedDirs.length === 0) return;
 
-    let compiler = null;
-    let lastCSSInput = null;
-
-    async function getOrCreateCompiler() {
-      const cssInput = buildCSSInput(config);
-      if (compiler && cssInput === lastCSSInput) return compiler;
-      const compile = await getCompile();
-      const ls = createLoadStylesheet(fs);
-      const lm = createLoadModule(fs);
-      compiler = await compile(cssInput, { base: '/', loadStylesheet: ls, loadModule: lm });
-      lastCSSInput = cssInput;
-      return compiler;
-    }
+    const cache = createCompilerCache(config, fs);
 
     async function rebuild() {
       try {
-      const c = await getOrCreateCompiler();
+      const c = await cache.getOrCreateCompiler();
       const dirs = config.content || ['.'];
       const classes = await extractClasses(fs, dirs, extensions);
         const result = c.build(classes);
@@ -228,7 +239,7 @@ export default class TailwindPlugin extends Plugin {
       }
     }
 
-    const unsub = pm.on('fs:change', ({ path, type }) => {
+    const unsub = pm.on('fs:change', (/** @type {{ path: string, type: string }} */ { path, type }) => {
       if (type !== 'modified' && type !== 'created') return;
       if (!resolvedDirs.some(dir => path.startsWith(dir))) return;
       if (extensions) {
@@ -244,6 +255,35 @@ export default class TailwindPlugin extends Plugin {
   }
 }
 
+/**
+ * @param {any} config
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ */
+function createCompilerCache(config, fs) {
+  /** @type {any} */
+  let compiler = null;
+  /** @type {string | null} */
+  let lastCSSInput = null;
+  return {
+    async getOrCreateCompiler() {
+      const cssInput = buildCSSInput(config);
+      if (compiler && cssInput === lastCSSInput) return compiler;
+      const compile = await getCompile();
+      const ls = createLoadStylesheet(fs);
+      const lm = createLoadModule(fs);
+      compiler = await /** @type {Function} */ (compile)(cssInput, { base: '/', loadStylesheet: ls, loadModule: lm });
+      lastCSSInput = cssInput;
+      return compiler;
+    },
+    invalidateCache() { lastCSSInput = null; },
+  };
+}
+
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} path
+ * @returns {Promise<string | null>}
+ */
 export async function watchDir(fs, path) {
   try {
     const stat = await fs.stat(path);
@@ -254,8 +294,15 @@ export async function watchDir(fs, path) {
   }
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string[]} entries
+ * @param {string[]} extensions
+ * @returns {Promise<string>}
+ */
 export async function collectContent(fs, entries, extensions) {
   await ensureWasmLoaded();
+  /** @type {Record<string, string[]>} */
   const byExt = {};
   for (const entry of entries) {
     let files;
@@ -273,12 +320,17 @@ export async function collectContent(fs, entries, extensions) {
     }
   }
   let all = '';
-  for (const [, contents] of Object.entries(byExt)) {
-    all += '\n' + contents.join('\n');
+  for (const [ext, contents] of Object.entries(byExt)) {
+    const results = await /** @type {Function} */ (_getTailwindClasses)({ content: contents.join('\n'), extension: ext });
+    all += '\n' + results.join(' ');
   }
   return all;
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {Promise<any>}
+ */
 async function readConfig(fs) {
   try {
     const raw = await fs.readFile('tailwind.config.json', { encoding: 'utf8' });
@@ -288,6 +340,11 @@ async function readConfig(fs) {
   }
 }
 
+/**
+ * @param {string[]} args
+ * @param {import('../terminal.mjs').WebTerminal} term
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ */
 async function handleBuild(args, term, fs) {
   const config = await readConfig(fs);
 
@@ -296,7 +353,7 @@ async function handleBuild(args, term, fs) {
   const compile = await getCompile();
   const ls = createLoadStylesheet(fs);
   const lm = createLoadModule(fs);
-  const compiler = await compile(cssInput, { base: '/', loadStylesheet: ls, loadModule: lm });
+  const compiler = await /** @type {Function} */ (compile)(cssInput, { base: '/', loadStylesheet: ls, loadModule: lm });
 
   term.log('Scanning content files...');
   const dirs = config.content || ['.'];
@@ -316,28 +373,22 @@ async function handleBuild(args, term, fs) {
   term.success(`Wrote ${outfile} (${result.length} bytes, ${classes.length} classes)`);
 }
 
+/**
+ * @param {string[]} args
+ * @param {import('../terminal.mjs').WebTerminal} term
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ */
 async function handleWatch(args, term, fs) {
   const config = await readConfig(fs);
 
-  let compiler = null;
-  let lastCSSInput = null;
+  const cache = createCompilerCache(config, fs);
   const extensions = config.extensions && config.extensions.length > 0 ? config.extensions : DEFAULT_EXTENSIONS;
-
-  async function getOrCreateCompiler() {
-    const cssInput = buildCSSInput(config);
-    if (compiler && cssInput === lastCSSInput) return compiler;
-    const compile = await getCompile();
-    const ls = createLoadStylesheet(fs);
-    const lm = createLoadModule(fs);
-    compiler = await compile(cssInput, { base: '/', loadStylesheet: ls, loadModule: lm });
-    lastCSSInput = cssInput;
-    return compiler;
-  }
 
   async function rebuild() {
     try {
-      const c = await getOrCreateCompiler();
+      const c = await cache.getOrCreateCompiler();
       const dirs = config.content || ['.'];
+      const classes = await extractClasses(fs, dirs, extensions);
       const result = c.build(classes);
       const outfile = config.outfile || './dist/tailwind.css';
       const dir = dirname(outfile);
@@ -380,7 +431,7 @@ async function handleWatch(args, term, fs) {
       const cssBasename = basename(config.css);
       fs.watch(cssDir, { recursive: true, debounce: 300 }, async (path, type) => {
         if (type === 'modified' && path.split('/').pop() === cssBasename) {
-          lastCSSInput = null;
+          cache.invalidateCache();
           term.log(`CSS config changed: ${path}`);
           await rebuild();
         }

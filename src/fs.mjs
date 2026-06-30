@@ -263,8 +263,8 @@ export class WebFileSystem {
         }
 
         const files = [];
-        // @ts-ignore - FileSystemDirectoryHandle.values() is an async iterable but not yet in TS DOM types
-        for await (const entry of dirHandle.values()) {
+        const dirHandle_ = /** @type {FileSystemDirectoryHandle} */ (dirHandle);
+        for await (const entry of dirHandle_.values()) {
             files.push(entry.name);
         }
         return files;
@@ -495,9 +495,8 @@ export class WebFileSystem {
             }
         };
 
-        // @ts-ignore - FileSystemObserver is experimental and not in TS DOM types
         const observer = new FileSystemObserver(observerCallback);
-        await observer.observe(handle, { recursive: true });
+        await observer.observe(/** @type {FileSystemDirectoryHandle} */ (handle), { recursive: true });
         return {
             disconnect: () => {
                 observer.disconnect();
@@ -580,7 +579,6 @@ export class WebFileSystem {
          * @param {string} currentPath
          */
         async function recursiveRead(dirHandle, currentPath) {
-            // @ts-ignore - FileSystemDirectoryHandle.values() is an async iterable but not yet in TS DOM types
             for await (const entry of dirHandle.values()) {
                 const newPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
 

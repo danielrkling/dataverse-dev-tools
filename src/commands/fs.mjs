@@ -1,4 +1,5 @@
 import { Plugin } from '../plugin.mjs';
+import { parseArgs } from '../utils/args.mjs';
 
 export default class FsPlugin extends Plugin {
   get name() { return 'fs' }
@@ -94,13 +95,13 @@ export default class FsPlugin extends Plugin {
       usage: 'rm [-r] <path>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        const recursive = args[0] === '-r';
-        const path = recursive ? args[1] : args[0];
+        const { flags, positional } = parseArgs(args);
+        const path = positional[0];
         if (!path) return 'Usage: rm [-r] <path>';
         try {
           const s = await fs.stat(path);
           if (s.isDirectory) {
-            await fs.rmdir(path, { recursive });
+            await fs.rmdir(path, { recursive: flags.r });
           } else {
             await fs.unlink(path);
           }

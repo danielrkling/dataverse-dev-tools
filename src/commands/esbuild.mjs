@@ -4,19 +4,27 @@ import { dirname, join, EXTENSIONS } from '../utils/path.mjs';
 import { readJSON } from '../utils/json.mjs';
 
 // ---- esbuild-wasm (lazy loaded) ----
-const ESBUILD_CDN = 'https://unpkg.com/esbuild-wasm@0.27.2/esm/browser.min.js';
+const ESBUILD_CDN = 'https://unpkg.com/esbuild-wasm@0.28.1/esm/browser.min.js';
+
+/** @type {typeof import('esbuild-wasm') | null} */
 let esbuildModule = null;
 
+/** @returns {Promise<typeof import('esbuild-wasm')>} */
 async function getEsbuild() {
   if (!esbuildModule) {
     esbuildModule = await import(ESBUILD_CDN);
   }
-  return esbuildModule;
+  return /** @type {typeof import('esbuild-wasm')} */ (esbuildModule);
 }
 
 // --- CLI ARG PARSING ---
 
+/**
+ * @param {string[]} args
+ * @returns {Record<string, any>}
+ */
 function parseCLIArgs(args) {
+  /** @type {Record<string, any>} */
   const config = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -55,33 +63,33 @@ function parseCLIArgs(args) {
         config.sourcemap = next === 'true' ? true : next === 'false' ? false : next;
         break;
       case 'external':
-        config.external = [...(config.external || []), ...next.split(',').map(s => s.trim())];
+        config.external = [...(/** @type {string[]} */(config.external) || []), ...next.split(',').map(s => s.trim())];
         break;
       case 'define': {
         const eq = next.indexOf('=');
         if (eq !== -1) {
-          config.define = { ...(config.define || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+          config.define = { ...(/** @type {Record<string, string>} */(config.define) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
         }
         break;
       }
       case 'loader': {
         const eq = next.indexOf('=');
         if (eq !== -1) {
-          config.loader = { ...(config.loader || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+          config.loader = { ...(/** @type {Record<string, string>} */(config.loader) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
         }
         break;
       }
       case 'out-extension': {
         const eq = next.indexOf('=');
         if (eq !== -1) {
-          config.outExtension = { ...(config.outExtension || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+          config.outExtension = { ...(/** @type {Record<string, string>} */(config.outExtension) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
         }
         break;
       }
       case 'alias': {
         const eq = next.indexOf('=');
         if (eq !== -1) {
-          config.alias = { ...(config.alias || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
+          config.alias = { ...(/** @type {Record<string, string>} */(config.alias) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
         }
         break;
       }
@@ -95,7 +103,10 @@ function parseCLIArgs(args) {
 
 // --- TSCONFIG MERGING ---
 
-/** @param {import('../fs.mjs').WebFileSystem} fs */
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {Record<string, any>} config
+ */
 async function mergeTsconfig(fs, config) {
   const tsconfig = await readJSON(fs, 'tsconfig.json');
   if (!tsconfig?.compilerOptions) return config;
@@ -126,7 +137,12 @@ async function mergeTsconfig(fs, config) {
 
 // --- RESOLVE HELPERS ---
 
-function getLoaderFromContentType(contentType, url) {
+/**
+ * @param {string} contentType
+ * @param {string} url
+ * @returns {'js' | 'jsx' | 'css' | 'json' | 'text'}
+ */
+export function getLoaderFromContentType(contentType, url) {
   if (!contentType) {
     if (url.endsWith('.css')) return 'css';
     if (url.endsWith('.json')) return 'json';
@@ -141,6 +157,11 @@ function getLoaderFromContentType(contentType, url) {
 
 // --- RESOLVE HELPERS ---
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} path
+ * @returns {Promise<string | null>}
+ */
 async function resolveFile(fs, path) {
   for (const ext of EXTENSIONS) {
     const stat = await fs.stat(path + ext);
@@ -151,6 +172,11 @@ async function resolveFile(fs, path) {
   return null;
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} dir
+ * @returns {Promise<string | null>}
+ */
 async function resolveDirectory(fs, dir) {
   const pkg = join(dir, 'package.json');
   if (await fs.stat(pkg)) {
@@ -158,6 +184,7 @@ async function resolveDirectory(fs, dir) {
     if (json) {
       const entry = json.module ?? json.main;
       if (entry) {
+        /** @type {string | null} */
         const resolved = (await resolveFile(fs, join(dir, entry))) ?? (await resolveDirectory(fs, join(dir, entry)));
         if (resolved) return resolved;
       }
@@ -166,6 +193,12 @@ async function resolveDirectory(fs, dir) {
   return resolveFile(fs, join(dir, 'index'));
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} specifier
+ * @param {string} importerDir
+ * @returns {Promise<string | null>}
+ */
 async function resolveNodeModule(fs, specifier, importerDir) {
   const parts = specifier.split('/');
   const packageName = specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
@@ -196,11 +229,16 @@ async function resolveNodeModule(fs, specifier, importerDir) {
 
 // --- ESBUILD PLUGINS ---
 
+/**
+ * @param {Record<string, string>} aliases
+ * @param {string[]} external
+ */
 function aliasPlugin(aliases = {}, external = []) {
   return {
     name: 'alias-plugin',
+    /** @param {import('esbuild-wasm').PluginBuild} build */
     setup(build) {
-      build.onResolve({ filter: /.*/ }, (args) => {
+      build.onResolve({ filter: /.*/ }, (/** @type {import('esbuild-wasm').OnResolveArgs} */ args) => {
         if (external.includes(args.path)) {
           return { path: args.path, external: true };
         }
@@ -222,16 +260,17 @@ function aliasPlugin(aliases = {}, external = []) {
 function httpPlugin() {
   return {
     name: 'http-plugin',
+    /** @param {import('esbuild-wasm').PluginBuild} build */
     setup(build) {
-      build.onResolve({ filter: /^https?:\/\// }, (args) => ({
+      build.onResolve({ filter: /^https?:\/\// }, (/** @type {import('esbuild-wasm').OnResolveArgs} */ args) => ({
         path: args.path,
         namespace: 'http-url',
       }));
-      build.onResolve({ filter: /.*/, namespace: 'http-url' }, (args) => ({
+      build.onResolve({ filter: /.*/, namespace: 'http-url' }, (/** @type {import('esbuild-wasm').OnResolveArgs} */ args) => ({
         path: new URL(args.path, args.importer).toString(),
         namespace: 'http-url',
       }));
-      build.onLoad({ filter: /.*/, namespace: 'http-url' }, async (args) => {
+      build.onLoad({ filter: /.*/, namespace: 'http-url' }, async (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => {
         const cached = sessionStorage.getItem(args.path);
         if (cached) return JSON.parse(cached);
         try {
@@ -250,14 +289,20 @@ function httpPlugin() {
   };
 }
 
-function fsPlugin(fs, config = {}, trackedFiles) {
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {Record<string, any>} config
+ * @param {Set<string>} [trackedFiles]
+ */
+export function fsPlugin(fs, config = {}, trackedFiles) {
   const externals = /** @type {string[]} */ (config.external) ?? [];
   const track = trackedFiles instanceof Set;
 
   return {
     name: 'browser-fs',
+    /** @param {import('esbuild-wasm').PluginBuild} build */
     setup(build) {
-      build.onResolve({ filter: /.*/ }, async (args) => {
+      build.onResolve({ filter: /.*/ }, async (/** @type {import('esbuild-wasm').OnResolveArgs} */ args) => {
         if (externals.includes(args.path)) {
           return { path: args.path, external: true };
         }
@@ -280,7 +325,7 @@ function fsPlugin(fs, config = {}, trackedFiles) {
         return { path: resolved, namespace: 'browser-fs' };
       });
 
-      build.onLoad({ filter: /.*/, namespace: 'browser-fs' }, async (args) => {
+      build.onLoad({ filter: /.*/, namespace: 'browser-fs' }, async (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => {
         const raw = await fs.readFile(args.path, { encoding: 'utf-8' });
         const contents = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
         return { contents, loader: 'default' };
@@ -299,7 +344,7 @@ async function initializeEsbuildInternal() {
     const esbuild = await getEsbuild();
     await esbuild.initialize({
       worker: true,
-      wasmURL: 'https://unpkg.com/esbuild-wasm@0.27.2/esbuild.wasm',
+      wasmURL: 'https://unpkg.com/esbuild-wasm@0.28.1/esbuild.wasm',
     });
     isEsbuildInitialized = true;
   } catch (err) {
@@ -317,6 +362,11 @@ const defaultConfig = {
   format: 'esm',
 };
 
+/**
+ * @param {Record<string, any>} config
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {Set<string>} [trackedFiles]
+ */
 function buildOptions(config, fs, trackedFiles) {
   return {
     ...defaultConfig,
@@ -330,6 +380,11 @@ function buildOptions(config, fs, trackedFiles) {
   };
 }
 
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('esbuild-wasm').BuildResult} result
+ * @returns {Promise<import('esbuild-wasm').OutputFile[]>}
+ */
 async function writeOutputs(fs, result) {
   for (const file of result.outputFiles || []) {
     await fs.writeFile(file.path, file.contents);
@@ -337,16 +392,17 @@ async function writeOutputs(fs, result) {
   return result.outputFiles || [];
 }
 
-/** @type {import('esbuild').BuildContext | null} */
+/** @type {import('esbuild-wasm').BuildContext | null} */
 let buildContext = null;
 
 /**
  * Bundles a virtual file system in memory using esbuild.
  * For watch mode, pass useContext=true to reuse the cached context.
  * @param {WebFileSystem} fs
- * @param {import('esbuild').BuildOptions} config
+ * @param {import('esbuild-wasm').BuildOptions} config
  * @param {boolean} [useContext]
- * @returns {Promise<import('esbuild').OutputFile[]>}
+ * @param {Set<string>} [trackedFiles]
+ * @returns {Promise<import('esbuild-wasm').OutputFile[]>}
  */
 export async function bundle_in_memory(fs, config, useContext, trackedFiles) {
   await initializeEsbuildInternal();
@@ -371,7 +427,8 @@ export async function bundle_in_memory(fs, config, useContext, trackedFiles) {
  * Bundle code to a string without writing to the filesystem.
  * Returns the output file contents as decoded strings.
  * @param {WebFileSystem} fs
- * @param {import('esbuild').BuildOptions} config
+ * @param {import('esbuild-wasm').BuildOptions} config
+ * @param {Set<string>} [trackedFiles]
  * @returns {Promise<Array<{path: string, text: string}>>}
  */
 export async function bundleToString(fs, config, trackedFiles) {
@@ -443,6 +500,7 @@ Options:
     if (!config) return;
 
     const trackedFiles = new Set();
+    /** @type {string[]} */
     let watchDirs = [];
 
     function computeWatchDirs() {

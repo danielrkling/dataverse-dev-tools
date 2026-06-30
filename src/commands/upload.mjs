@@ -1,6 +1,7 @@
 import { uploadWebResource, publishWebResources, isValidWebResource } from '../wr.mjs';
 import { Plugin } from '../plugin.mjs';
 import { readJSON } from '../utils/json.mjs';
+import { parseArgs } from '../utils/args.mjs';
 
 export default class UploadPlugin extends Plugin {
   get name() { return 'upload' }
@@ -13,9 +14,10 @@ export default class UploadPlugin extends Plugin {
         usage: 'upload <path> [--publish]',
         /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
         handler: async (args, term, { fs }) => {
-          if (!args[0]) return 'Usage: upload <path> [--publish]';
-          const rawPath = args[0];
-          const publishImmediately = args.includes('--publish');
+          const { flags, positional } = parseArgs(args);
+          if (!positional[0]) return 'Usage: upload <path> [--publish]';
+          const rawPath = positional[0];
+          const publishImmediately = flags.publish;
 
           const config = await readJSON(fs, 'dataverse.config.json');
           const prefix = config?.upload?.prefix || '';
@@ -77,16 +79,16 @@ export default class UploadPlugin extends Plugin {
           if (validWrs.length === 0) return 'All uploads failed.';
 
           if (publishImmediately) {
-            for (const [, name] of valid) {
-              const line = lines.get(name);
+            for (const [path, name] of valid) {
+              const line = lines.get(path);
               if (line && !line.innerHTML.includes('✖')) {
                 line.innerHTML = `${name} — <span style="color:#569cd6">● publishing...</span>`;
               }
             }
             try {
               await publishWebResources(validWrs, solution);
-              for (const [, name] of valid) {
-                const line = lines.get(name);
+              for (const [path, name] of valid) {
+                const line = lines.get(path);
                 if (line && !line.innerHTML.includes('✖')) {
                   line.innerHTML = `${name} — <span style="color:#569cd6">● published</span>`;
                 }

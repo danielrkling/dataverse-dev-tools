@@ -1,4 +1,5 @@
 import { Plugin } from '../plugin.mjs';
+import { parseArgs } from '../utils/args.mjs';
 
 export default class InitConfigPlugin extends Plugin {
   get name() { return 'init-config' }
@@ -10,10 +11,11 @@ export default class InitConfigPlugin extends Plugin {
       usage: 'init-config [prefix] [--esbuild] [--tailwind] [--tsc]',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        const withEsbuild = args.includes('--esbuild');
-        const withTailwind = args.includes('--tailwind');
-        const withTsc = args.includes('--tsc');
-        const prefix = args.find(a => !a.startsWith('--')) || '';
+        const { flags, positional } = parseArgs(args);
+        const withEsbuild = flags.esbuild;
+        const withTailwind = flags.tailwind;
+        const withTsc = flags.tsc;
+        const prefix = positional[0] || '';
 
         const dcExists = await fs.exists('dataverse.config.json');
         const ecExists = !withEsbuild || await fs.exists('esbuild.config.json');

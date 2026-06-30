@@ -1,6 +1,7 @@
 import { Plugin } from '../plugin.mjs';
 import { bundleToString } from './esbuild.mjs';
 import { readJSON } from '../utils/json.mjs';
+import { parseArgs } from '../utils/args.mjs';
 
 const originalConsole = {
   log: console.log,
@@ -42,10 +43,11 @@ export default class RunPlugin extends Plugin {
       usage: 'run [--bundle] [--no-capture] [--tsconfig] <file>',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        const raw = args.includes('--raw');
-        const noCapture = args.includes('--no-capture');
-        const useTsconfig = args.includes('--tsconfig');
-        const file = args.find(a => !a.startsWith('--'));
+        const { flags, positional } = parseArgs(args);
+        const raw = flags.raw;
+        const noCapture = flags['no-capture'];
+        const useTsconfig = flags.tsconfig;
+        const file = positional[0];
 
         if (!file) return 'Usage: run [--raw] [--no-capture] [--tsconfig] <file>';
 

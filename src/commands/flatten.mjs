@@ -1,4 +1,6 @@
 import { Plugin } from '../plugin.mjs';
+import { extname } from '../utils/path.mjs';
+import { parseArgs } from '../utils/args.mjs';
 
 const EXT_TO_LANG = {
   '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
@@ -13,13 +15,6 @@ const EXT_TO_LANG = {
   '.sql': 'sql', '.env': 'env',
 };
 
-function extname(path) {
-  const i = path.lastIndexOf('.');
-  if (i === -1) return '';
-  if (path.lastIndexOf('/') > i) return '';
-  return path.slice(i);
-}
-
 export default class FlattenPlugin extends Plugin {
   get name() { return 'flatten' }
   get commands() { return [
@@ -30,9 +25,9 @@ export default class FlattenPlugin extends Plugin {
       usage: 'flatten <path> [--out <file>]',
       /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
       handler: async (args, term, { fs }) => {
-        const outIndex = args.indexOf('--out');
-        const cliOut = outIndex !== -1 && args[outIndex + 1] ? args[outIndex + 1] : null;
-        const path = args.find(a => !a.startsWith('--'));
+        const { values, positional } = parseArgs(args, { string: ['out'] });
+        const cliOut = values.out ?? null;
+        const path = positional[0];
 
         if (!path) return 'Usage: flatten <path> [--out <file>]';
 
@@ -54,7 +49,7 @@ export default class FlattenPlugin extends Plugin {
         const folderName = dir === '.' ? 'project' : dir.split('/').filter(Boolean).pop() || 'project';
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const outFile = cliOut || `${dir}/${folderName}_${ts}.md`;
-        const lines = [`# Project Files`, `Generated: ${timestamp}`, '', ''];
+        const lines = [`# Project Files`, `Generated: ${ts}`, '', ''];
 
         for (const file of files) {
           try {

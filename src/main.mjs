@@ -22,7 +22,6 @@ export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-
 const opfs = await WebFileSystem.fromOPFS('dataverse-dev-tools');
 /** @type {WebFileSystem} */
 export var fs = opfs;
-// @ts-ignore - Expose fs globally for debugging
 window.fs = fs;
 
 /** @type {PluginManager} */
@@ -55,7 +54,6 @@ async function setupRootObserver() {
     rootObserver = null;
   }
 
-  // @ts-ignore - FileSystemObserver is experimental
   const observer = new FileSystemObserver((records) => {
     for (const record of records) {
       const path = record.relativePathComponents.join('/');
@@ -104,7 +102,6 @@ async function loadRecentFolders() {
     const button = document.createElement("button");
     button.innerText = "  Select New Folder";
     button.onclick = async () => {
-        // @ts-ignore - showDirectoryPicker is experimental and not in TS DOM types
         const rootHandle = await window.showDirectoryPicker({
             id: "terminal",
             mode: "readwrite",
@@ -124,7 +121,6 @@ loadRecentFolders();
 async function loadHandle(handle) {
     saveHandle(handle.name, handle);
     fs = new WebFileSystem(handle);
-    // @ts-ignore - Expose fs globally for debugging
     window.fs = fs;
     pm.setFs(fs);
     terminal.log(`Loading ${handle.name}`);
