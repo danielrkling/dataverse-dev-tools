@@ -1,3 +1,5 @@
+import { parseCommandArgs } from './utils/args.mjs';
+
 /**
  * @typedef {Object} Command
  * @property {string} name
@@ -33,6 +35,45 @@ export class Plugin {
    * @returns {void | (() => void) | Promise<(() => void) | void>}
    */
   init(ctx) {}
+}
+
+/**
+ * @template {import('@optique/core').Parser<any>} TParser
+ * @typedef {Object} OptiqueCommandDef
+ * @property {string} name
+ * @property {TParser} parser
+ * @property {(parsed: import('@optique/core').InferValue<TParser>, term: import('./terminal.mjs').WebTerminal, ctx: ExecuteContext) => any} execute
+ * @property {string} [parseAs]
+ * @property {string[]} [aliases]
+ * @property {string} [description]
+ * @property {string} [usage]
+ * @property {string} [brief]
+ */
+
+
+/**
+ * @param {OptiquePluginDef} options
+ * @returns {{ name: string, commands: Command[], init?: OptiquePluginDef['init'] }}
+ */
+export function createCommand(options) {
+  return {
+    name: options.name,
+    commands: options.commands.map((cmd) => ({
+      name: cmd.name,
+      aliases: cmd.aliases ?? [],
+      description: cmd.description ?? '',
+      usage: cmd.usage ?? '',
+      handler: (args, term, ctx) => {
+        const parsed = parseCommandArgs(cmd.parser, cmd.parseAs ?? cmd.name, args, term, {
+          brief: cmd.brief ?? cmd.description,
+          description: cmd.description,
+        });
+        if (!parsed) return '';
+        return cmd.execute(parsed, term, ctx);
+      },
+    })),
+    init: options.init,
+  };
 }
 
 /**

@@ -1,7 +1,7 @@
-import { Plugin } from '../plugin.mjs';
-import { bundleToString } from './esbuild.mjs';
-import { readJSON } from '../utils/json.mjs';
-import { parseArgs } from '../utils/args.mjs';
+import { createCommand, WebTerminal } from "../terminal.mjs";
+import { bundleToString } from "./esbuild.mjs";
+import { readJSON } from "../utils/json.mjs";
+import { object, flag, argument, string, message } from "@optique/core";
 
 const originalConsole = {
   log: console.log,
@@ -10,20 +10,32 @@ const originalConsole = {
   info: console.info,
 };
 
+/**
+ *
+ * @param {WebTerminal} term
+ * @param {boolean} noCapture
+ * @returns
+ */
 function captureConsole(term, noCapture) {
   if (noCapture) return () => {};
 
   console.log = (...args) => {
-    term.log(args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' '));
+    term.log(
+      args
+        .map((a) =>
+          typeof a === "object" ? JSON.stringify(a, null, 2) : String(a),
+        )
+        .join(" "),
+    );
   };
   console.warn = (...args) => {
-    term.log(args.map(a => String(a)).join(' '), { class: 'log-warning' });
+    term.log(args.map((a) => String(a)).join(" "), { class: "log-warning" });
   };
   console.error = (...args) => {
-    term.error(args.map(a => String(a)).join(' '));
+    term.error(args.map((a) => String(a)).join(" "));
   };
   console.info = (...args) => {
-    term.info(args.map(a => String(a)).join(' '));
+    term.info(args.map((a) => String(a)).join(" "));
   };
 
   return () => {
@@ -34,57 +46,70 @@ function captureConsole(term, noCapture) {
   };
 }
 
-export default class RunPlugin extends Plugin {
-  get name() { return 'run' }
-  get commands() { return [
-    {
-      name: 'run',
-      description: 'Execute a file in the terminal context',
-      usage: 'run [--bundle] [--no-capture] [--tsconfig] <file>',
-      /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
-      handler: async (args, term, { fs }) => {
-        const { flags, positional } = parseArgs(args);
-        const raw = flags.raw;
-        const noCapture = flags['no-capture'];
-        const useTsconfig = flags.tsconfig;
-        const file = positional[0];
+const runCommandParser = object({
+  raw: flag("--raw", {
+    description: message`Do not bundle the file using esbuild`,
+  }),
+  noCapture: flag("--no-capture", {
+    description: message`Do not capture and redirect console outputs`,
+  }),
+  tsconfig: flag("--tsconfig", {
+    description: message`Merge compiler options from tsconfig.json`,
+  }),
+  file: argument(string({ metavar: "FILE" }), {
+    description: message`File to execute`,
+  }),
+});
 
-        if (!file) return 'Usage: run [--raw] [--no-capture] [--tsconfig] <file>';
+export const runCommand = createCommand({
+  name: "run",
+  parser: runCommandParser,
+  description: "Execute a file in the terminal context",
+  usage: "run [--raw] [--no-capture] [--tsconfig] <file>",
+  brief: "Execute a file in the terminal context",
+  execute: async (parsed, term) => {
+    const { fs } = term;
+    const raw = parsed.raw;
+    const noCapture = parsed.noCapture;
+    const useTsconfig = parsed.tsconfig;
+    const file = parsed.file;
 
-        try {
-          let code = await fs.readFile(file, { encoding: 'utf8' });
-          const restore = captureConsole(term, noCapture);
+    try {
+      let code = await fs.readFile(file, { encoding: "utf8" });
+      const restore = captureConsole(term, noCapture);
 
-          try {
-            if (!raw) {
-              const fileConfig = await readJSON(fs, 'esbuild.config.json') || {};
-              const { watch: _w, plugins: _p, ...baseConfig } = fileConfig;
+      try {
+        if (!raw) {
+          const fileConfig = (await readJSON(fs, "esbuild.config.json")) || {};
+          const { watch: _w, plugins: _p, ...baseConfig } = fileConfig;
 
-              let esbuildConfig = {
-                ...baseConfig,
-                entryPoints: [file],
-                bundle: true,
-                format: 'iife',
-                write: false,
-              };
+          let esbuildConfig = {
+            ...baseConfig,
+            entryPoints: [file],
+            bundle: true,
+            format: "iife",
+            write: false,
+          };
 
-              if (useTsconfig) {
-                const tsconfig = await readJSON(fs, 'tsconfig.json');
-                if (tsconfig?.compilerOptions) {
-                  const { target, jsx, jsxFactory, jsxFragmentFactory } = tsconfig.compilerOptions;
-                  if (target) esbuildConfig.target = target.toLowerCase();
-                  if (jsx) esbuildConfig.jsx = jsx;
-                  if (jsxFactory) esbuildConfig.jsxFactory = jsxFactory;
-                  if (jsxFragmentFactory) esbuildConfig.jsxFragment = jsxFragmentFactory;
-                }
-              }
-
-              const outputs = await bundleToString(fs, esbuildConfig);
-              if (outputs.length === 0) return 'run: no output from bundler';
-              code = outputs[0].text;
+          if (useTsconfig) {
+            const tsconfig = await readJSON(fs, "tsconfig.json");
+            if (tsconfig?.compilerOptions) {
+              const { target, jsx, jsxFactory, jsxFragmentFactory } =
+                tsconfig.compilerOptions;
+              if (target) esbuildConfig.target = target.toLowerCase();
+              if (jsx) esbuildConfig.jsx = jsx;
+              if (jsxFactory) esbuildConfig.jsxFactory = jsxFactory;
+              if (jsxFragmentFactory)
+                esbuildConfig.jsxFragment = jsxFragmentFactory;
             }
+          }
 
-            const result = await new Function(`
+          const outputs = await bundleToString(fs, esbuildConfig);
+          if (outputs.length === 0) return "run: no output from bundler";
+          code = outputs[0].text;
+        }
+
+        const result = await new Function(`
               const module = { exports: {} };
               const exports = module.exports;
               return (async () => {
@@ -92,15 +117,12 @@ export default class RunPlugin extends Plugin {
                 return module.exports;
               })();
             `)();
-            return result !== undefined ? String(result) : '';
-          } finally {
-            restore();
-          }
-        } catch (e) {
-          return `run: ${e.message}`;
-        }
-      },
-    },
-    ];
-  }
-}
+        return result !== undefined ? String(result) : "";
+      } finally {
+        restore();
+      }
+    } catch (e) {
+      return `run: ${e.message}`;
+    }
+  },
+});

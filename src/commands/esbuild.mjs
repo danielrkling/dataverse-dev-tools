@@ -1,7 +1,8 @@
 import { WebFileSystem } from '../fs.mjs';
-import { Plugin } from '../plugin.mjs';
+import { createOptiquePlugin } from '../plugin.mjs';
 import { dirname, join, EXTENSIONS } from '../utils/path.mjs';
 import { readJSON } from '../utils/json.mjs';
+import { object, optional, flag, option, string, passThrough } from '@optique/core';
 
 // ---- esbuild-wasm (lazy loaded) ----
 const ESBUILD_CDN = 'https://unpkg.com/esbuild-wasm@0.28.1/esm/browser.min.js';
@@ -19,85 +20,76 @@ async function getEsbuild() {
 
 // --- CLI ARG PARSING ---
 
+const esbuildParser = object({
+  entryPoints: optional(option('--entry-points', string({ metavar: 'FILES' }), { description: 'Comma-separated entry points' })),
+  outdir: optional(option('--outdir', string({ metavar: 'DIR' }), { description: 'Output directory' })),
+  format: optional(option('--format', string({ metavar: 'FORMAT' }), { description: 'Module format (esm, cjs, iife)' })),
+  platform: optional(option('--platform', string({ metavar: 'PLATFORM' }), { description: 'Platform (browser, node, neutral)' })),
+  sourcemap: optional(option('--sourcemap', string({ metavar: 'MODE' }), { description: 'Sourcemap mode (inline, external, both)' })),
+  target: optional(option('--target', string({ metavar: 'TARGET' }), { description: 'Language target (es2020, esnext, etc.)' })),
+  external: optional(option('--external', string({ metavar: 'PKGS' }), { description: 'Comma-separated external packages' })),
+  define: optional(option('--define', string({ metavar: 'KEY=VALUE' }), { description: 'Define a global constant' })),
+  loader: optional(option('--loader', string({ metavar: 'EXT=LOADER' }), { description: 'Set loader for file extension' })),
+  outExtension: optional(option('--out-extension', string({ metavar: 'EXT=EXT' }), { description: 'Output file extension mapping' })),
+  alias: optional(option('--alias', string({ metavar: 'FROM=TO' }), { description: 'Path alias' })),
+  minify: optional(flag('--minify', { description: 'Minify output' })),
+  noMinify: optional(flag('--no-minify', { description: 'Disable minification' })),
+  bundle: optional(flag('--bundle', { description: 'Bundle modules' })),
+  noBundle: optional(flag('--no-bundle', { description: 'Disable bundling' })),
+  splitting: optional(flag('--splitting', { description: 'Enable code splitting' })),
+  noSplitting: optional(flag('--no-splitting', { description: 'Disable code splitting' })),
+  tsconfig: optional(flag('--tsconfig', { description: 'Merge options from tsconfig.json' })),
+  rest: passThrough(),
+});
+
 /**
- * @param {string[]} args
+ * @param {Record<string, any>} parsed
  * @returns {Record<string, any>}
  */
-function parseCLIArgs(args) {
+function parsedToCliOverrides(parsed) {
   /** @type {Record<string, any>} */
   const config = {};
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
+
+  if (parsed.entryPoints) config.entryPoints = parsed.entryPoints.split(',').map(s => s.trim());
+  if (parsed.outdir) config.outdir = parsed.outdir;
+  if (parsed.format) config.format = parsed.format;
+  if (parsed.platform) config.platform = parsed.platform;
+  if (parsed.target) config.target = parsed.target;
+  if (parsed.sourcemap) {
+    config.sourcemap = parsed.sourcemap === 'true' ? true : parsed.sourcemap === 'false' ? false : parsed.sourcemap;
+  }
+  if (parsed.external) config.external = parsed.external.split(',').map(s => s.trim());
+  if (parsed.define) {
+    const eq = parsed.define.indexOf('=');
+    if (eq !== -1) config.define = { [parsed.define.slice(0, eq)]: parsed.define.slice(eq + 1) };
+  }
+  if (parsed.loader) {
+    const eq = parsed.loader.indexOf('=');
+    if (eq !== -1) config.loader = { [parsed.loader.slice(0, eq)]: parsed.loader.slice(eq + 1) };
+  }
+  if (parsed.outExtension) {
+    const eq = parsed.outExtension.indexOf('=');
+    if (eq !== -1) config.outExtension = { [parsed.outExtension.slice(0, eq)]: parsed.outExtension.slice(eq + 1) };
+  }
+  if (parsed.alias) {
+    const eq = parsed.alias.indexOf('=');
+    if (eq !== -1) config.alias = { [parsed.alias.slice(0, eq)]: parsed.alias.slice(eq + 1) };
+  }
+  if (parsed.minify) config.minify = true;
+  if (parsed.noMinify) config.minify = false;
+  if (parsed.bundle) config.bundle = true;
+  if (parsed.noBundle) config.bundle = false;
+  if (parsed.splitting) config.splitting = true;
+  if (parsed.noSplitting) config.splitting = false;
+
+  for (const arg of parsed.rest ?? []) {
     if (!arg.startsWith('--')) continue;
-
     const key = arg.slice(2);
-    if (key === 'help') { config._help = true; continue; }
-    if (key === 'minify' || key === 'no-minify') { config.minify = key === 'minify'; continue; }
-    if (key === 'bundle' || key === 'no-bundle') { config.bundle = key === 'bundle'; continue; }
-    if (key === 'splitting' || key === 'no-splitting') { config.splitting = key === 'splitting'; continue; }
-    if (key === 'tsconfig') { config._tsconfig = true; continue; }
-
     if (key.startsWith('no-')) {
       config[key.slice(3)] = false;
-      continue;
-    }
-
-    const next = i + 1 < args.length ? args[i + 1] : null;
-    if (!next || next.startsWith('--')) continue;
-    i++;
-
-    switch (key) {
-      case 'entry-points':
-        config.entryPoints = next.split(',').map(s => s.trim());
-        break;
-      case 'outdir':
-        config.outdir = next;
-        break;
-      case 'format':
-        config.format = next;
-        break;
-      case 'platform':
-        config.platform = next;
-        break;
-      case 'sourcemap':
-        config.sourcemap = next === 'true' ? true : next === 'false' ? false : next;
-        break;
-      case 'external':
-        config.external = [...(/** @type {string[]} */(config.external) || []), ...next.split(',').map(s => s.trim())];
-        break;
-      case 'define': {
-        const eq = next.indexOf('=');
-        if (eq !== -1) {
-          config.define = { ...(/** @type {Record<string, string>} */(config.define) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
-        }
-        break;
-      }
-      case 'loader': {
-        const eq = next.indexOf('=');
-        if (eq !== -1) {
-          config.loader = { ...(/** @type {Record<string, string>} */(config.loader) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
-        }
-        break;
-      }
-      case 'out-extension': {
-        const eq = next.indexOf('=');
-        if (eq !== -1) {
-          config.outExtension = { ...(/** @type {Record<string, string>} */(config.outExtension) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
-        }
-        break;
-      }
-      case 'alias': {
-        const eq = next.indexOf('=');
-        if (eq !== -1) {
-          config.alias = { ...(/** @type {Record<string, string>} */(config.alias) || {}), [next.slice(0, eq)]: next.slice(eq + 1) };
-        }
-        break;
-      }
-      case 'target':
-        config.target = next;
-        break;
     }
   }
+
   return config;
 }
 
@@ -444,58 +436,35 @@ export async function bundleToString(fs, config, trackedFiles) {
 
 // --- COMMAND ---
 
-export default class EsbuildPlugin extends Plugin {
-  get name() { return 'esbuild' }
-  get commands() {
-    return [
-      {
-        name: 'esbuild',
-        aliases: ['build'],
-        description: 'Bundle files using esbuild',
-        usage: 'esbuild [options]',
-        /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
-        handler: async (args, term, { fs }) => {
-          const cli = parseCLIArgs(args);
-          if (cli._help) {
-            return `Usage: esbuild [options]
+export default createOptiquePlugin({
+  name: 'esbuild',
+  commands: [
+    {
+      name: 'esbuild',
+      parser: esbuildParser,
+      aliases: ['build'],
+      description: 'Bundle files using esbuild',
+      usage: 'esbuild [options]',
+      brief: 'Bundle files using esbuild',
+      execute: async (parsed, term, { fs }) => {
+        const fileConfig = await readJSON(fs, 'esbuild.config.json') || {};
+        const { watch: _watch, ...baseConfig } = fileConfig;
 
-Options:
-  --entry-points <files>   Comma-separated list of entry points
-  --outdir <dir>           Output directory
-  --format <format>        Module format (esm, cjs, iife)
-  --platform <platform>    Platform (browser, node, neutral)
-  --minify / --no-minify   Minify output
-  --bundle / --no-bundle   Bundle modules
-  --sourcemap <mode>       Sourcemap mode (inline, external, both)
-  --external <pkgs>        Comma-separated external packages
-  --define <key=value>     Define a global constant
-  --loader <ext=loader>    Set loader for file extension
-  --target <target>        Language target (es2020, esnext, etc.)
-  --tsconfig               Merge options from tsconfig.json
-  --splitting              Enable code splitting
-  --out-extension <ext=ext> Output file extension mapping
-  --alias <from=to>        Path alias`;
-          }
+        const useTsconfig = parsed.tsconfig;
+        const cliOverrides = parsedToCliOverrides(parsed);
+        let merged = { ...baseConfig, ...cliOverrides };
+        if (useTsconfig) merged = await mergeTsconfig(fs, merged);
 
-          const fileConfig = await readJSON(fs, 'esbuild.config.json') || {};
-          const { watch: _watch, ...baseConfig } = fileConfig;
-
-          const { _help: _h, _tsconfig: useTsconfig, ...cliOverrides } = cli;
-          let merged = { ...baseConfig, ...cliOverrides };
-          if (useTsconfig) merged = await mergeTsconfig(fs, merged);
-
-          try {
-            const files = await bundle_in_memory(fs, merged);
-            return `Built ${files.map(v => v.path).join(', ')}`;
-          } catch (e) {
-            return `esbuild failed: ${e.message}`;
-          }
-        },
+        try {
+          const files = await bundle_in_memory(fs, merged);
+          return `Built ${files.map(v => v.path).join(', ')}`;
+        } catch (e) {
+          return `esbuild failed: ${e.message}`;
+        }
       },
-    ];
-  }
-  /** @param {import('../plugin.mjs').InitContext} ctx */
-  async init({ fs, pm, terminal: term }) {
+    },
+  ],
+  init: async ({ fs, pm, terminal: term }) => {
     const config = await readJSON(fs, 'esbuild.config.json');
     if (!config) return;
 
@@ -543,5 +512,5 @@ Options:
     });
 
     return unsub;
-  }
-}
+  },
+});

@@ -1,4 +1,7 @@
+import { runParser } from "@optique/core";
+import { WebFileSystem } from "./fs.mjs";
 import { parseCommandWithQuotes } from "./parser.mjs";
+
 
 export class WebTerminal extends HTMLElement {
     constructor() {
@@ -10,6 +13,9 @@ export class WebTerminal extends HTMLElement {
         this._history = [];
         /** @type {number} */
         this._historyIndex = -1;
+        WebFileSystem.fromOPFS().then((fs) => {
+            this.fs = fs;
+        });
 
         const root = /** @type {ShadowRoot} */ (this.shadowRoot);
         root.innerHTML = `
@@ -97,18 +103,8 @@ export class WebTerminal extends HTMLElement {
         this._output = /** @type {HTMLDivElement} */ (root.querySelector("#output"));
         this._input = /** @type {HTMLInputElement} */ (root.querySelector("#input"));
         this._prompt = /** @type {HTMLSpanElement} */ (root.querySelector("#prompt"));
-        /** @type {((args: string[], term: WebTerminal) => any) | null} */
-        this._dispatchHandler = null;
     }
 
-    /**
-     * Set a single dispatch handler that takes over command processing.
-     * When set, this handler is called instead of iterating registered handlers.
-     * @param {(args: string[], term: WebTerminal) => any} handler
-     */
-    setDispatchHandler(handler) {
-        this._dispatchHandler = handler;
-    }
 
     connectedCallback() {
         this._input.addEventListener("keydown", (e) => this._onKeyDown(e));
@@ -127,20 +123,6 @@ export class WebTerminal extends HTMLElement {
                 this._input.focus();
             }
         });
-        this.register((args) => {
-            if (args[0] === "clear") {
-                this.clear();
-                return "";
-            }
-        });
-    }
-
-    /**
-     * Public API to register a command handler.
-     * @param {(args: string[], console: WebTerminal) => any} handler
-     */
-    register(handler) {
-        this._handlers.add(handler);
     }
 
     /**
@@ -244,6 +226,25 @@ export class WebTerminal extends HTMLElement {
         }
     }
 
+    /** @type {Map<string, TerminalCommand<any, any>>} */
+    commands = new Map();
+
+    /**
+     * @template {import("@optique/core").Parser<any>} TParser
+     * @template TResult
+     * @param {TerminalCommand<TParser, TResult>} command
+     */
+    registerCommand(command) {
+        this.commands.set(command.name, command);
+        if (command.aliases) {
+            for (const alias of command.aliases) {
+                this.commands.set(alias, command);
+            }
+        }
+        command.init?.(this);
+
+    }
+
     /**
      * @param {string} text
      */
@@ -251,11 +252,14 @@ export class WebTerminal extends HTMLElement {
         const args = parseCommandWithQuotes(text);
         const name = args[0] || '';
 
-        if (this._dispatchHandler) {
+        const command = this.commands.get(name);
+
+        if (command) {
             try {
-                const result = await this._dispatchHandler(args, this);
-                if (result !== undefined) {
-                    this.log(String(result));
+                const parsedArgs = runParser({ parser: command.parser, metadata: { name: command.name } }, args.slice(1));
+                const result = await command.execute(parsedArgs, this);
+                if (result) {
+                    this.log(result);
                 }
             } catch (error) {
                 this.log(error.message, { class: 'log-error' });
@@ -264,29 +268,33 @@ export class WebTerminal extends HTMLElement {
             return;
         }
 
-        for (const handler of this._handlers) {
-            try {
-                const result = handler(args, this);
-
-                if (result instanceof Promise) {
-                    const promiseResult = await result;
-                    if (promiseResult !== undefined) {
-                        this.log(promiseResult);
-                        return;
-                    }
-                } else if (result !== undefined) {
-                    this.log(result);
-                    return;
-                }
-            } catch (error) {
-                this.log(error.message, { class: "log-error" });
-                console.error(`Error executing command '${name}':`, error);
-            }
-        }
-
         this.log(`Command not found: ${name}`, { class: "log-error" });
         return;
     }
 }
 
 customElements.define("web-terminal", WebTerminal);
+
+/**
+ * @template {import("@optique/core").Parser<any>} TParser
+ * @template TResult
+ * @typedef {object} TerminalCommand
+ * @property {string} name
+ * @property {string[]} [aliases]
+ * @property {string} description
+ * @property {string} [usage]
+ * @property {string} [brief]
+ * @property {TParser} parser
+ * @property {(args: import("@optique/core").InferValue<TParser>, terminal: WebTerminal) => TResult | Promise<TResult>} execute
+ * @property {(terminal: WebTerminal) => void} [init]
+ */
+
+/**
+ * @template {import("@optique/core").Parser<any>} TParser
+ * @template TResult
+ * @param {TerminalCommand<TParser, TResult>} command
+ */
+export function createCommand(command) {
+    return command;
+}
+

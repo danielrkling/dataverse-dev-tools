@@ -1,7 +1,8 @@
-import { Plugin } from '../plugin.mjs';
+import { createOptiquePlugin } from '../plugin.mjs';
 import { dirname, basename, join } from '../utils/path.mjs';
 import { readJSON } from '../utils/json.mjs';
 import { bundleToString } from './esbuild.mjs';
+import { object, optional, argument, choice } from '@optique/core';
 
 const TAILWIND_VERSION = '4.1.6';
 const DEFAULT_EXTENSIONS = ['html', 'js', 'ts', 'jsx', 'tsx', 'mjs', 'css'];
@@ -175,31 +176,32 @@ async function extractClasses(fs, dirs, extensions) {
   return [...classes];
 }
 
-export default class TailwindPlugin extends Plugin {
-  get name() { return 'tailwind' }
-  get commands() {
-    return [
-      {
-        name: 'tailwind',
-        aliases: ['tw'],
-        description: 'Generate Tailwind CSS using compile() API with WasmScanner',
-        usage: 'tailwind [build|watch]',
-        /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
-        handler: async (args, term, { fs }) => {
-          const sub = args[0];
-          try {
-            if (sub === 'watch') return await handleWatch(args.slice(1), term, fs);
-            return await handleBuild(args, term, fs);
-          } catch (e) {
-            return `tailwind: ${e.message}`;
-          }
-        },
-      },
-    ];
-  }
+const tailwindParser = object({
+  action: optional(argument(choice('build', 'watch'), { description: 'Tailwind action (build or watch)' })),
+});
 
-  /** @param {import('../plugin.mjs').InitContext} ctx */
-  async init({ fs, pm, terminal: term }) {
+export default createOptiquePlugin({
+  name: 'tailwind',
+  commands: [
+    {
+      name: 'tailwind',
+      parser: tailwindParser,
+      aliases: ['tw'],
+      description: 'Generate Tailwind CSS using compile() API with WasmScanner',
+      usage: 'tailwind [build|watch]',
+      brief: 'Generate Tailwind CSS using compile() API with WasmScanner',
+      execute: async (parsed, term, { fs }) => {
+        const sub = parsed.action || 'build';
+        try {
+          if (sub === 'watch') return await handleWatch([], term, fs);
+          return await handleBuild([], term, fs);
+        } catch (e) {
+          return `tailwind: ${e.message}`;
+        }
+      },
+    },
+  ],
+  init: async ({ fs, pm, terminal: term }) => {
     const config = await readJSON(fs, 'tailwind.config.json');
     if (!config) return;
     const dirs = config.content || [];
@@ -252,8 +254,8 @@ export default class TailwindPlugin extends Plugin {
 
     await rebuild();
     return unsub;
-  }
-}
+  },
+});
 
 /**
  * @param {any} config

@@ -1,5 +1,6 @@
-import { Plugin } from '../plugin.mjs';
+import { createOptiquePlugin } from '../plugin.mjs';
 import { readJSON } from '../utils/json.mjs';
+import { object } from '@optique/core';
 
 const TS_CDN = 'https://cdn.jsdelivr.net/npm/typescript@5.7.2/lib/typescript.js';
 const LIB_CDN = 'https://cdn.jsdelivr.net/npm/typescript@5.7.2/lib/';
@@ -315,45 +316,47 @@ async function runCheck(fs) {
   });
 }
 
-export default class TscPlugin extends Plugin {
-  get name() { return 'tsc' }
-  get commands() {
-    return [
-      {
-        name: 'tsc',
-        aliases: ['typecheck', 'tc'],
-        description: 'Type-check TypeScript files',
-        usage: 'tsc',
-        handler: async (args, term, { fs }) => {
-          term.log('Loading TypeScript compiler...');
-          try {
-            const result = await runCheck(fs);
-            const diags = result?.diagnostics || [];
-            const errors = diags.filter(d => d.severity === 'error');
-            const warnings = diags.filter(d => d.severity !== 'error');
+const tscParser = object({});
 
-            if (diags.length === 0) {
-              term.success('No type errors found.');
-              return '';
-            }
+export default createOptiquePlugin({
+  name: 'tsc',
+  commands: [
+    {
+      name: 'tsc',
+      parser: tscParser,
+      aliases: ['typecheck', 'tc'],
+      description: 'Type-check TypeScript files',
+      usage: 'tsc',
+      brief: 'Type-check TypeScript files',
+      execute: async (_parsed, term, { fs }) => {
+        term.log('Loading TypeScript compiler...');
+        try {
+          const result = await runCheck(fs);
+          const diags = result?.diagnostics || [];
+          const errors = diags.filter(d => d.severity === 'error');
+          const warnings = diags.filter(d => d.severity !== 'error');
 
-            for (const d of diags) {
-              const loc = d.file ? d.file + (d.line != null ? ':' + d.line + ':' + (d.col || 1) : '') : '';
-              const icon = d.severity === 'error' ? '✖' : '⚠';
-              term.log(icon + ' ' + loc + '  ' + d.message + '  (TS' + d.code + ')');
-            }
-
-            if (errors.length > 0) {
-              term.error('Found ' + errors.length + ' error(s), ' + warnings.length + ' warning(s)');
-            } else {
-              term.success(warnings.length + ' warning(s) found');
-            }
+          if (diags.length === 0) {
+            term.success('No type errors found.');
             return '';
-          } catch (e) {
-            return 'tsc failed: ' + e.message;
           }
-        },
+
+          for (const d of diags) {
+            const loc = d.file ? d.file + (d.line != null ? ':' + d.line + ':' + (d.col || 1) : '') : '';
+            const icon = d.severity === 'error' ? '✖' : '⚠';
+            term.log(icon + ' ' + loc + '  ' + d.message + '  (TS' + d.code + ')');
+          }
+
+          if (errors.length > 0) {
+            term.error('Found ' + errors.length + ' error(s), ' + warnings.length + ' warning(s)');
+          } else {
+            term.success(warnings.length + ' warning(s) found');
+          }
+          return '';
+        } catch (e) {
+          return 'tsc failed: ' + e.message;
+        }
       },
-    ];
-  }
-}
+    },
+  ],
+});

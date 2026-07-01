@@ -1,62 +1,37 @@
+import { runParserSync } from '@optique/core';
+
 /**
- * Parse CLI args into flags, values, and positional args.
+ * Parses arguments for a command using an Optique parser.
+ * Logs help or errors to the terminal if parsing fails.
  *
- * All `--flag` are boolean by default. Use `spec.string` for flags that
- * consume the next argument as a value. Use `--flag=value` for explicit values.
- * `--` stops flag parsing; everything after is positional.
- *
- * @example
- * parseArgs(['file.ts', '--publish'])
- * // => { flags: { publish: true }, values: {}, positional: ['file.ts'] }
- *
- * @example
- * parseArgs(['--out', 'out.md', 'path'], { string: ['out'] })
- * // => { flags: {}, values: { out: 'out.md' }, positional: ['path'] }
- *
- * @example
- * parseArgs(['--define=KEY=val'])
- * // => { flags: {}, values: { define: 'KEY=val' }, positional: [] }
- *
- * @example
- * parseArgs(['-m', 'msg'], { string: ['m'] })
- * // => { flags: {}, values: { m: 'msg' }, positional: [] }
- *
- * @example
- * parseArgs(['--', '--file'])
- * // => { flags: {}, values: {}, positional: ['--file'] }
- *
- * @param {string[]} args
- * @param {{ string?: string[] }} [spec] - Flag names that take a value argument
- * @returns {{ flags: Record<string, boolean>, values: Record<string, string>, positional: string[] }}
+ * @param {any} parser - The Optique parser schema.
+ * @param {string} commandName - The name of the command.
+ * @param {string[]} args - The arguments array to parse.
+ * @param {import('../terminal.mjs').WebTerminal} term - The terminal to log to.
+ * @param {any} [options] - Additional options (brief, description, etc.)
+ * @returns {any | null} The parsed options object, or null if help was shown or parsing failed.
  */
-export function parseArgs(args, spec = {}) {
-  const stringFlags = new Set(spec.string ?? []);
-  /** @type {Record<string, boolean>} */
-  const flags = {};
-  /** @type {Record<string, string>} */
-  const values = {};
-  const positional = [];
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg.startsWith('-') || arg === '-') { positional.push(arg); continue; }
-    if (arg === '--') { positional.push(...args.slice(i + 1)); break; }
-
-    const isLong = arg[1] === '-';
-    const prefix = isLong ? 2 : 1;
-    const eq = arg.indexOf('=');
-
-    if (eq !== -1) {
-      values[arg.slice(prefix, eq)] = arg.slice(eq + 1);
-    } else {
-      const key = arg.slice(prefix);
-      if (stringFlags.has(key) && i + 1 < args.length && !args[i + 1].startsWith('-')) {
-        values[key] = args[++i];
-      } else {
-        flags[key] = true;
+export function parseCommandArgs(parser, commandName, args, term, options = {}) {
+  try {
+    return runParserSync(parser, commandName, args, {
+      help: {
+        option: true,
+        onShow: () => {
+          throw new Error('HELP_SHOWN');
+        }
+      },
+      brief: options.brief,
+      description: options.description,
+      stdout: (msg) => term.log(msg),
+      stderr: (msg) => term.log(msg, { class: 'log-error' }),
+      onError: () => {
+        throw new Error('PARSING_FAILED');
       }
+    });
+  } catch (e) {
+    if (e.message === 'HELP_SHOWN' || e.message === 'PARSING_FAILED') {
+      return null;
     }
+    throw e;
   }
-
-  return { flags, values, positional };
 }

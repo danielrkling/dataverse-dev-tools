@@ -1,43 +1,50 @@
-import { Plugin } from '../plugin.mjs';
+import { createCommand } from "../terminal.mjs";
+import { object, optional, argument, string, message } from "@optique/core";
 
-export default class BuiltinPlugin extends Plugin {
-  get name() { return 'builtin' }
-  get commands() {
-    return [
-      {
-        name: 'help',
-        aliases: ['?'],
-        description: 'Show available commands or details about a specific command',
-        usage: 'help [command]',
-        /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term @param {import('../plugin.mjs').ExecuteContext} ctx */
-        handler: (args, term, { pm }) => {
-          if (args.length > 0) {
-            const cmd = pm.registry.resolve(args[0]);
-            if (cmd) {
-              const parts = [`${cmd.name} — ${cmd.description}`];
-              if (cmd.usage) parts.push(`Usage: ${cmd.usage}`);
-              if (cmd.aliases?.length) parts.push(`Aliases: ${cmd.aliases.join(', ')}`);
-              term.log(parts.join('\n'));
-              return '';
-            }
-            term.log(`No help found for '${args[0]}'`, { class: 'log-error' });
-            return '';
-          }
-          const cmds = pm.registry.list();
-          const lines = cmds.map(c => `  ${c.name.padEnd(15)} ${c.description}`);
-          term.log(`Available commands (${cmds.length}):\n${lines.join('\n')}`);
-          return '';
-        },
-      },
-      {
-        name: 'clear',
-        description: 'Clear the terminal screen',
-        /** @param {string[]} args @param {import('../terminal.mjs').WebTerminal} term */
-        handler: (args, term) => {
-          term.clear();
-          return '';
-        },
-      },
-    ];
-  }
-}
+export const help = createCommand({
+  name: "help",
+  parser: object({
+    command: optional(
+      argument(string({ metavar: "COMMAND" }), {
+        description: message`The command to show details for`,
+      }),
+    ),
+  }),
+  aliases: ["?"],
+  description: "Show available commands or details about a specific command",
+  usage: "help [command]",
+  brief: "Show available commands or details about a specific command",
+  execute: (args, term) => {
+    if (args.command) {
+      const cmdName = args.command;
+      const cmd = term.commands.get(cmdName);
+      if (cmd) {
+        const parts = [`${cmd.name} — ${cmd.description}`];
+        if (cmd.usage) parts.push(`Usage: ${cmd.usage}`);
+        if (cmd.aliases?.length)
+          parts.push(`Aliases: ${cmd.aliases.join(", ")}`);
+        term.log(parts.join("\n"));
+        return "";
+      }
+      term.log(`No help found for '${cmdName}'`, { class: "log-error" });
+      return "";
+    }
+    const cmds = Array.from(new Set(term.commands.values())).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    const lines = cmds.map((c) => `  ${c.name.padEnd(15)} ${c.description}`);
+    term.log(`Available commands (${cmds.length}):\n${lines.join("\n")}`);
+    return "";
+  },
+});
+
+export const clear = createCommand({
+  name: "clear",
+  parser: object({}),
+  description: "Clear the terminal screen",
+  brief: "Clear the terminal screen",
+  execute: (_parsed, term) => {
+    term.clear();
+    return "";
+  },
+});

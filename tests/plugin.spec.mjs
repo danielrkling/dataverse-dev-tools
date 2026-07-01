@@ -77,7 +77,7 @@ test.describe('PluginManager', () => {
   test.beforeEach(() => {
     term = new MockTerminal();
     pm = new PluginManager({ terminal: term, fs: dummyFs });
-    pm.registerPlugin(new builtinPlugin());
+    pm.registerPlugin(builtinPlugin);
   });
 
   test('registers builtin commands on construction', () => {
