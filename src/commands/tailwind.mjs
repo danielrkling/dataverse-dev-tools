@@ -1,23 +1,25 @@
+import { dirname, join } from "../utils/path.mjs";
+import { readJSON } from "../utils/json.mjs";
+import { tailwindConfigSchema } from "../utils/schemas.mjs";
+import { createCommand } from "../terminal.mjs";
+import { object, optional, argument, choice, message } from "@optique/core";
+import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
 
-import { dirname, basename, join } from '../utils/path.mjs';
-import { readJSON } from '../utils/json.mjs';
-
-import { object, optional, argument, choice } from '@optique/core';
-import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from '../utils/esbuild.mjs';
-
-const TAILWIND_VERSION = '4.1.6';
-const DEFAULT_EXTENSIONS = ['html', 'js', 'ts', 'jsx', 'tsx', 'mjs', 'css'];
+const TAILWIND_VERSION = "4.1.6";
+const DEFAULT_EXTENSIONS = ["html", "js", "ts", "jsx", "tsx", "mjs", "css"];
 const COMPILE_URL = `https://esm.sh/tailwindcss@${TAILWIND_VERSION}`;
-const ISO_URL = 'https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser.js';
+const ISO_URL = "https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser.js";
 const CSS_BASE = `https://cdn.jsdelivr.net/npm/tailwindcss@${TAILWIND_VERSION}`;
 
+/** @type {Map<string, string>} */
 const cssCache = new Map();
+
 /**
  * @param {string} name
  * @returns {Promise<string>}
  */
 async function getCSSAsset(name) {
-  if (cssCache.has(name)) return cssCache.get(name);
+  if (cssCache.has(name)) return /** @type {string} */ (cssCache.get(name));
   const url = `${CSS_BASE}/${name}.css`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch tailwindcss asset: ${name}`);
@@ -28,17 +30,20 @@ async function getCSSAsset(name) {
 
 /** @type {((css: string, opts: any) => any) | null} */
 let _compile = null;
-/** @type {((opts: any) => any[]) | null} */
-let _getTailwindClasses = null;
 
+/** @returns {Promise<((css: string, opts: any) => any)>} */
 async function getCompile() {
   if (!_compile) {
     const mod = await import(COMPILE_URL);
     _compile = mod.compile;
   }
-  return _compile;
+  return /** @type {((css: string, opts: any) => any)} */ (_compile);
 }
 
+/** @type {((opts: { content: string, extension: string }) => string[]) | null} */
+let _getTailwindClasses = null;
+
+/** @returns {Promise<void>} */
 async function ensureWasmLoaded() {
   if (!_getTailwindClasses) {
     const mod = await import(ISO_URL);
@@ -52,61 +57,61 @@ async function ensureWasmLoaded() {
  */
 function createLoadStylesheet(fs) {
   return async (id, base) => {
-    const name = id.replace(/\.css$/, '');
-    if (name === 'tailwindcss') {
-      return { path: 'virtual:tailwindcss/index.css', base: '/', content: await getCSSAsset('index') };
+    const name = id.replace(/\.css$/, "");
+    if (name === "tailwindcss") {
+      return { path: "virtual:tailwindcss/index.css", base: "/", content: await getCSSAsset("index") };
     }
-    if (name === 'tailwindcss/preflight' || name === './preflight') {
-      return { path: 'virtual:tailwindcss/preflight.css', base: '/', content: await getCSSAsset('preflight') };
+    if (name === "tailwindcss/preflight" || name === "./preflight") {
+      return { path: "virtual:tailwindcss/preflight.css", base: "/", content: await getCSSAsset("preflight") };
     }
-    if (name === 'tailwindcss/theme' || name === './theme') {
-      return { path: 'virtual:tailwindcss/theme.css', base: '/', content: await getCSSAsset('theme') };
+    if (name === "tailwindcss/theme" || name === "./theme") {
+      return { path: "virtual:tailwindcss/theme.css", base: "/", content: await getCSSAsset("theme") };
     }
-    if (name === 'tailwindcss/utilities' || name === './utilities') {
-      return { path: 'virtual:tailwindcss/utilities.css', base: '/', content: '@tailwind utilities;' };
+    if (name === "tailwindcss/utilities" || name === "./utilities") {
+      return { path: "virtual:tailwindcss/utilities.css", base: "/", content: "@tailwind utilities;" };
     }
 
-    if (id.startsWith('http://') || id.startsWith('https://')) {
+    if (id.startsWith("http://") || id.startsWith("https://")) {
       const res = await fetch(id);
       return { path: id, base, content: await res.text() };
     }
 
-    const fullPath = base && base !== '/' ? join(base, id) : id;
-    const content = await fs.readFile(fullPath, { encoding: 'utf8' });
-    return { path: fullPath, base: dirname(fullPath) || '/', content };
+    const fullPath = base && base !== "/" ? join(base, id) : id;
+    const content = await fs.readFile(fullPath, { encoding: "utf8" });
+    return { path: fullPath, base: dirname(fullPath) || "/", content };
   };
 }
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
- * @returns {(id: string, base: string, resourceHint?: any) => Promise<{path: string, base: string, module: any}>}
+ * @returns {(id: string, base: string) => Promise<{path: string, base: string, module: any}>}
  */
 function createLoadModule(fs) {
-  return async (id, base, resourceHint) => {
-    if (id.startsWith('http://') || id.startsWith('https://')) {
+  return async (id, base) => {
+    if (id.startsWith("http://") || id.startsWith("https://")) {
       const mod = await import(id);
       return { path: id, base, module: mod.default || mod };
     }
 
-    if (!id.startsWith('./') && !id.startsWith('../') && !id.startsWith('/')) {
+    if (!id.startsWith("./") && !id.startsWith("../") && !id.startsWith("/")) {
       const mod = await import(`https://esm.sh/${id}`);
       return { path: id, base, module: mod.default || mod };
     }
 
-    const fullPath = base && base !== '/' ? join(base, id) : id;
-    const esbuild = await getEsbuild()
-    const result = await (esbuild).build({
+    const fullPath = base && base !== "/" ? join(base, id) : id;
+    const esbuild = await getEsbuild();
+    const result = await esbuild.build({
       entryPoints: [fullPath],
       bundle: true,
-      format: 'esm',
+      format: "esm",
       write: false,
-      plugins:[aliasPlugin(),httpPlugin(),fsPlugin(fs)]
+      plugins: [aliasPlugin(), httpPlugin(), fsPlugin(fs)],
     });
-    const blob = new Blob([result.outputFiles[0].text], { type: 'application/javascript' });
+    const blob = new Blob([result.outputFiles[0].text], { type: "application/javascript" });
     const url = URL.createObjectURL(blob);
     try {
       const mod = await import(url);
-      return { path: fullPath, base: dirname(fullPath) || '/', module: mod.default || mod };
+      return { path: fullPath, base: dirname(fullPath) || "/", module: mod.default || mod };
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -114,31 +119,34 @@ function createLoadModule(fs) {
 }
 
 /**
- * @param {any} config
+ * @param {object} config
+ * @param {string | string[]} [config.css]
+ * @param {string} [config.importCSS]
+ * @param {string[]} [config.plugins]
  * @returns {string}
  */
 function buildCSSInput(config) {
   if (Array.isArray(config.css)) {
-    return config.css.map(item => {
+    return config.css.map((item) => {
       const t = item.trim();
-      if (t.startsWith('@') || t.startsWith('http://') || t.startsWith('https://')) return t;
+      if (t.startsWith("@") || t.startsWith("http://") || t.startsWith("https://")) return t;
       return `@import "${t}"`;
-    }).join('\n');
+    }).join("\n");
   }
   const parts = [];
   if (config.importCSS) parts.push(config.importCSS);
   else parts.push('@import "tailwindcss"');
-  if (config.css && typeof config.css === 'string') parts.push(`@import "${config.css}"`);
+  if (config.css && typeof config.css === "string") parts.push(`@import "${config.css}"`);
   if (config.plugins) {
     for (const p of config.plugins) {
-      if (p.startsWith('http://') || p.startsWith('https://') || p.startsWith('./') || p.startsWith('/')) {
+      if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("./") || p.startsWith("/")) {
         parts.push(`@import "${p}"`);
       } else {
         parts.push(`@plugin "${p}"`);
       }
     }
   }
-  return parts.join('\n');
+  return parts.join("\n");
 }
 
 /**
@@ -160,8 +168,8 @@ async function extractClasses(fs, dirs, extensions) {
     } catch {
       continue;
     }
-    for (const [filePath, content] of Object.entries(files)) {
-      const dot = filePath.lastIndexOf('.');
+    for (const [filePath, content] of files) {
+      const dot = filePath.lastIndexOf(".");
       if (dot === -1) continue;
       const ext = filePath.slice(dot + 1);
       if (extensions && extensions.length > 0 && !extensions.includes(ext)) continue;
@@ -170,7 +178,7 @@ async function extractClasses(fs, dirs, extensions) {
   }
 
   for (const [ext, contents] of Object.entries(byExt)) {
-    const results = await /** @type {Function} */ (_getTailwindClasses)({ content: contents.join('\n'), extension: ext });
+    const results = await /** @type {Function} */ (_getTailwindClasses)({ content: contents.join("\n"), extension: ext });
     for (const r of results) {
       classes.add(r);
     }
@@ -179,90 +187,10 @@ async function extractClasses(fs, dirs, extensions) {
   return [...classes];
 }
 
-const tailwindParser = object({
-  action: optional(argument(choice('build', 'watch'), { description: 'Tailwind action (build or watch)' })),
-});
-
-export default createOptiquePlugin({
-  name: 'tailwind',
-  commands: [
-    {
-      name: 'tailwind',
-      parser: tailwindParser,
-      aliases: ['tw'],
-      description: 'Generate Tailwind CSS using compile() API with WasmScanner',
-      usage: 'tailwind [build|watch]',
-      brief: 'Generate Tailwind CSS using compile() API with WasmScanner',
-      execute: async (parsed, term, { fs }) => {
-        const sub = parsed.action || 'build';
-        try {
-          if (sub === 'watch') return await handleWatch([], term, fs);
-          return await handleBuild([], term, fs);
-        } catch (e) {
-          return `tailwind: ${e.message}`;
-        }
-      },
-    },
-  ],
-  init: async ({ fs, pm, terminal: term }) => {
-    const config = await readJSON(fs, 'tailwind.config.json');
-    if (!config) return;
-    const dirs = config.content || [];
-    if (dirs.length === 0) return;
-    const extensions = config.extensions && config.extensions.length > 0 ? config.extensions : DEFAULT_EXTENSIONS;
-
-    const watchedDirs = new Set();
-    /** @type {string[]} */
-    const resolvedDirs = [];
-    for (const entry of dirs) {
-      const dir = await watchDir(fs, entry);
-      if (dir && !watchedDirs.has(dir)) {
-        watchedDirs.add(dir);
-        resolvedDirs.push(dir);
-      }
-    }
-    if (resolvedDirs.length === 0) return;
-
-    const cache = createCompilerCache(config, fs);
-
-    async function rebuild() {
-      try {
-      const c = await cache.getOrCreateCompiler();
-      const dirs = config.content || ['.'];
-      const classes = await extractClasses(fs, dirs, extensions);
-        const result = c.build(classes);
-        const outfile = config.outfile || './dist/tailwind.css';
-        const dir = dirname(outfile);
-        if (dir) {
-          try { await fs.mkdir(dir, { recursive: true }); } catch {}
-        }
-        await fs.writeFile(outfile, result);
-        term.info(`tailwind: rebuilt ${outfile} (${result.length} bytes, ${classes.length} classes)`);
-        pm.emit('build:complete', { files: [{ path: outfile }], builder: 'tailwind' });
-      } catch (e) {
-        term.error(`tailwind rebuild failed: ${e.message}`);
-      }
-    }
-
-    const unsub = pm.on('fs:change', (/** @type {{ path: string, type: string }} */ { path, type }) => {
-      if (type !== 'modified' && type !== 'created') return;
-      if (!resolvedDirs.some(dir => path.startsWith(dir))) return;
-      if (extensions) {
-        const dot = path.lastIndexOf('.');
-        if (dot === -1) return;
-        if (!extensions.includes(path.slice(dot + 1))) return;
-      }
-      rebuild();
-    });
-
-    await rebuild();
-    return unsub;
-  },
-});
-
 /**
- * @param {any} config
+ * @param {{ content?: string[], extensions?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
  * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {{ getOrCreateCompiler(): Promise<any>, invalidateCache(): void }}
  */
 function createCompilerCache(config, fs) {
   /** @type {any} */
@@ -276,7 +204,7 @@ function createCompilerCache(config, fs) {
       const compile = await getCompile();
       const ls = createLoadStylesheet(fs);
       const lm = createLoadModule(fs);
-      compiler = await /** @type {Function} */ (compile)(cssInput, { base: '/', loadStylesheet: ls, loadModule: lm });
+      compiler = await /** @type {Function} */ (compile)(cssInput, { base: "/", loadStylesheet: ls, loadModule: lm });
       lastCSSInput = cssInput;
       return compiler;
     },
@@ -285,164 +213,73 @@ function createCompilerCache(config, fs) {
 }
 
 /**
+ * @param {{ content?: string[], extensions?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
  * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {string} path
- * @returns {Promise<string | null>}
- */
-export async function watchDir(fs, path) {
-  try {
-    const stat = await fs.stat(path);
-    if (stat.isDirectory) return path;
-    return dirname(path) || '.';
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {string[]} entries
- * @param {string[]} extensions
- * @returns {Promise<string>}
- */
-export async function collectContent(fs, entries, extensions) {
-  await ensureWasmLoaded();
-  /** @type {Record<string, string[]>} */
-  const byExt = {};
-  for (const entry of entries) {
-    let files;
-    try {
-      files = await fs.getFiles(entry);
-    } catch {
-      continue;
-    }
-    for (const [filePath, content] of Object.entries(files)) {
-      const dot = filePath.lastIndexOf('.');
-      if (dot === -1) continue;
-      const ext = filePath.slice(dot + 1);
-      if (extensions && extensions.length > 0 && !extensions.includes(ext)) continue;
-      (byExt[ext] ||= []).push(content);
-    }
-  }
-  let all = '';
-  for (const [ext, contents] of Object.entries(byExt)) {
-    const results = await /** @type {Function} */ (_getTailwindClasses)({ content: contents.join('\n'), extension: ext });
-    all += '\n' + results.join(' ');
-  }
-  return all;
-}
-
-/**
- * @param {import('../fs.mjs').WebFileSystem} fs
- * @returns {Promise<any>}
- */
-async function readConfig(fs) {
-  try {
-    const raw = await fs.readFile('tailwind.config.json', { encoding: 'utf8' });
-    return JSON.parse(raw);
-  } catch {
-    throw new Error('No tailwind.config.json found. Create one with content dirs, extensions, css path, and outfile.');
-  }
-}
-
-/**
- * @param {string[]} args
  * @param {import('../terminal.mjs').WebTerminal} term
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {Promise<{outfile: string, bytes: number, classes: number}>}
  */
-async function handleBuild(args, term, fs) {
-  const config = await readConfig(fs);
-
-  term.log('Building CSS input...');
-  const cssInput = buildCSSInput(config);
-  const compile = await getCompile();
-  const ls = createLoadStylesheet(fs);
-  const lm = createLoadModule(fs);
-  const compiler = await /** @type {Function} */ (compile)(cssInput, { base: '/', loadStylesheet: ls, loadModule: lm });
-
-  term.log('Scanning content files...');
-  const dirs = config.content || ['.'];
-  const extensions = config.extensions && config.extensions.length > 0 ? config.extensions : DEFAULT_EXTENSIONS;
+async function runBuild(config, fs, term) {
+  const cache = createCompilerCache(config, fs);
+  const c = await cache.getOrCreateCompiler();
+  const dirs = config.content || ["."];
+  const extensions = config.extensions?.length ? config.extensions : DEFAULT_EXTENSIONS;
   const classes = await extractClasses(fs, dirs, extensions);
-  term.info(`Found ${classes.length} unique class names`);
-
-  term.log('Generating Tailwind CSS...');
-  const result = compiler.build(classes);
-
-  const outfile = config.outfile || './dist/tailwind.css';
+  const result = await c.build(classes);
+  const outfile = config.outfile || "./dist/tailwind.css";
   const dir = dirname(outfile);
   if (dir) {
     try { await fs.mkdir(dir, { recursive: true }); } catch {}
   }
   await fs.writeFile(outfile, result);
-  term.success(`Wrote ${outfile} (${result.length} bytes, ${classes.length} classes)`);
+  return { outfile, bytes: result.length, classes: classes.length };
 }
 
-/**
- * @param {string[]} args
- * @param {import('../terminal.mjs').WebTerminal} term
- * @param {import('../fs.mjs').WebFileSystem} fs
- */
-async function handleWatch(args, term, fs) {
-  const config = await readConfig(fs);
+const tailwindParser = object({
+  action: optional(argument(choice(["build", "watch"]), { description: message`Tailwind action (build or watch)` })),
+});
 
-  const cache = createCompilerCache(config, fs);
-  const extensions = config.extensions && config.extensions.length > 0 ? config.extensions : DEFAULT_EXTENSIONS;
-
-  async function rebuild() {
-    try {
-      const c = await cache.getOrCreateCompiler();
-      const dirs = config.content || ['.'];
-      const classes = await extractClasses(fs, dirs, extensions);
-      const result = c.build(classes);
-      const outfile = config.outfile || './dist/tailwind.css';
-      const dir = dirname(outfile);
-      if (dir) {
-        try { await fs.mkdir(dir, { recursive: true }); } catch {}
-      }
-      await fs.writeFile(outfile, result);
-      term.success(`Rebuilt ${outfile} (${result.length} bytes, ${classes.length} classes)`);
-    } catch (e) {
-      term.error(`Rebuild failed: ${e.message}`);
+export default createCommand({
+  name: "tailwind",
+  parser: tailwindParser,
+  aliases: ["tw"],
+  description: message`Generate Tailwind CSS using compile() API with WasmScanner`,
+  usage: message`tailwind [build|watch]`,
+  brief: message`Generate Tailwind CSS using compile() API with WasmScanner`,
+  execute: async (parsed, term) => {
+    const rawConfig = (await readJSON(term.fs, "tailwind.config.json")) || {};
+    const parsedConfig = tailwindConfigSchema.safeParse(rawConfig);
+    if (!parsedConfig.success) {
+      term.error(`tailwind.config.json: ${parsedConfig.error.issues.map(i => i.message).join(", ")}`);
     }
-  }
+    const config = parsedConfig.success ? parsedConfig.data : tailwindConfigSchema.parse({});
 
-  await rebuild();
+    const sub = /** @type {string} */ (parsed.action || "build");
 
-  const watched = new Set();
-  const dirs = config.content || ['.'];
+    if (sub === "watch") {
+      const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
+      term.success(`Built ${outfile} (${bytes} bytes, ${classes} classes)`);
 
-  for (const entry of dirs) {
-    const dir = await watchDir(fs, entry);
-    if (!dir || watched.has(dir)) continue;
-    watched.add(dir);
-    fs.watch(dir, { recursive: true, debounce: 300 }, async (path, type) => {
-      if (type === 'modified' || type === 'created') {
-        if (extensions) {
-          const dot = path.lastIndexOf('.');
-          if (dot === -1) return;
-          if (!extensions.includes(path.slice(dot + 1))) return;
+      term.addEventListener("fs:modified", async (/** @type {CustomEvent} */ e) => {
+        const path = e.detail?.path;
+        if (!path) return;
+        const extensions = config.extensions?.length ? config.extensions : DEFAULT_EXTENSIONS;
+        const dot = path.lastIndexOf(".");
+        if (dot === -1) return;
+        if (!extensions.includes(path.slice(dot + 1))) return;
+        try {
+          const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
+          term.info(`Rebuilt ${outfile} (${bytes} bytes, ${classes} classes)`);
+        } catch (/** @type {any} */ e) {
+          term.error(`Rebuild failed: ${e.message}`);
         }
-        term.log(`Change: ${path}`);
-        await rebuild();
-      }
-    }).catch(() => {});
-  }
+      });
 
-  if (config.css && typeof config.css === 'string') {
-    const cssDir = await watchDir(fs, config.css);
-    if (cssDir && !watched.has(cssDir)) {
-      watched.add(cssDir);
-      const cssBasename = basename(config.css);
-      fs.watch(cssDir, { recursive: true, debounce: 300 }, async (path, type) => {
-        if (type === 'modified' && path.split('/').pop() === cssBasename) {
-          cache.invalidateCache();
-          term.log(`CSS config changed: ${path}`);
-          await rebuild();
-        }
-      }).catch(() => {});
+      term.info("Watching for changes...");
+      return undefined;
+    } else {
+      const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
+      term.success(`Wrote ${outfile} (${bytes} bytes, ${classes} classes)`);
+      return undefined;
     }
-  }
-
-  term.info('Watching for changes...');
-}
+  },
+});

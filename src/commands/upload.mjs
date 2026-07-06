@@ -1,6 +1,7 @@
 import { uploadWebResource, publishWebResources, isValidWebResource } from "../wr.mjs";
 import { createCommand, WebTerminal } from "../terminal.mjs";
 import { readJSON } from "../utils/json.mjs";
+import { dataverseConfigSchema } from "../utils/schemas.mjs";
 import { object, flag, argument, string, message, option, optional } from "@optique/core";
 import picomatch from "picomatch";
 
@@ -20,9 +21,16 @@ export const uploadCommand = createCommand({
     usage: message`upload <path> [--publish]`,
     brief: message`Upload web resources to Dataverse`,
     execute: async (parsed, term) => {
-        const configFile = await term.fs
-            .readFile("dataverse.config.json", { encoding: "utf8" })
-            .then((r) => JSON.parse(r));
+        const raw = await term.fs.readFile("dataverse.config.json", { encoding: "utf8" });
+        const configFile = (() => {
+            const parsed = JSON.parse(raw);
+            const result = dataverseConfigSchema.safeParse(parsed);
+            if (!result.success) {
+                term.error(`dataverse.config.json: ${result.error.issues.map(i => i.message).join(", ")}`);
+                return parsed;
+            }
+            return result.data;
+        })();
         const path = parsed.path;
 
 
@@ -41,9 +49,16 @@ export const uploadCommand = createCommand({
             //@ts-expect-error
             const path = e.detail.path;
 
-            const config = await term.fs
-                .readFile("dataverse.config.json", { encoding: "utf8" })
-                .then((r) => JSON.parse(r));
+            const rawConfig = await term.fs.readFile("dataverse.config.json", { encoding: "utf8" });
+            const config = (() => {
+                const parsed = JSON.parse(rawConfig);
+                const result = dataverseConfigSchema.safeParse(parsed);
+                if (!result.success) {
+                    term.error(`dataverse.config.json: ${result.error.issues.map(i => i.message).join(", ")}`);
+                    return parsed;
+                }
+                return result.data;
+            })();
 
             const isMatch = picomatch(config.files);
             if (isMatch(path)) {
@@ -54,9 +69,16 @@ export const uploadCommand = createCommand({
         });
 
         term.addEventListener("fs:init", async (e) => {
-            const config = await term.fs
-                .readFile("dataverse.config.json", { encoding: "utf8" })
-                .then((r) => JSON.parse(r));
+            const rawConfig = await term.fs.readFile("dataverse.config.json", { encoding: "utf8" });
+            const config = (() => {
+                const parsed = JSON.parse(rawConfig);
+                const result = dataverseConfigSchema.safeParse(parsed);
+                if (!result.success) {
+                    term.error(`dataverse.config.json: ${result.error.issues.map(i => i.message).join(", ")}`);
+                    return parsed;
+                }
+                return result.data;
+            })();
 
             if (!config.files) return;
             if (!config.prefix) return;

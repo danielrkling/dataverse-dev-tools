@@ -1,6 +1,7 @@
 import { WebFileSystem } from "../fs.mjs";
 import { dirname, join, EXTENSIONS } from "../utils/path.mjs";
 import { readJSON } from "../utils/json.mjs";
+import { esbuildConfigSchema } from "../utils/schemas.mjs";
 import {
     object,
     optional,
@@ -92,20 +93,25 @@ export default createCommand({
     usage: message`esbuild [options]`,
     brief: message`Bundle files using esbuild`,
     execute: async (parsed, terminal) => {
-        const fileConfig = (await readJSON(terminal.fs, "esbuild.config.json")) || {};
+        const rawConfig = (await readJSON(terminal.fs, "esbuild.config.json")) || {};
+        const merged = { ...rawConfig, ...parsed };
+        const parsedConfig = esbuildConfigSchema.safeParse(merged);
+        if (!parsedConfig.success) {
+            terminal.error(`esbuild.config.json: ${parsedConfig.error.issues.map(i => i.message).join(", ")}`);
+        }
         const { watch, ...config } = {
-            ...fileConfig,
-            ...parsed,
+            ...(parsedConfig.success ? parsedConfig.data : merged),
             plugins: [aliasPlugin(), httpPlugin(), fsPlugin(terminal.fs)],
         };
 
         const esbuild = await getEsbuild();
 
         if (watch) {
-            const context = await esbuild.context({ ...config, metafile: true });
+            const context = await esbuild.context({ ...config, write: false, metafile: true });
             const result = await context.rebuild();
             for (const output of result.outputFiles ?? []) {
                 terminal.fs.writeFile(output.path, output.contents);
+                terminal.success(`Wrote ${output.path} (${output.contents.length} bytes)`);
             }
             let filesToWatch = Object.keys(result.metafile?.inputs ?? {}).map((v) => v.split(":")[1]);
             terminal.addEventListener("fs:modified", async (e) => {
@@ -117,13 +123,16 @@ export default createCommand({
                     filesToWatch = Object.keys(result.metafile?.inputs ?? {}).map((v) => v.split(":")[1]);
                     for (const output of result.outputFiles ?? []) {
                         terminal.fs.writeFile(output.path, output.contents);
+                        terminal.info(`Rebuilt ${output.path} (${output.contents.length} bytes)`);
                     }
                 }
             });
         } else {
-            const result = await esbuild.build({ ...config, plugins: [fsPlugin(terminal.fs)] });
+            const result = await esbuild.build({ ...config, write: false, plugins: [fsPlugin(terminal.fs)] });
+            console.log(result);
             for (const output of result.outputFiles ?? []) {
                 terminal.fs.writeFile(output.path, output.contents);
+                terminal.success(`Wrote ${output.path} (${output.contents.length} bytes)`);
             }
         }
     },

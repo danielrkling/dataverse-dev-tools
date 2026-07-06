@@ -1,4 +1,5 @@
 import { createCommand } from "../terminal.mjs";
+import { dataverseConfigSchema } from "../utils/schemas.mjs";
 import { object, optional, argument, string, message, option } from "@optique/core";
 
 /** @type {Set<Window>} */
@@ -32,10 +33,14 @@ export const previewCommand = createCommand({
 
         if (!path) {
             try {
-                const config = JSON.parse(
+                const raw = JSON.parse(
                     /** @type {string} */ (await fs.readFile("dataverse.config.json", { encoding: "utf8" })),
                 );
-                path = config.upload?.preview;
+                const result = dataverseConfigSchema.safeParse(raw);
+                if (!result.success) {
+                    term.error(`dataverse.config.json: ${result.error.issues.map(i => i.message).join(", ")}`);
+                }
+                path = (result.success ? result.data : raw).preview;
             } catch {
                 return "No preview path configured and no path provided.";
             }

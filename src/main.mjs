@@ -16,6 +16,7 @@ import { npmCommand } from "./commands/npm.mjs";
 import { openCommand } from "./commands/open.mjs";
 import { previewCommand } from "./commands/preview.mjs";
 import { runCommand } from "./commands/run.mjs";
+import tailwind from "./commands/tailwind.mjs";
 import { uploadCommand } from "./commands/upload.mjs";
 import { WebTerminal } from "./terminal.mjs";
 
@@ -38,5 +39,6 @@ terminal.registerCommand(previewCommand);
 terminal.registerCommand(npmCommand);
 terminal.registerCommand(runCommand);
 terminal.registerCommand(openCommand);
+terminal.registerCommand(tailwind);
 terminal.registerCommand(uploadCommand);
 terminal.registerCommand(esbuild);

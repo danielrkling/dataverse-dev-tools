@@ -27,4 +27,6 @@ interface Window {
 // FileSystemDirectoryHandle.values() returns AsyncIterableIterator
 interface FileSystemDirectoryHandle {
   values(): AsyncIterableIterator<FileSystemDirectoryHandle | FileSystemFileHandle>;
+  queryPermission(descriptor?: FileSystemHandlePermissionDescriptor): Promise<PermissionState>;
+  requestPermission(descriptor?: FileSystemHandlePermissionDescriptor): Promise<PermissionState>;
 }

@@ -1,4 +1,5 @@
 import { createCommand } from "../terminal.mjs";
+import { dataverseConfigSchema, esbuildConfigSchema, tailwindConfigSchema } from "../utils/schemas.mjs";
 import {
   object,
   optional,
@@ -46,21 +47,13 @@ export const initConfig = createCommand({
     }
 
     if (!dcExists) {
-      const config = {
-        upload: {
-          prefix: prefix || "",
-          watch: ["src", "dist"],
-          preview: "index.html",
-          refresh: "onUpload",
-          solution: "",
-        },
-      };
+      const config = dataverseConfigSchema.parse({ prefix });
       await fs.writeFile(
         "dataverse.config.json",
         JSON.stringify(config, null, 2),
       );
       term.success("Created dataverse.config.json");
-      if (!config.upload.prefix) {
+      if (!config.prefix) {
         term.info(
           'Set the "prefix" field in dataverse.config.json to enable file watching.',
         );
@@ -68,17 +61,7 @@ export const initConfig = createCommand({
     }
 
     if (withEsbuild && !ecExists) {
-      const esbuildConfig = {
-        entryPoints: ["./src/app.ts"],
-        outdir: "dist",
-        minify: false,
-        format: "esm",
-        platform: "browser",
-        sourcemap: "inline",
-        splitting: false,
-        outExtension: { ".js": ".mjs" },
-        watch: ["src"],
-      };
+      const esbuildConfig = esbuildConfigSchema.parse({});
       await fs.writeFile(
         "esbuild.config.json",
         JSON.stringify(esbuildConfig, null, 2),
@@ -107,14 +90,7 @@ export const initConfig = createCommand({
     }
 
     if (withTailwind && !tcExists) {
-      const tailwindConfig = {
-        content: ["./src"],
-        extensions: ["html", "js", "jsx", "tsx"],
-        css: "./src/tailwind.css",
-        outfile: "./dist/tailwind.css",
-        importCSS: '@import "tailwindcss";',
-        plugins: [],
-      };
+      const tailwindConfig = tailwindConfigSchema.parse({});
       await fs.writeFile(
         "tailwind.config.json",
         JSON.stringify(tailwindConfig, null, 2),
