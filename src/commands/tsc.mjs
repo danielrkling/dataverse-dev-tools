@@ -276,7 +276,7 @@ async function runCheck(fs) {
 
   for (const dir of scanDirs) {
     try {
-      const dirFiles = await fs.getFilesFromDirectory(dir);
+      const dirFiles = await fs.getFiles(dir);
       for (const [path, content] of Object.entries(dirFiles)) {
         const topDir = path.split('/')[0];
         if (excludedDirs.has(topDir)) continue;

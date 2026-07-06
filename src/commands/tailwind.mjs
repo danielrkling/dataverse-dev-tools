@@ -1,8 +1,9 @@
-import { createOptiquePlugin } from '../plugin.mjs';
+
 import { dirname, basename, join } from '../utils/path.mjs';
 import { readJSON } from '../utils/json.mjs';
-import { bundleToString } from './esbuild.mjs';
+
 import { object, optional, argument, choice } from '@optique/core';
+import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from '../utils/esbuild.mjs';
 
 const TAILWIND_VERSION = '4.1.6';
 const DEFAULT_EXTENSIONS = ['html', 'js', 'ts', 'jsx', 'tsx', 'mjs', 'css'];
@@ -93,13 +94,15 @@ function createLoadModule(fs) {
     }
 
     const fullPath = base && base !== '/' ? join(base, id) : id;
-    const [bundled] = await bundleToString(fs, {
+    const esbuild = await getEsbuild()
+    const result = await (esbuild).build({
       entryPoints: [fullPath],
       bundle: true,
       format: 'esm',
       write: false,
+      plugins:[aliasPlugin(),httpPlugin(),fsPlugin(fs)]
     });
-    const blob = new Blob([bundled.text], { type: 'application/javascript' });
+    const blob = new Blob([result.outputFiles[0].text], { type: 'application/javascript' });
     const url = URL.createObjectURL(blob);
     try {
       const mod = await import(url);
@@ -309,7 +312,7 @@ export async function collectContent(fs, entries, extensions) {
   for (const entry of entries) {
     let files;
     try {
-      files = await fs.getFilesFromDirectory(entry);
+      files = await fs.getFiles(entry);
     } catch {
       continue;
     }

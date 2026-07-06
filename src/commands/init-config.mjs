@@ -27,9 +27,9 @@ export const initConfig = createCommand({
   name: "init-config",
   parser: initConfigParser,
   aliases: ["ic"],
-  description: "Create default config files",
-  usage: "init-config [prefix] [--esbuild] [--tailwind] [--tsc]",
-  brief: "Create default config files",
+  description: message`Create default config files`,
+  usage: message`init-config [prefix] [--esbuild] [--tailwind] [--tsc]`,
+  brief: message`Create default config files`,
   execute: async (parsed, term) => {
     const { fs } = term;
     const withEsbuild = parsed.esbuild;

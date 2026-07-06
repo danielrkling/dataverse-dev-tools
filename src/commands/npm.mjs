@@ -308,9 +308,9 @@ const npmParser = object({
 export const npmCommand = createCommand({
   name: "npm",
   parser: npmParser,
-  description: "Install npm packages",
-  usage: "npm install [package@version] [--ts-only]",
-  brief: "Install npm packages",
+  description: message`Install npm packages`,
+  usage: message`npm install [package@version] [--ts-only]`,
+  brief: message`Install npm packages`,
   execute: async (parsed, term) => {
     const { fs } = term;
     const tsOnly = parsed.tsOnly;

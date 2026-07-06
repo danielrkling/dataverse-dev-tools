@@ -1,7 +1,7 @@
 import { createCommand, WebTerminal } from "../terminal.mjs";
-import { bundleToString } from "./esbuild.mjs";
+import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
 import { readJSON } from "../utils/json.mjs";
-import { object, flag, argument, string, message } from "@optique/core";
+import { object, flag, argument, string, message, optional, option } from "@optique/core";
 
 const originalConsole = {
   log: console.log,
@@ -16,7 +16,7 @@ const originalConsole = {
  * @param {boolean} noCapture
  * @returns
  */
-function captureConsole(term, noCapture) {
+function captureConsole(term, noCapture = false) {
   if (noCapture) return () => {};
 
   console.log = (...args) => {
@@ -47,15 +47,15 @@ function captureConsole(term, noCapture) {
 }
 
 const runCommandParser = object({
-  raw: flag("--raw", {
+  raw: optional(option("--raw", {
     description: message`Do not bundle the file using esbuild`,
-  }),
-  noCapture: flag("--no-capture", {
+  })),
+  noCapture: optional(option("--no-capture", {
     description: message`Do not capture and redirect console outputs`,
-  }),
-  tsconfig: flag("--tsconfig", {
+  })),
+  tsconfig: optional(option("--tsconfig", {
     description: message`Merge compiler options from tsconfig.json`,
-  }),
+  })),
   file: argument(string({ metavar: "FILE" }), {
     description: message`File to execute`,
   }),
@@ -64,9 +64,9 @@ const runCommandParser = object({
 export const runCommand = createCommand({
   name: "run",
   parser: runCommandParser,
-  description: "Execute a file in the terminal context",
-  usage: "run [--raw] [--no-capture] [--tsconfig] <file>",
-  brief: "Execute a file in the terminal context",
+  description: message`Execute a file in the terminal context`,
+  usage: message`run [--raw] [--no-capture] [--tsconfig] <file>`,
+  brief: message`Execute a file in the terminal context`,
   execute: async (parsed, term) => {
     const { fs } = term;
     const raw = parsed.raw;
@@ -83,31 +83,24 @@ export const runCommand = createCommand({
           const fileConfig = (await readJSON(fs, "esbuild.config.json")) || {};
           const { watch: _w, plugins: _p, ...baseConfig } = fileConfig;
 
-          let esbuildConfig = {
-            ...baseConfig,
+
+
+          const esbuild = await getEsbuild()
+          const result = await esbuild.build({
+                        ...baseConfig,
             entryPoints: [file],
             bundle: true,
             format: "iife",
             write: false,
-          };
+            plugins:[aliasPlugin(),httpPlugin(),fsPlugin(fs)]
+          })
 
-          if (useTsconfig) {
-            const tsconfig = await readJSON(fs, "tsconfig.json");
-            if (tsconfig?.compilerOptions) {
-              const { target, jsx, jsxFactory, jsxFragmentFactory } =
-                tsconfig.compilerOptions;
-              if (target) esbuildConfig.target = target.toLowerCase();
-              if (jsx) esbuildConfig.jsx = jsx;
-              if (jsxFactory) esbuildConfig.jsxFactory = jsxFactory;
-              if (jsxFragmentFactory)
-                esbuildConfig.jsxFragment = jsxFragmentFactory;
-            }
-          }
+          code = result.outputFiles?.[0].text ?? "";
 
-          const outputs = await bundleToString(fs, esbuildConfig);
-          if (outputs.length === 0) return "run: no output from bundler";
-          code = outputs[0].text;
+          return await new Function(code)()
         }
+
+        term.log(code)
 
         const result = await new Function(`
               const module = { exports: {} };
