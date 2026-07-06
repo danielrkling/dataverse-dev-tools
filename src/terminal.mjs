@@ -1,6 +1,6 @@
-import { runParser } from "@optique/core";
+import { command, message, or, parse, runParser } from "@optique/core";
+import parseArgs from "string-argv";
 import { WebFileSystem } from "./fs.mjs";
-import { parseCommandWithQuotes } from "./parser.mjs";
 
 
 export class WebTerminal extends HTMLElement {
@@ -105,7 +105,6 @@ export class WebTerminal extends HTMLElement {
         this._prompt = /** @type {HTMLSpanElement} */ (root.querySelector("#prompt"));
     }
 
-
     connectedCallback() {
         this._input.addEventListener("keydown", (e) => this._onKeyDown(e));
         this.addEventListener("click", (e) => {
@@ -152,7 +151,7 @@ export class WebTerminal extends HTMLElement {
      * @returns {HTMLDivElement}
      */
     info(content) {
-        return this.log(content, { class: 'log-info' });
+        return this.log(content, { class: "log-info" });
     }
 
     /**
@@ -161,7 +160,7 @@ export class WebTerminal extends HTMLElement {
      * @returns {HTMLDivElement}
      */
     error(content) {
-        return this.log(content, { class: 'log-error' });
+        return this.log(content, { class: "log-error" });
     }
 
     /**
@@ -170,7 +169,7 @@ export class WebTerminal extends HTMLElement {
      * @returns {HTMLDivElement}
      */
     success(content) {
-        return this.log(content, { class: 'log-success' });
+        return this.log(content, { class: "log-success" });
     }
 
     /** Clear all terminal output */
@@ -180,7 +179,7 @@ export class WebTerminal extends HTMLElement {
 
     /** @returns {string} */
     get prompt() {
-        return this._prompt.textContent ?? '';
+        return this._prompt.textContent ?? "";
     }
 
     /** @param {string} text */
@@ -203,7 +202,7 @@ export class WebTerminal extends HTMLElement {
                     this._historyIndex = -1;
                     this.log(`${this.prompt}> ${text}`, { class: "log-echo" });
                     this._input.value = "";
-                    this._processCommand(text);
+                    this.processCommand(text);
                 }
                 break;
             case "ArrowUp":
@@ -226,50 +225,62 @@ export class WebTerminal extends HTMLElement {
         }
     }
 
-    /** @type {Map<string, TerminalCommand<any, any>>} */
+    /** @type {Map<string, TerminalCommand<import("@optique/core").Parser<any>>>} */
     commands = new Map();
 
     /**
      * @template {import("@optique/core").Parser<any>} TParser
-     * @template TResult
-     * @param {TerminalCommand<TParser, TResult>} command
+     * @param {TerminalCommand<TParser>} cmd
      */
-    registerCommand(command) {
-        this.commands.set(command.name, command);
-        if (command.aliases) {
-            for (const alias of command.aliases) {
-                this.commands.set(alias, command);
+    registerCommand(cmd) {
+        this.commands.set(cmd.name, cmd);
+        if (cmd.aliases) {
+            for (const alias of cmd.aliases) {
+                this.commands.set(alias, cmd);
             }
         }
-        command.init?.(this);
-
+        cmd.init?.(this);
     }
 
     /**
      * @param {string} text
      */
-    async _processCommand(text) {
-        const args = parseCommandWithQuotes(text);
-        const name = args[0] || '';
+    async processCommand(text) {
+        const args = parseArgs(text);
+        const name = args[0] || "";
 
         const command = this.commands.get(name);
 
         if (command) {
             try {
-                const parsedArgs = runParser({ parser: command.parser, metadata: { name: command.name } }, args.slice(1));
-                const result = await command.execute(parsedArgs, this);
+                
+                /** @type {import("@optique/core/program").Program<any,any>} */
+                const program = ({
+                    parser: command.parser,
+                    metadata: { name: command.name, brief: command.brief, description: command.description },
+                });
+
+                const result = runParser(program, args.slice(1), {
+                    help: {
+                        // Enable help functionality
+                        option: true, // Enable --help option
+                        onShow: () => false,
+                    },
+                    stdout: (v) => this.info(v),
+                    stderr: (v) => this.error(v),
+                });
+
                 if (result) {
-                    this.log(result);
+                    const executeResult = await command.execute(result, this);
+                    if (executeResult) this.log(executeResult);
                 }
             } catch (error) {
-                this.log(error.message, { class: 'log-error' });
+                this.log(error.message, { class: "log-error" });
                 console.error(`Error executing command '${name}':`, error);
             }
-            return;
+        } else {
+            this.log(`Command not found: ${name}`, { class: "log-error" });
         }
-
-        this.log(`Command not found: ${name}`, { class: "log-error" });
-        return;
     }
 }
 
@@ -277,24 +288,21 @@ customElements.define("web-terminal", WebTerminal);
 
 /**
  * @template {import("@optique/core").Parser<any>} TParser
- * @template TResult
  * @typedef {object} TerminalCommand
  * @property {string} name
- * @property {string[]} [aliases]
- * @property {string} description
- * @property {string} [usage]
- * @property {string} [brief]
+ * @property {[string, ...string[]]} [aliases]
+ * @property {import("@optique/core").Message} description
+ * @property {import("@optique/core").Message} [usage]
+ * @property {import("@optique/core").Message} [brief]
  * @property {TParser} parser
- * @property {(args: import("@optique/core").InferValue<TParser>, terminal: WebTerminal) => TResult | Promise<TResult>} execute
+ * @property {(args: import("@optique/core").InferValue<TParser>, terminal: WebTerminal) => string | undefined | Promise<string | undefined>} execute
  * @property {(terminal: WebTerminal) => void} [init]
  */
 
 /**
  * @template {import("@optique/core").Parser<any>} TParser
- * @template TResult
- * @param {TerminalCommand<TParser, TResult>} command
+ * @param {TerminalCommand<TParser>} command
  */
 export function createCommand(command) {
     return command;
 }
-

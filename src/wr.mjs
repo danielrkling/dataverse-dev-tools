@@ -20,15 +20,15 @@ const validPrefix = /^[a-zA-Z].*_/;
  * @returns
  */
 function getHeaders(solution) {
-  const headers = new Headers({
-    "OData-MaxVersion": "4.0",
-    "OData-Version": "4.0",
-    "Content-Type": "application/json; charset=utf-8",
-    Accept: "application/json",
-    Prefer: "return=representation",
-  });
-  if (solution) headers.set("MSCRM.SolutionUniqueName", solution);
-  return headers;
+    const headers = new Headers({
+        "OData-MaxVersion": "4.0",
+        "OData-Version": "4.0",
+        "Content-Type": "application/json; charset=utf-8",
+        Accept: "application/json",
+        Prefer: "return=representation",
+    });
+    if (solution) headers.set("MSCRM.SolutionUniqueName", solution);
+    return headers;
 }
 
 /**
@@ -37,12 +37,12 @@ function getHeaders(solution) {
  * @returns {Promise<WebResource>}
  */
 export async function getWebResource(name) {
-  return fetch(
-    `/api/data/v9.2/webresourceset?$select=name,webresourceid,content,webresourcetype,modifiedon,createdon&$filter=name eq '${name}'&$top=1`,
-    { headers: getHeaders() },
-  )
-    .then((r) => r.json())
-    .then((body) => body.value[0]);
+    return fetch(
+        `/api/data/v9.2/webresourceset?$select=name,webresourceid,webresourcetype,modifiedon,createdon&$filter=name eq '${name}'&$top=1`,
+        { headers: getHeaders() },
+    )
+        .then((r) => r.json())
+        .then((body) => body.value[0]);
 }
 
 /**
@@ -51,12 +51,12 @@ export async function getWebResource(name) {
  * @returns {Promise<WebResource[]>}
  */
 export async function getWebResources(root) {
-  return fetch(
-    `/api/data/v9.2/webresourceset?$select=name,webresourceid,content,webresourcetype,modifiedon,createdon&$filter=startswith(name,'${root}')`,
-    { headers: getHeaders() },
-  )
-    .then((r) => r.json())
-    .then((v) => v.value);
+    return fetch(
+        `/api/data/v9.2/webresourceset?$select=name,webresourceid,webresourcetype,modifiedon,createdon&$filter=startswith(name,'${root}')`,
+        { headers: getHeaders() },
+    )
+        .then((r) => r.json())
+        .then((v) => v.value);
 }
 
 /**
@@ -64,53 +64,54 @@ export async function getWebResources(root) {
  * @param {string} name
  */
 export async function deleteWebResource(name) {
-  return getWebResource(name).then((wr) => {
-    if (wr) {
-      return fetch(`/api/data/v9.2/webresourceset(${wr.webresourceid})`, {
-        headers: getHeaders(),
-        method: "DELETE",
-      });
-    }
-  });
+    return getWebResource(name).then((wr) => {
+        if (wr) {
+            return fetch(`/api/data/v9.2/webresourceset(${wr.webresourceid})`, {
+                headers: getHeaders(),
+                method: "DELETE",
+            });
+        }
+    });
 }
 
-/** @type {Map<string, string>} */
-const wrIdCache = new Map();
+/** @type {Map<string,WebResource>} */
+const cache = new Map();
 
 /**
  *
  * @param {string} name
  * @param {string} text
  * @param {string} [solution]
- * @returns {Promise<WebResource | undefined>}
+ * @returns {Promise<WebResource>}
  */
 export async function uploadWebResource(name, text, solution) {
-  if (!isValidWebResource(name) || !text) return;
+    if (!isValidWebResource(name)) throw new Error(`${name} is not a valid web resource name`);
+    if (!text) throw new Error(`Content cannot be empty`);
+    let wr = cache.get(name);
+    if (wr) {
+        await fetch(`/api/data/v9.2/webresourceset(${wr.webresourceid})/content`, {
+            headers: getHeaders(solution),
+            method: "PUT",
+            body: JSON.stringify({
+                value: b64EncodeUnicode(text),
+            }),
+        });
+        return wr;
+    }
+    wr = await getWebResource(name);
+    cache.set(name, wr);
+    const webresourcetype = getWebResourceType(name);
+    const result = await fetch(`/api/data/v9.2/webresourceset(${wr?.webresourceid ?? ""})?$select=name,webresourceid`, {
+        headers: getHeaders(solution),
+        method: wr ? "PATCH" : "POST",
+        body: JSON.stringify({
+            content: b64EncodeUnicode(text),
+            webresourcetype,
+            name,
+        }),
+    }).then((r) => r.json());
 
-  let webresourceid = wrIdCache.get(name);
-  if (!webresourceid) {
-    const wr = await getWebResource(name);
-    webresourceid = wr?.webresourceid;
-    if (webresourceid) wrIdCache.set(name, webresourceid);
-  }
-
-  const webresourcetype = getWebResourceType(name);
-  const url = webresourceid
-    ? `/api/data/v9.2/webresourceset(${webresourceid})?$select=name,webresourceid`
-    : `/api/data/v9.2/webresourceset?$select=name,webresourceid`;
-
-  const result = await fetch(url, {
-    headers: getHeaders(solution),
-    method: webresourceid ? "PATCH" : "POST",
-    body: JSON.stringify({
-      content: b64EncodeUnicode(text),
-      webresourcetype,
-      name,
-    }),
-  }).then((r) => r.json());
-
-  if (result?.webresourceid) wrIdCache.set(name, result.webresourceid);
-  return result;
+    return wr;
 }
 
 /**
@@ -118,8 +119,8 @@ export async function uploadWebResource(name, text, solution) {
  * @param {string} name
  */
 export function isValidWebResource(name) {
-  const webresourcetype = getWebResourceType(name);
-  return validPrefix.test(name) && webresourcetype;
+    const webresourcetype = getWebResourceType(name);
+    return validPrefix.test(name) && webresourcetype;
 }
 
 /**
@@ -128,18 +129,18 @@ export function isValidWebResource(name) {
  * @param {string} [solution]
  */
 export async function publishWebResources(value, solution) {
-  value = value.filter((v) => v && v.webresourceid);
-  if (value.length) {
-    return fetch(`/api/data/v9.2/PublishXml`, {
-      method: "POST",
-      headers: getHeaders(solution),
-      body: JSON.stringify({
-        ParameterXml: `<importexportxml><webresources>${value
-          .map((wr) => `<webresource>${wr.webresourceid}</webresource>`)
-          .join("")}</webresources></importexportxml>`,
-      }),
-    });
-  }
+    value = value.filter((v) => v && v.webresourceid);
+    if (value.length) {
+        return fetch(`/api/data/v9.2/PublishXml`, {
+            method: "POST",
+            headers: getHeaders(solution),
+            body: JSON.stringify({
+                ParameterXml: `<importexportxml><webresources>${value
+                    .map((wr) => `<webresource>${wr.webresourceid}</webresource>`)
+                    .join("")}</webresources></importexportxml>`,
+            }),
+        });
+    }
 }
 
 /**
@@ -148,11 +149,9 @@ export async function publishWebResources(value, solution) {
  * @returns
  */
 function b64EncodeUnicode(str) {
-  return btoa(
-    encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) =>
-      String.fromCharCode(parseInt("0x" + p1, 16)),
-    ),
-  );
+    return btoa(
+        encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => String.fromCharCode(parseInt("0x" + p1, 16))),
+    );
 }
 
 /**
@@ -163,12 +162,12 @@ function b64EncodeUnicode(str) {
  * @returns {string} The original, decoded Unicode string.
  */
 function b64DecodeUnicode(str) {
-  return decodeURIComponent(
-    atob(str)
-      .split("")
-      .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-      .join(""),
-  );
+    return decodeURIComponent(
+        atob(str)
+            .split("")
+            .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+            .join(""),
+    );
 }
 
 /**
@@ -177,37 +176,37 @@ function b64DecodeUnicode(str) {
  * @returns
  */
 function getWebResourceType(name) {
-  switch (name.split(".").pop()) {
-    case "html":
-    case "htm":
-      return 1;
-    case "css":
-      return 2;
-    case "js":
-    case "mjs":
-      return 3;
-    case "xml":
-      return 4;
-    case "png":
-      return 5;
-    case "jpg":
-      return 6;
-    case "gif":
-      return 7;
-    case "xap":
-      return 8;
-    case "xsl":
-    case "xslt":
-      return 9;
-    case "ico":
-      return 10;
-    case "svg":
-      return 11;
-    case "resx":
-      return 12;
-    default:
-      return null; // or any default value you prefer
-  }
+    switch (name.split(".").pop()) {
+        case "html":
+        case "htm":
+            return 1;
+        case "css":
+            return 2;
+        case "js":
+        case "mjs":
+            return 3;
+        case "xml":
+            return 4;
+        case "png":
+            return 5;
+        case "jpg":
+            return 6;
+        case "gif":
+            return 7;
+        case "xap":
+            return 8;
+        case "xsl":
+        case "xslt":
+            return 9;
+        case "ico":
+            return 10;
+        case "svg":
+            return 11;
+        case "resx":
+            return 12;
+        default:
+            return null; // or any default value you prefer
+    }
 }
 
 /**
@@ -225,10 +224,7 @@ function getWebResourceType(name) {
  * @returns {Promise<Solution[]>}
  */
 export async function getSolutions() {
-  return fetch(
-    `/api/data/v9.2/solutions?$select=friendlyname,uniquename&$filter=ismanaged eq false`,
-  )
-    .then((s) => s.json())
-    .then((v) => v.value);
+    return fetch(`/api/data/v9.2/solutions?$select=friendlyname,uniquename&$filter=ismanaged eq false`)
+        .then((s) => s.json())
+        .then((v) => v.value);
 }
-
