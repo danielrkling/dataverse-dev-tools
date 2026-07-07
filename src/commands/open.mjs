@@ -96,7 +96,7 @@ async function loadFS(terminal, fs) {
     }
 }
 
-const debounceEmit = createDebouncer(150);
+const debounceEmit = createDebouncer(100);
 
 /**
  *

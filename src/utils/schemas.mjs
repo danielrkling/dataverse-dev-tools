@@ -22,7 +22,11 @@ function dropEmpty(schema) {
 
 export const esbuildConfigSchema = z.object({
   // Input
-  entryPoints: dropEmpty(z.array(z.string()).default(["./src/app.ts"])),
+  entryPoints: dropEmpty(
+    z.union([z.string(), z.array(z.string())])
+      .transform(v => typeof v === "string" ? [v] : v)
+      .default(["./src/app.ts"]),
+  ),
   loader: dropEmpty(z.record(z.string(), z.string()).optional()),
 
   // Output contents
@@ -116,9 +120,10 @@ export const dataverseConfigSchema = z.object({
 });
 
 export const tailwindConfigSchema = z.object({
-  content: dropEmpty(z.array(z.string()).default(["./src"])),
-  extensions: dropEmpty(
-    z.array(z.string()).default(["html", "js", "ts", "jsx", "tsx", "mjs"]),
+  content: dropEmpty(
+    z.union([z.string(), z.array(z.string())])
+      .transform(v => typeof v === "string" ? [v] : v)
+      .default(["./src/**/*.{html,js,ts,jsx,tsx,mjs}"]),
   ),
   css: z
     .union([z.string(), z.array(z.string())])

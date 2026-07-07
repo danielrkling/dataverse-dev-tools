@@ -2,11 +2,11 @@ import { dirname, join } from "../utils/path.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { tailwindConfigSchema } from "../utils/schemas.mjs";
 import { createCommand } from "../terminal.mjs";
-import { object, optional, argument, choice, message } from "@optique/core";
+import { object, optional, argument, choice, message, option, string, multiple } from "@optique/core";
 import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
+import picomatch from "picomatch";
 
 const TAILWIND_VERSION = "4.1.6";
-const DEFAULT_EXTENSIONS = ["html", "js", "ts", "jsx", "tsx", "mjs", "css"];
 const COMPILE_URL = `https://esm.sh/tailwindcss@${TAILWIND_VERSION}`;
 const ISO_URL = "https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser.js";
 const CSS_BASE = `https://cdn.jsdelivr.net/npm/tailwindcss@${TAILWIND_VERSION}`;
@@ -151,30 +151,23 @@ function buildCSSInput(config) {
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {string[]} dirs
- * @param {string[]} extensions
+ * @param {string[]} globs
  * @returns {Promise<string[]>}
  */
-async function extractClasses(fs, dirs, extensions) {
+async function extractClasses(fs, globs) {
   await ensureWasmLoaded();
   const classes = new Set();
+  const isMatch = picomatch(globs.map(g => g.replace(/^\.\//, "")));
+
+  const files = await fs.getFilesFromDirectory("", isMatch);
 
   /** @type {Record<string, string[]>} */
   const byExt = {};
-  for (const entry of dirs) {
-    let files;
-    try {
-      files = await fs.getFilesFromDirectory(entry);
-    } catch {
-      continue;
-    }
-    for (const [filePath, content] of files) {
-      const dot = filePath.lastIndexOf(".");
-      if (dot === -1) continue;
-      const ext = filePath.slice(dot + 1);
-      if (extensions && extensions.length > 0 && !extensions.includes(ext)) continue;
-      (byExt[ext] ||= []).push(content);
-    }
+  for (const [filePath, content] of files) {
+    const dot = filePath.lastIndexOf(".");
+    if (dot === -1) continue;
+    const ext = filePath.slice(dot + 1);
+    (byExt[ext] ||= []).push(content);
   }
 
   for (const [ext, contents] of Object.entries(byExt)) {
@@ -188,7 +181,7 @@ async function extractClasses(fs, dirs, extensions) {
 }
 
 /**
- * @param {{ content?: string[], extensions?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
+ * @param {{ content?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
  * @param {import('../fs.mjs').WebFileSystem} fs
  * @returns {{ getOrCreateCompiler(): Promise<any>, invalidateCache(): void }}
  */
@@ -213,7 +206,7 @@ function createCompilerCache(config, fs) {
 }
 
 /**
- * @param {{ content?: string[], extensions?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
+ * @param {{ content?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
  * @param {import('../fs.mjs').WebFileSystem} fs
  * @param {import('../terminal.mjs').WebTerminal} term
  * @returns {Promise<{outfile: string, bytes: number, classes: number}>}
@@ -221,9 +214,8 @@ function createCompilerCache(config, fs) {
 async function runBuild(config, fs, term) {
   const cache = createCompilerCache(config, fs);
   const c = await cache.getOrCreateCompiler();
-  const dirs = config.content || ["."];
-  const extensions = config.extensions?.length ? config.extensions : DEFAULT_EXTENSIONS;
-  const classes = await extractClasses(fs, dirs, extensions);
+  const globs = config.content || ["./src/**/*.{html,js,ts,jsx,tsx,mjs}"];
+  const classes = await extractClasses(fs, globs);
   const result = await c.build(classes);
   const outfile = config.outfile || "./dist/tailwind.css";
   const dir = dirname(outfile);
@@ -236,6 +228,18 @@ async function runBuild(config, fs, term) {
 
 const tailwindParser = object({
   action: optional(argument(choice(["build", "watch"]), { description: message`Tailwind action (build or watch)` })),
+  input: optional(option("-i", "--input", string({ metavar: "FILE" }), {
+    description: message`Input CSS file`,
+  })),
+  output: optional(option("-o", "--output", string({ metavar: "FILE" }), {
+    description: message`Output CSS file`,
+  })),
+  watch: optional(option("--watch", {
+    description: message`Watch for changes and rebuild`,
+  })),
+  content: multiple(option("--content", string({ metavar: "GLOB" }), {
+    description: message`Glob pattern for content files to scan`,
+  })),
 });
 
 export default createCommand({
@@ -243,7 +247,7 @@ export default createCommand({
   parser: tailwindParser,
   aliases: ["tw"],
   description: message`Generate Tailwind CSS using compile() API with WasmScanner`,
-  usage: message`tailwind [build|watch]`,
+  usage: message`tailwind [build|watch] [-i FILE] [-o FILE] [--watch] [--content GLOB]...`,
   brief: message`Generate Tailwind CSS using compile() API with WasmScanner`,
   execute: async (parsed, term) => {
     const rawConfig = (await readJSON(term.fs, "tailwind.config.json")) || {};
@@ -253,26 +257,37 @@ export default createCommand({
     }
     const config = parsedConfig.success ? parsedConfig.data : tailwindConfigSchema.parse({});
 
-    const sub = /** @type {string} */ (parsed.action || "build");
+    if (parsed.input) config.css = [parsed.input];
+    if (parsed.output) config.outfile = parsed.output;
+    if (parsed.content?.length) config.content = parsed.content;
+
+    const sub = parsed.watch ? "watch" : /** @type {string} */ (parsed.action || "build");
 
     if (sub === "watch") {
       const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
       term.success(`Built ${outfile} (${bytes} bytes, ${classes} classes)`);
 
-      term.addEventListener("fs:modified", async (/** @type {CustomEvent} */ e) => {
+      const isMatch = picomatch(config.content.map(g => g.replace(/^\.\//, "")));
+      const handler = async (/** @type {CustomEvent} */ e) => {
         const path = e.detail?.path;
         if (!path) return;
-        const extensions = config.extensions?.length ? config.extensions : DEFAULT_EXTENSIONS;
-        const dot = path.lastIndexOf(".");
-        if (dot === -1) return;
-        if (!extensions.includes(path.slice(dot + 1))) return;
+        if (!isMatch(path)) return;
         try {
           const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
           term.info(`Rebuilt ${outfile} (${bytes} bytes, ${classes} classes)`);
         } catch (/** @type {any} */ e) {
           term.error(`Rebuild failed: ${e.message}`);
         }
+      };
+      
+      term.addEventListener("fs:modified", handler);
+      const stopBtn = document.createElement("button");
+      stopBtn.textContent = "⏹ stop watching";
+      stopBtn.addEventListener("click", () => {
+        term.removeEventListener("fs:modified", handler);
+        stopBtn.remove();
       });
+      term.log(stopBtn);
 
       term.info("Watching for changes...");
       return undefined;

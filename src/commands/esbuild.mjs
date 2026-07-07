@@ -5,9 +5,9 @@ import {
     object,
     optional,
     option,
+    argument,
     string,
     message,
-    argument,
     multiple,
     map,
     choice,
@@ -15,6 +15,7 @@ import {
 } from "@optique/core";
 import { createCommand } from "../terminal.mjs";
 import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
+import picomatch from "picomatch";
 
 /**
  * Convert esbuild-style --flag:value args to --flag value for optique parsing.
@@ -58,10 +59,9 @@ function splitEq(s) {
 // --- CLI PARSER ---
 
 const esbuildParser = object({
-    entryPoints: map(
-        multiple(argument(string({ metavar: "FILES" }))),
-        (v) => [...v],
-    ),
+    entryPoints: multiple(argument(string({ metavar: "FILES" }), {
+        description: message`Entry point files or glob patterns`,
+    })),
 
     // General
     bundle: optional(option("--bundle", { description: message`Bundle all dependencies into the output files` })),
@@ -351,8 +351,19 @@ export default createCommand({
         const validated = parsedConfig.success ? parsedConfig.data : merged;
 
         const watchMode = validated.watch;
-        const { watch: _w, ...buildOptions } = {
-            ...validated,
+        const { watch: _w, entryPoints: epPatterns, ...rest } = validated;
+
+        const isMatch = picomatch(epPatterns.map(p => p.replace(/^\.\//, "")));
+        const matched = await terminal.fs.getFilesFromDirectory("", isMatch);
+        const resolvedEntryPoints = matched.length > 0
+            ? matched.map(([p]) => `/${p}`)
+            : epPatterns.map(p => p.startsWith("/") ? p : `/${p}`);
+
+        console.log(`Resolved entry points: ${resolvedEntryPoints.join(", ")}`);
+
+        const buildOptions = {
+            ...rest,
+            entryPoints: resolvedEntryPoints,
             write: false,
             plugins: [aliasPlugin(), httpPlugin(), fsPlugin(terminal.fs)],
         };
@@ -366,7 +377,7 @@ export default createCommand({
                 terminal.success(`Wrote ${output.path} (${output.contents.length} bytes)`);
             }
             let filesToWatch = Object.keys(result.metafile?.inputs ?? {}).map((v) => v.split(":")[1]);
-            terminal.addEventListener("fs:modified", async (e) => {
+            const handler = async (e) => {
                 const path = /** @type {any} */ (e).detail?.path;
                 if (!path) return;
                 if (filesToWatch.includes(path)) {
@@ -381,8 +392,16 @@ export default createCommand({
                         terminal.error(`Rebuild failed: ${/** @type {any} */ (err).message}`);
                     }
                 }
+            };
+            terminal.addEventListener("fs:modified", handler);
+            const stopBtn = document.createElement("button");
+            stopBtn.textContent = "⏹ stop watching";
+            stopBtn.addEventListener("click", () => {
+                context.dispose();
+                terminal.removeEventListener("fs:modified", handler);
+                stopBtn.remove();
             });
-            terminal.info("Watching for changes...");
+            terminal.log(stopBtn);
         } else {
             const esbuild = await getEsbuild();
             const result = await esbuild.build({ ...buildOptions, plugins: [fsPlugin(terminal.fs)] });

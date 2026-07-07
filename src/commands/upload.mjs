@@ -2,15 +2,18 @@ import { uploadWebResource, publishWebResources, isValidWebResource } from "../w
 import { createCommand, WebTerminal } from "../terminal.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { dataverseConfigSchema } from "../utils/schemas.mjs";
-import { object, argument, string, message, option, optional } from "@optique/core";
+import { object, argument, string, message, option, optional, multiple } from "@optique/core";
 import picomatch from "picomatch";
 
 const uploadParser = object({
-    path: argument(string({ metavar: "PATH" }), {
-        description: message`File or directory to upload`,
-    }),
+    paths: multiple(argument(string({ metavar: "FILES" }), {
+        description: message`Files or glob patterns to upload`,
+    })),
     prefix: optional(option("-p", "--prefix", string({ metavar: "PREFIX" }))),
     solution: optional(option("-s", "--solution", string({ metavar: "SOLUTION" }))),
+    watch: optional(option("--watch", {
+        description: message`Watch for changes and auto-upload`,
+    })),
 });
 
 export const uploadCommand = createCommand({
@@ -18,7 +21,7 @@ export const uploadCommand = createCommand({
     parser: uploadParser,
     aliases: ["ul"],
     description: message`Upload web resources to Dataverse`,
-    usage: message`upload <path> [--publish]`,
+    usage: message`upload [files..] [options]`,
     brief: message`Upload web resources to Dataverse`,
     execute: async (parsed, term) => {
         const raw = await term.fs.readFile("dataverse.config.json", { encoding: "utf8" });
@@ -31,17 +34,38 @@ export const uploadCommand = createCommand({
             }
             return result.data;
         })();
-        const path = parsed.path;
-
-
-        const content = await term.fs.readFile(path, { encoding: "utf8" });
+        const paths = parsed.paths;
+        const entries = await Promise.all(
+            paths.map(async (path) => {
+                const content = await term.fs.readFile(path, { encoding: "utf8" });
+                return [path, content];
+            }),
+        );
 
         const config = {
             ...configFile,
             parsed,
         };
 
-        uploadFiles([[path, content]], term, config);
+        uploadFiles(entries, term, config);
+
+        if (parsed.watch) {
+            const isMatch = picomatch(paths);
+            const handler = async (e) => {
+                const changedPath = /** @type {any} */ (e).detail?.path;
+                if (!changedPath || !isMatch(changedPath)) return;
+                const content = await term.fs.readFile(changedPath, { encoding: "utf8" });
+                uploadFiles([[changedPath, content]], term, config);
+            };
+            term.addEventListener("fs:modified", handler);
+            const stopBtn = document.createElement("button");
+            stopBtn.textContent = "⏹ stop watching";
+            stopBtn.addEventListener("click", () => {
+                term.removeEventListener("fs:modified", handler);
+                stopBtn.remove();
+            });
+            term.log(stopBtn);
+        }
     },
 
     init: async (term) => {
