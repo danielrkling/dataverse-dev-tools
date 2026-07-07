@@ -1,6 +1,7 @@
 import { command, message, or, parse, runParser } from "@optique/core";
 import parseArgs from "string-argv";
 import { WebFileSystem } from "./fs.mjs";
+import { saveCommandHistory, loadCommandHistory, clearCommandHistory } from "./utils/history.mjs";
 
 
 export class WebTerminal extends HTMLElement {
@@ -187,6 +188,27 @@ export class WebTerminal extends HTMLElement {
         this._prompt.textContent = text;
     }
 
+    /** @returns {string} */
+    _historyKey() {
+        return this.fs?.rootName || '_default';
+    }
+
+    /** @returns {Promise<void>} */
+    async _persistHistory() {
+        await saveCommandHistory(this._historyKey(), this._history);
+    }
+
+    /**
+     * @param {string} key
+     * @returns {Promise<string[]>}
+     */
+    async loadHistory(key) {
+        const h = await loadCommandHistory(key);
+        this._history = h;
+        this._historyIndex = -1;
+        return h;
+    }
+
     // --- Internal Methods ---
 
     /**
@@ -200,6 +222,7 @@ export class WebTerminal extends HTMLElement {
                 if (text) {
                     this._history.unshift(text);
                     this._historyIndex = -1;
+                    this._persistHistory();
                     this.log(`${this.prompt}> ${text}`, { class: "log-echo" });
                     this._input.value = "";
                     this.processCommand(text);

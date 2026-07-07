@@ -6,9 +6,11 @@ import {
   optional,
   argument,
   string,
-  choice,
   flag,
   message,
+  or,
+  command,
+  map,
 } from "@optique/core";
 
 // ---- tar extraction (inlined) ----
@@ -293,8 +295,7 @@ async function updatePackageJson(fs, name, version) {
   await fs.writeFile("package.json", JSON.stringify(pkg, null, 2));
 }
 
-const npmParser = object({
-  action: argument(choice(["install"]), { description: message`npm action` }),
+const installParser = map(object({
   spec: optional(
     argument(string({ metavar: "PACKAGE" }), {
       description: message`Package name to install`,
@@ -303,58 +304,92 @@ const npmParser = object({
   tsOnly: flag("--ts-only", {
     description: message`Only install TypeScript definition files`,
   }),
-});
+}), (r) => ({ subcommand: "install", ...r }));
+
+const runParser = map(object({
+  script: argument(string({ metavar: "SCRIPT" }), {
+    description: message`Script name from package.json`,
+  }),
+}), (r) => ({ subcommand: "run", ...r }));
+
+const npmParser = or(
+  command("install", installParser),
+  command("run", runParser),
+);
 
 export const npmCommand = createCommand({
   name: "npm",
   parser: npmParser,
-  description: message`Install npm packages`,
-  usage: message`npm install [package@version] [--ts-only]`,
-  brief: message`Install npm packages`,
+  description: message`Manage npm packages and scripts`,
+  usage: message`npm install [package@version] [--ts-only] | npm run <script>`,
+  brief: message`Manage npm packages and scripts`,
   execute: async (parsed, term) => {
     const { fs } = term;
-    const tsOnly = parsed.tsOnly;
-    const spec = parsed.spec;
+    const subcommand = /** @type {string} */ (parsed.subcommand);
 
-    if (spec) {
-      const { name, version } = parsePackageSpec(spec);
-      try {
-        await installOne(fs, term, name, version, tsOnly);
-        const meta = await fetchPackageMeta(name);
-        const versions = Object.keys(meta.versions || {});
-        const resolved = pickBestVersion(versions, version || "latest");
-        if (resolved) {
-          await updatePackageJson(fs, name, resolved);
-          term.success(`Added ${name}@${resolved} to package.json`);
+    if (subcommand === "install") {
+      const tsOnly = parsed.tsOnly;
+      const spec = parsed.spec;
+
+      if (spec) {
+        const { name, version } = parsePackageSpec(spec);
+        try {
+          await installOne(fs, term, name, version, tsOnly);
+          const meta = await fetchPackageMeta(name);
+          const versions = Object.keys(meta.versions || {});
+          const resolved = pickBestVersion(versions, version || "latest");
+          if (resolved) {
+            await updatePackageJson(fs, name, resolved);
+            term.success(`Added ${name}@${resolved} to package.json`);
+          }
+        } catch (e) {
+          return `npm install failed: ${e.message}`;
         }
-      } catch (e) {
-        return `npm install failed: ${e.message}`;
+        return "";
       }
-      return "";
-    }
 
-    let pkg;
-    try {
-      const raw = await fs.readFile("package.json", { encoding: "utf8" });
-      pkg = JSON.parse(/** @type {string} */ (raw));
-    } catch {
-      return "No package.json found.";
-    }
-
-    const deps = pkg.dependencies || {};
-    const entries = Object.entries(deps);
-    if (entries.length === 0) {
-      term.info("No dependencies in package.json");
-      return "";
-    }
-
-    for (const [depName, depRange] of entries) {
+      let pkg;
       try {
-        await installOne(fs, term, depName, depRange, tsOnly);
-      } catch (e) {
-        term.error(`  Failed to install ${depName}: ${e.message}`);
+        const raw = await fs.readFile("package.json", { encoding: "utf8" });
+        pkg = JSON.parse(/** @type {string} */ (raw));
+      } catch {
+        return "No package.json found.";
       }
+
+      const deps = pkg.dependencies || {};
+      const entries = Object.entries(deps);
+      if (entries.length === 0) {
+        term.info("No dependencies in package.json");
+        return "";
+      }
+
+      for (const [depName, depRange] of entries) {
+        try {
+          await installOne(fs, term, depName, depRange, tsOnly);
+        } catch (e) {
+          term.error(`  Failed to install ${depName}: ${e.message}`);
+        }
+      }
+      return "";
     }
-    return "";
+
+    if (subcommand === "run") {
+      const scriptName = parsed.script;
+      let pkg;
+      try {
+        const raw = await fs.readFile("package.json", { encoding: "utf8" });
+        pkg = JSON.parse(/** @type {string} */ (raw));
+      } catch {
+        return "No package.json found. Create one to define npm scripts.";
+      }
+      const scripts = pkg.scripts || {};
+      const scriptValue = scripts[scriptName];
+      if (!scriptValue) {
+        const available = Object.keys(scripts).join(", ");
+        return `Script "${scriptName}" not found. Available scripts: ${available || "(none)"}`;
+      }
+      term.info(`> ${scriptName}: ${scriptValue}`);
+      await term.processCommand(scriptValue);
+    }
   },
 });

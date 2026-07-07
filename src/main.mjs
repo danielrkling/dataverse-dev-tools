@@ -11,6 +11,7 @@ import {
     statCommand,
     mkdirCommand,
 } from "./commands/fs.mjs";
+import { historyCommand } from "./commands/history.mjs";
 import { initConfig } from "./commands/init-config.mjs";
 import { npmCommand } from "./commands/npm.mjs";
 import { openCommand } from "./commands/open.mjs";
@@ -26,6 +27,7 @@ export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-
 
 terminal.registerCommand(help);
 terminal.registerCommand(clear);
+terminal.registerCommand(historyCommand);
 terminal.registerCommand(flatten);
 terminal.registerCommand(lsCommand);
 terminal.registerCommand(catCommand);

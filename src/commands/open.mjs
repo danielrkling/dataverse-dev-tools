@@ -78,6 +78,7 @@ export const openCommand = createCommand({
 async function loadFS(terminal, fs) {
     const permission = await fs.verifyPermission();
     if (permission) {
+        await terminal._persistHistory();
         saveHandle(fs.rootName, fs.rootHandle);
         terminal.fs = fs;
 
@@ -85,9 +86,9 @@ async function loadFS(terminal, fs) {
 
         terminal.log(`Loading ${fs.rootName}`);
         terminal.prompt = fs.rootName;
+        terminal.loadHistory(fs.rootName);
 
         terminal.dispatchEvent(new CustomEvent("fs:init"))
-        
 
         await createObserver(terminal);
     } else {
@@ -130,8 +131,9 @@ async function createObserver(terminal) {
 }
 
 const DB_NAME = "filesystem-db";
-const STORE_NAME = "handles";
-const DB_VERSION = 1;
+const HANDLE_STORE = "handles";
+const HISTORY_STORE = "history";
+const DB_VERSION = 2;
 
 /**
  * @typedef {Object} StoredHandle
@@ -148,10 +150,13 @@ function openDB() {
         request.onupgradeneeded = () => {
             const db = request.result;
 
-            if (!db.objectStoreNames.contains(STORE_NAME)) {
-                db.createObjectStore(STORE_NAME, {
+            if (!db.objectStoreNames.contains(HANDLE_STORE)) {
+                db.createObjectStore(HANDLE_STORE, {
                     keyPath: "id",
                 });
+            }
+            if (!db.objectStoreNames.contains(HISTORY_STORE)) {
+                db.createObjectStore(HISTORY_STORE, { keyPath: "key" });
             }
         };
 
@@ -169,9 +174,9 @@ export async function saveHandle(id, handle) {
     const db = await openDB();
 
     return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, "readwrite");
+        const tx = db.transaction(HANDLE_STORE, "readwrite");
 
-        tx.objectStore(STORE_NAME).put({
+        tx.objectStore(HANDLE_STORE).put({
             id,
             handle,
             savedAt: Date.now(),
@@ -190,8 +195,8 @@ export async function getHandle(id) {
     const db = await openDB();
 
     return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, "readonly");
-        const req = tx.objectStore(STORE_NAME).get(id);
+        const tx = db.transaction(HANDLE_STORE, "readonly");
+        const req = tx.objectStore(HANDLE_STORE).get(id);
 
         req.onsuccess = () => {
             resolve(req.result?.handle ?? null);
@@ -206,8 +211,8 @@ export async function listHandles() {
     const db = await openDB();
 
     return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, "readonly");
-        const req = tx.objectStore(STORE_NAME).getAll();
+        const tx = db.transaction(HANDLE_STORE, "readonly");
+        const req = tx.objectStore(HANDLE_STORE).getAll();
 
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
@@ -222,9 +227,9 @@ export async function deleteHandle(id) {
     const db = await openDB();
 
     return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, "readwrite");
+        const tx = db.transaction(HANDLE_STORE, "readwrite");
 
-        tx.objectStore(STORE_NAME).delete(id);
+        tx.objectStore(HANDLE_STORE).delete(id);
 
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
