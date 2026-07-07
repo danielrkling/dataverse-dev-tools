@@ -276,14 +276,18 @@ export class WebTerminal extends HTMLElement {
 
         if (command) {
             try {
-                
+                let cmdArgs = args.slice(1);
+                if (command.transformArgs) {
+                    cmdArgs = command.transformArgs(cmdArgs);
+                }
+
                 /** @type {import("@optique/core/program").Program<any,any>} */
                 const program = ({
                     parser: command.parser,
                     metadata: { name: command.name, brief: command.brief, description: command.description },
                 });
 
-                const result = runParser(program, args.slice(1), {
+                const result = runParser(program, cmdArgs, {
                     help: {
                         // Enable help functionality
                         option: true, // Enable --help option
@@ -320,6 +324,7 @@ customElements.define("web-terminal", WebTerminal);
  * @property {TParser} parser
  * @property {(args: import("@optique/core").InferValue<TParser>, terminal: WebTerminal) => string | undefined | Promise<string | undefined>} execute
  * @property {(terminal: WebTerminal) => void} [init]
+ * @property {(args: string[]) => string[]} [transformArgs]
  */
 
 /**

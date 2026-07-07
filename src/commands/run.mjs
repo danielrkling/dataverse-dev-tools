@@ -1,7 +1,7 @@
 import { createCommand, WebTerminal } from "../terminal.mjs";
 import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
 import { readJSON } from "../utils/json.mjs";
-import { object, flag, argument, string, message, optional, option } from "@optique/core";
+import { object, argument, string, message, optional, option } from "@optique/core";
 
 const originalConsole = {
   log: console.log,

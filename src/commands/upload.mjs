@@ -2,7 +2,7 @@ import { uploadWebResource, publishWebResources, isValidWebResource } from "../w
 import { createCommand, WebTerminal } from "../terminal.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { dataverseConfigSchema } from "../utils/schemas.mjs";
-import { object, flag, argument, string, message, option, optional } from "@optique/core";
+import { object, argument, string, message, option, optional } from "@optique/core";
 import picomatch from "picomatch";
 
 const uploadParser = object({

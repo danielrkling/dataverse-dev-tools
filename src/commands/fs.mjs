@@ -1,5 +1,7 @@
 import { createCommand } from "../terminal.mjs";
-import { object, optional, argument, string, flag, message } from "@optique/core";
+import { object, optional, argument, string, option, message } from "@optique/core";
+
+
 
 const lsParser = object({
     path: optional(
@@ -32,9 +34,9 @@ const mkdirParser = object({
 });
 
 const rmParser = object({
-    r: flag("-r", {
+    r: optional(option("-r", {
         description: message`Remove directories and their contents recursively`,
-    }),
+    })),
     path: argument(string({ metavar: "PATH" }), {
         description: message`File or directory path to remove`,
     }),

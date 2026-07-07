@@ -1,7 +1,7 @@
 import { WebFileSystem } from "../fs.mjs";
 import { dirname, join, EXTENSIONS } from "../utils/path.mjs";
 import { readJSON } from "../utils/json.mjs";
-import { object, optional, flag, option, string, passThrough, message } from "@optique/core";
+import { object, optional, option, string, passThrough, message } from "@optique/core";
 import { createCommand } from "../terminal.mjs";
 
 // ---- esbuild-wasm (lazy loaded) ----

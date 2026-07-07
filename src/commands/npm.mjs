@@ -6,11 +6,11 @@ import {
   optional,
   argument,
   string,
-  flag,
   message,
   or,
   command,
-  map,
+  constant,
+  option,
 } from "@optique/core";
 
 // ---- tar extraction (inlined) ----
@@ -286,34 +286,46 @@ async function installOne(fs, term, name, version, tsOnly) {
  * @param {import('../fs.mjs').WebFileSystem} fs
  * @param {string} name
  * @param {string} version
+ * @param {boolean} [dev]
  */
-async function updatePackageJson(fs, name, version) {
+async function updatePackageJson(fs, name, version, dev) {
   /** @type {Record<string, any>} */
   const pkg = (await readJSON(fs, "package.json")) || {};
-  pkg.dependencies = pkg.dependencies || {};
-  pkg.dependencies[name] = `^${version}`;
+  if (dev) {
+    pkg.devDependencies = pkg.devDependencies || {};
+    pkg.devDependencies[name] = `^${version}`;
+  } else {
+    pkg.dependencies = pkg.dependencies || {};
+    pkg.dependencies[name] = `^${version}`;
+  }
   await fs.writeFile("package.json", JSON.stringify(pkg, null, 2));
 }
 
-const installParser = map(object({
+const installParser = object({
+  subcommand: constant("install"),
   spec: optional(
     argument(string({ metavar: "PACKAGE" }), {
       description: message`Package name to install`,
     }),
   ),
-  tsOnly: flag("--ts-only", {
+  tsOnly: optional(option("--ts-only", {
     description: message`Only install TypeScript definition files`,
-  }),
-}), (r) => ({ subcommand: "install", ...r }));
+  })),
+  dev: optional(option("-D", {
+    description: message`Save as a devDependency`,
+  })),
+});
 
-const runParser = map(object({
+const runParser = object({
+  subcommand: constant("run"),
   script: argument(string({ metavar: "SCRIPT" }), {
     description: message`Script name from package.json`,
   }),
-}), (r) => ({ subcommand: "run", ...r }));
+});
 
 const npmParser = or(
   command("install", installParser),
+  command("i", installParser),
   command("run", runParser),
 );
 
@@ -321,14 +333,15 @@ export const npmCommand = createCommand({
   name: "npm",
   parser: npmParser,
   description: message`Manage npm packages and scripts`,
-  usage: message`npm install [package@version] [--ts-only] | npm run <script>`,
+  usage: message`npm install [package@version] [--ts-only] [-D] | npm run <script>`,
   brief: message`Manage npm packages and scripts`,
   execute: async (parsed, term) => {
     const { fs } = term;
-    const subcommand = /** @type {string} */ (parsed.subcommand);
+    const subcommand = parsed.subcommand;
 
     if (subcommand === "install") {
-      const tsOnly = parsed.tsOnly;
+      const tsOnly = parsed.tsOnly ?? false;
+      const dev = parsed.dev ?? false;
       const spec = parsed.spec;
 
       if (spec) {
@@ -339,8 +352,9 @@ export const npmCommand = createCommand({
           const versions = Object.keys(meta.versions || {});
           const resolved = pickBestVersion(versions, version || "latest");
           if (resolved) {
-            await updatePackageJson(fs, name, resolved);
-            term.success(`Added ${name}@${resolved} to package.json`);
+            await updatePackageJson(fs, name, resolved, dev);
+            const target = dev ? "devDependencies" : "dependencies";
+            term.success(`Added ${name}@${resolved} to ${target}`);
           }
         } catch (e) {
           return `npm install failed: ${e.message}`;
@@ -356,8 +370,8 @@ export const npmCommand = createCommand({
         return "No package.json found.";
       }
 
-      const deps = pkg.dependencies || {};
-      const entries = Object.entries(deps);
+      const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+      const entries = Object.entries(allDeps);
       if (entries.length === 0) {
         term.info("No dependencies in package.json");
         return "";

@@ -5,18 +5,18 @@ import {
   optional,
   argument,
   string,
-  flag,
+  option,
   message,
 } from "@optique/core";
 
 const initConfigParser = object({
-  esbuild: flag("--esbuild", {
+  esbuild: optional(option("--esbuild", {
     description: message`Generate esbuild config file`,
-  }),
-  tailwind: flag("--tailwind", {
+  })),
+  tailwind: optional(option("--tailwind", {
     description: message`Generate tailwind config file`,
-  }),
-  tsc: flag("--tsc", { description: message`Generate tsconfig file` }),
+  })),
+  tsc: optional(option("--tsc", { description: message`Generate tsconfig file` })),
   prefix: optional(
     argument(string({ metavar: "PREFIX" }), {
       description: message`Prefix for solution web resources`,

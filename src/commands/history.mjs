@@ -1,6 +1,6 @@
 import { createCommand } from "../terminal.mjs";
 import { clearCommandHistory } from "../utils/history.mjs";
-import { object, flag, message, option, integer } from "@optique/core";
+import { object, message, option, integer, string, optional } from "@optique/core";
 
 export const historyCommand = createCommand({
   name: "history",
@@ -9,7 +9,7 @@ export const historyCommand = createCommand({
   usage: message`history [--clear] [-n N]`,
   brief: message`Show or clear command history`,
   parser: object({
-    clear: flag("--clear", { description: message`Clear the command history for this folder` }),
+    clear: optional(option("--clear", { description: message`Clear the command history for this folder` })),
     n: option("-n", integer({ metavar: "N" }), { description: message`Show last N entries` }),
   }),
   execute: async (parsed, term) => {
