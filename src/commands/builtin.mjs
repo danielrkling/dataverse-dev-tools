@@ -1,5 +1,5 @@
 import { createCommand } from "../terminal.mjs";
-import { object, optional, argument, string, message, formatDocPage, formatMessage } from "@optique/core";
+import { object, optional, argument, string, message, formatDocPage, formatMessage, multiple } from "@optique/core";
 
 export const help = createCommand({
     name: "help",
@@ -23,6 +23,22 @@ export const help = createCommand({
         console.log(cmds);
         const lines = cmds.map((c) => `  ${c.name.padEnd(15)} ${formatMessage(c.description)}`);
         term.info(`Available commands (${cmds.length}):\n${lines.join("\n")}`);
+    },
+});
+
+export const echo = createCommand({
+    name: "echo",
+    parser: object({
+        args: multiple(argument(string({ metavar: "TEXT" }), {
+            description: message`Text to print`,
+        })),
+    }),
+    aliases: ["print"],
+    description: message`Print text to the terminal`,
+    usage: message`echo [text]`,
+    brief: message`Print text to the terminal`,
+    execute: (parsed, term) => {
+        if (parsed.args) term.log(parsed.args.join(" "));
     },
 });
 

@@ -270,43 +270,59 @@ export class WebTerminal extends HTMLElement {
      */
     async processCommand(text) {
         const args = parseArgs(text);
-        const name = args[0] || "";
+        const groups = splitCommands(args);
 
+        if (groups.length === 1 && groups[0].length === 1) {
+            const [name, ...cmdArgs] = groups[0][0];
+            await this._execCommand(name, cmdArgs);
+        } else {
+            for (const parallelCmds of groups) {
+                await Promise.all(
+                    parallelCmds.map(cmd => this.processCommand(cmd.join(" "))),
+                );
+            }
+        }
+    }
+
+    /**
+     * @param {string} name
+     * @param {string[]} cmdArgs
+     */
+    async _execCommand(name, cmdArgs) {
         const command = this.commands.get(name);
 
-        if (command) {
-            try {
-                let cmdArgs = args.slice(1);
-                if (command.transformArgs) {
-                    cmdArgs = command.transformArgs(cmdArgs);
-                }
-
-                /** @type {import("@optique/core/program").Program<any,any>} */
-                const program = ({
-                    parser: command.parser,
-                    metadata: { name: command.name, brief: command.brief, description: command.description },
-                });
-
-                const result = runParser(program, cmdArgs, {
-                    help: {
-                        // Enable help functionality
-                        option: true, // Enable --help option
-                        onShow: () => false,
-                    },
-                    stdout: (v) => this.info(v),
-                    stderr: (v) => this.error(v),
-                });
-
-                if (result) {
-                    const executeResult = await command.execute(result, this);
-                    if (executeResult) this.log(executeResult);
-                }
-            } catch (error) {
-                this.log(error.message, { class: "log-error" });
-                console.error(`Error executing command '${name}':`, error);
-            }
-        } else {
+        if (!command) {
             this.log(`Command not found: ${name}`, { class: "log-error" });
+            return;
+        }
+
+        try {
+            if (command.transformArgs) {
+                cmdArgs = command.transformArgs(cmdArgs);
+            }
+
+            /** @type {import("@optique/core/program").Program<any,any>} */
+            const program = ({
+                parser: command.parser,
+                metadata: { name: command.name, brief: command.brief, description: command.description },
+            });
+
+            const result = runParser(program, cmdArgs, {
+                help: {
+                    option: true,
+                    onShow: () => false,
+                },
+                stdout: (v) => this.info(v),
+                stderr: (v) => this.error(v),
+            });
+
+            if (result) {
+                const executeResult = await command.execute(result, this);
+                if (executeResult) this.log(executeResult);
+            }
+        } catch (error) {
+            this.log(error.message, { class: "log-error" });
+            console.error(`Error executing command '${name}':`, error);
         }
     }
 }
@@ -326,6 +342,45 @@ customElements.define("web-terminal", WebTerminal);
  * @property {(terminal: WebTerminal) => void} [init]
  * @property {(args: string[]) => string[]} [transformArgs]
  */
+
+/**
+ * Split an argv array into serial groups (`&&`) and parallel commands (`&`).
+ * @param {string[]} argv
+ * @returns {string[][][]} serial groups of parallel commands
+ */
+function splitCommands(argv) {
+    const serialGroups = [];
+    let currentParallel = [];
+    let currentCmd = [];
+
+    for (const token of argv) {
+        if (token === "&&") {
+            if (currentCmd.length > 0) {
+                currentParallel.push(currentCmd);
+                currentCmd = [];
+            }
+            if (currentParallel.length > 0) {
+                serialGroups.push(currentParallel);
+                currentParallel = [];
+            }
+        } else if (token === "&") {
+            if (currentCmd.length > 0) {
+                currentParallel.push(currentCmd);
+                currentCmd = [];
+            }
+        } else {
+            currentCmd.push(token);
+        }
+    }
+    if (currentCmd.length > 0) {
+        currentParallel.push(currentCmd);
+    }
+    if (currentParallel.length > 0) {
+        serialGroups.push(currentParallel);
+    }
+
+    return serialGroups;
+}
 
 /**
  * @template {import("@optique/core").Parser<any>} TParser

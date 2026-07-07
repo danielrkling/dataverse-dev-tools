@@ -1,4 +1,4 @@
-import { clear, help } from "./commands/builtin.mjs";
+import { clear, help, echo } from "./commands/builtin.mjs";
 import esbuild from "./commands/esbuild.mjs";
 import { flatten } from "./commands/flatten.mjs";
 import {
@@ -27,6 +27,7 @@ export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-
 
 terminal.registerCommand(help);
 terminal.registerCommand(clear);
+terminal.registerCommand(echo);
 terminal.registerCommand(historyCommand);
 terminal.registerCommand(flatten);
 terminal.registerCommand(lsCommand);

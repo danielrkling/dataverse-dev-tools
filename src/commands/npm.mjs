@@ -335,6 +335,20 @@ export const npmCommand = createCommand({
   description: message`Manage npm packages and scripts`,
   usage: message`npm install [package@version] [--ts-only] [-D] | npm run <script>`,
   brief: message`Manage npm packages and scripts`,
+  init: async (term) => {
+    term.addEventListener("fs:init", async () => {
+      try {
+        const raw = await term.fs.readFile("package.json", { encoding: "utf8" });
+        const pkg = JSON.parse(/** @type {string} */ (raw));
+        if (pkg.scripts?.start) {
+          term.info(`npm run start`);
+          await term.processCommand(pkg.scripts.start);
+        }
+      } catch {
+        // no package.json, nothing to auto-start
+      }
+    });
+  },
   execute: async (parsed, term) => {
     const { fs } = term;
     const subcommand = parsed.subcommand;
