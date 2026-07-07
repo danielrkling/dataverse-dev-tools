@@ -1,51 +1,25 @@
-import * as git from 'isomorphic-git';
-import { createOptiquePlugin } from '../plugin.mjs';
-import { parseCommandArgs } from '../utils/args.mjs';
-import { object, optional, argument, string, choice, passThrough, option, integer } from '@optique/core';
+import { command, or, object, optional, argument, string, option, integer, map, message } from '@optique/core';
+import { createCommand } from "../terminal.mjs";
 
-const gitMainParser = object({
-  subcommand: argument(choice('init', 'status', 'add', 'commit', 'log', 'branch', 'checkout', 'clone', 'diff', 'help'), { description: 'Git subcommand' }),
-  rest: passThrough(),
-});
-
-const gitInitParser = object({});
-const gitStatusParser = object({});
-const gitAddParser = object({
-  filepath: optional(argument(string({ metavar: 'FILE' }), { description: 'File path to stage' })),
-});
-const gitCommitParser = object({
-  message: option('-m', string({ metavar: 'MESSAGE' }), { description: 'Commit message' }),
-});
-const gitLogParser = object({
-  depth: optional(argument(integer({ metavar: 'DEPTH' }), { description: 'Number of commits to show' })),
-});
-const gitBranchParser = object({});
-const gitCheckoutParser = object({
-  branch: argument(string({ metavar: 'BRANCH' }), { description: 'Branch name to switch to' }),
-});
-const gitCloneParser = object({
-  url: argument(string({ metavar: 'URL' }), { description: 'Repository URL to clone' }),
-});
-const gitDiffParser = object({
-  filepath: optional(argument(string({ metavar: 'FILE' }), { description: 'File path to diff' })),
-});
+/** @returns {Promise<any>} */
+async function getGit() {
+  return import('isomorphic-git');
+}
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {any}
  */
 function makeGitFs(fs) {
-  const shims = {
-    readlink: async () => { const e = new Error('no such symlink'); e.code = 'ENOENT'; throw e; },
-    symlink: async () => {},
-    chmod: async () => {},
-  };
-  const direct = ['readFile', 'writeFile', 'unlink', 'readdir', 'mkdir', 'rmdir', 'stat', 'lstat', 'rename'];
-  const obj = {};
-  for (const m of direct) {
-    const fn = fs[m].bind(fs);
-    obj[m] = async (...args) => {
+  const methods = ['readFile', 'writeFile', 'unlink', 'readdir', 'mkdir', 'rmdir', 'stat', 'lstat', 'rename'];
+  /** @type {any} */
+  const wrapped = {};
+  for (const m of methods) {
+    const orig = /** @type {any} */ (fs)[m];
+    /** @type {(...args: any[]) => Promise<any>} */
+    const wrapper = async (...args) => {
       try {
-        const result = await fn(...args);
+        const result = await orig(...args);
         if (m === 'stat' || m === 'lstat') {
           return { ...result, isDirectory: () => result.isDirectory, isFile: () => result.isFile, isSymbolicLink: () => result.isSymbolicLink };
         }
@@ -55,35 +29,25 @@ function makeGitFs(fs) {
         throw e;
       }
     };
+    wrapped[m] = wrapper;
   }
-  obj.readlink = shims.readlink;
-  obj.symlink = shims.symlink;
-  obj.chmod = shims.chmod;
-  obj.promises = new Proxy(fs.promises, {
+  wrapped.readlink = async () => { throw Object.assign(new Error('no such symlink'), { code: 'ENOENT' }); };
+  wrapped.symlink = async () => {};
+  wrapped.chmod = async () => {};
+  wrapped.promises = new Proxy(wrapped, {
     get(target, prop) {
-      if (prop === 'readlink') return shims.readlink;
-      if (prop === 'symlink') return shims.symlink;
-      if (prop === 'chmod') return shims.chmod;
-      const fn = target[prop];
-      return async (...args) => {
-        try {
-          const result = await fn(...args);
-          if (prop === 'stat' || prop === 'lstat') {
-            return { ...result, isDirectory: () => result.isDirectory, isFile: () => result.isFile, isSymbolicLink: () => result.isSymbolicLink };
-          }
-          return result;
-        } catch (e) {
-          console.log(`gitfs.promises.${prop}(${args.map(a => JSON.stringify(a)).join(', ')}) threw:`, e);
-          throw e;
-        }
-      };
+      if (prop === 'readlink') return wrapped.readlink;
+      if (prop === 'symlink') return wrapped.symlink;
+      if (prop === 'chmod') return wrapped.chmod;
+      return target[/** @type {string} */ (prop)];
     },
   });
-  return obj;
+  return wrapped;
 }
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {Promise<{name: string, email: string}>}
  */
 async function getAuthor(fs) {
   try {
@@ -110,16 +74,23 @@ async function getAuthor(fs) {
 }
 
 const http = {
-  request: async ({ url, method, headers, body }) => {
+  /**
+   * @param {{ url: string, method: string, headers: Record<string, string>, body: any }} opts
+   * @returns {Promise<{ url: string, method: string, headers: Record<string, string>, body: Uint8Array[], statusCode: number, statusMessage: string }>}
+   */
+  async request(opts) {
+    const { url, method, headers, body } = opts;
     const response = await fetch(url, { method, headers, body });
     const results = await response.arrayBuffer();
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+    const headerEntries = [...response.headers.entries()];
+    const plainHeaders = Object.fromEntries(headerEntries);
     return {
       url: response.url,
-      method: response.method,
-      headers: response.headers,
+      method: method,
+      headers: plainHeaders,
       body: [new Uint8Array(results)],
       statusCode: response.status,
       statusMessage: response.statusText,
@@ -127,21 +98,24 @@ const http = {
   },
 };
 
-/** @type {Record<string, (args: string[], term: import('../terminal.mjs').WebTerminal, ctx: { fs: import('../fs.mjs').WebFileSystem }) => Promise<string|undefined>>} */
-const subcommands = {
-  async init(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitInitParser, 'git init', args, term, { brief: 'Initialize git repository' });
-    if (!parsed) return;
+/**
+ * @param {{ fs: import('../fs.mjs').WebFileSystem }} ctx
+ */
+const handlerContext = { fs: /** @type {any} */ (null) };
+
+/** @type {Record<string, (parsed: any, ctx: { fs: import('../fs.mjs').WebFileSystem, term?: any }) => Promise<string | undefined>>} */
+const handlers = {
+  async init(parsed, { fs }) {
+    const igit = await getGit();
     const gitFs = makeGitFs(fs);
-    await git.init({ fs: gitFs, dir: fs.cwd });
+    await igit.init({ fs: gitFs, dir: fs.cwd });
     return `Initialized empty git repository in ${fs.cwd}/.git`;
   },
 
-  async status(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitStatusParser, 'git status', args, term, { brief: 'Show working tree status' });
-    if (!parsed) return;
+  async status(parsed, { fs }) {
+    const igit = await getGit();
     const gitFs = makeGitFs(fs);
-    const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
+    const matrix = await igit.statusMatrix({ fs: gitFs, dir: fs.cwd });
     const lines = [];
     for (const [filepath, head, workdir, stage] of matrix) {
       if (head === 0 && stage === 0) {
@@ -158,140 +132,169 @@ const subcommands = {
     return lines.join('\n');
   },
 
-  async add(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitAddParser, 'git add', args, term, { brief: 'Stage files' });
-    if (!parsed) return;
+  async add(parsed, { fs }) {
+    const igit = await getGit();
     const gitFs = makeGitFs(fs);
     const filepath = parsed.filepath;
     if (!filepath || filepath === '.') {
-      const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
+      const matrix = await igit.statusMatrix({ fs: gitFs, dir: fs.cwd });
       let count = 0;
       for (const [fp, head, workdir, stage] of matrix) {
         if (workdir !== stage) {
-          await git.add({ fs: gitFs, dir: fs.cwd, filepath: fp });
+          await igit.add({ fs: gitFs, dir: fs.cwd, filepath: fp });
           count++;
         }
       }
       return `Staged ${count} file(s)`;
     }
-    await git.add({ fs: gitFs, dir: fs.cwd, filepath });
+    await igit.add({ fs: gitFs, dir: fs.cwd, filepath });
     return `Staged ${filepath}`;
   },
 
-  async commit(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitCommitParser, 'git commit', args, term, { brief: 'Record changes to the repository' });
-    if (!parsed) return;
-    const message = parsed.message;
+  async commit(parsed, { fs }) {
+    const igit = await getGit();
+    const msg = parsed.message;
     const gitFs = makeGitFs(fs);
     const author = await getAuthor(fs);
-    const sha = await git.commit({
+    const sha = await igit.commit({
       fs: gitFs,
       dir: fs.cwd,
-      message,
+      message: msg,
       author,
       committer: author,
     });
-    return `[${sha.slice(0, 7)}] ${message}`;
+    return `[${sha.slice(0, 7)}] ${msg}`;
   },
 
-  async log(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitLogParser, 'git log', args, term, { brief: 'Show commit logs' });
-    if (!parsed) return;
+  async log(parsed, { fs }) {
+    const igit = await getGit();
     const gitFs = makeGitFs(fs);
     const depth = parsed.depth || 10;
-    const commits = await git.log({ fs: gitFs, dir: fs.cwd, depth });
-    return commits.map((c) => {
+    const commits = await igit.log({ fs: gitFs, dir: fs.cwd, depth });
+    return commits.map(/** @param {any} c */ (c) => {
       const date = new Date(c.commit.author.timestamp * 1000).toLocaleString();
       return `${c.oid.slice(0, 7)} ${date} ${c.commit.author.name}  ${c.commit.message.split('\n')[0]}`;
     }).join('\n');
   },
 
-  async branch(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitBranchParser, 'git branch', args, term, { brief: 'List branches' });
-    if (!parsed) return;
+  async branch(parsed, { fs }) {
+    const igit = await getGit();
     const gitFs = makeGitFs(fs);
-    const branches = await git.listBranches({ fs: gitFs, dir: fs.cwd });
-    const current = await git.currentBranch({ fs: gitFs, dir: fs.cwd });
-    return branches.map((b) => b === current ? `* ${b}` : `  ${b}`).join('\n');
+    const branches = await igit.listBranches({ fs: gitFs, dir: fs.cwd });
+    const current = await igit.currentBranch({ fs: gitFs, dir: fs.cwd });
+    return branches.map(/** @param {any} b */ (b) => b === current ? `* ${b}` : `  ${b}`).join('\n');
   },
 
-  async checkout(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitCheckoutParser, 'git checkout', args, term, { brief: 'Checkout a branch' });
-    if (!parsed) return;
+  async checkout(parsed, { fs }) {
+    const igit = await getGit();
     const branch = parsed.branch;
     const gitFs = makeGitFs(fs);
-    await git.checkout({ fs: gitFs, dir: fs.cwd, ref: branch });
+    await igit.checkout({ fs: gitFs, dir: fs.cwd, ref: branch });
     return `Switched to branch '${branch}'`;
   },
 
-  async clone(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitCloneParser, 'git clone', args, term, { brief: 'Clone a repository' });
-    if (!parsed) return;
+  async clone(parsed, { fs, term }) {
+    const igit = await getGit();
     const url = parsed.url;
     const gitFs = makeGitFs(fs);
     term.log(`Cloning ${url}...`);
-    await git.clone({
+    await igit.clone({
       fs: gitFs,
       dir: fs.cwd,
       url,
       http,
       singleBranch: true,
-      onProgress: (ev) => {
+      onProgress: (/** @param {any} ev */ (ev) => {
         if (ev.phase === 'received') return;
         term.log(`${ev.phase}: ${ev.loaded}/${ev.total}`);
-      },
+      }),
     });
     return `Cloned ${url}`;
   },
 
-  async diff(args, term, { fs }) {
-    const parsed = parseCommandArgs(gitDiffParser, 'git diff', args, term, { brief: 'Show changes' });
-    if (!parsed) return;
-    const gitFs = makeGitFs(fs);
+  async diff(parsed, { fs }) {
+    const igit = await getGit();
     const filepath = parsed.filepath;
+    const gitFs = makeGitFs(fs);
     try {
-      const diff = await git.diff({
-        fs: gitFs,
-        dir: fs.cwd,
-        ref: 'HEAD',
-        ...(filepath ? { filepath } : {}),
+      const matrix = await igit.statusMatrix({ fs: gitFs, dir: fs.cwd });
+      const changed = matrix.filter(/** @param {[any, any, any, any]} row */ ([fp, head, workdir, stage]) => {
+        if (filepath && fp !== filepath) return false;
+        return workdir !== stage;
       });
-      return diff || (filepath ? `${filepath}: no changes` : 'no changes');
-    } catch (e) {
+      if (changed.length === 0) return filepath ? `${filepath}: no changes` : 'no changes';
+      return changed.map(/** @param {[any]} row */ ([fp]) => fp).join('\n');
+    } catch (/** @type {any} */ e) {
       return `diff failed: ${e.message}`;
     }
   },
+
+  async help(parsed, { fs }) {
+    const names = Object.keys(handlers).join(', ');
+    return `Usage: git <subcommand> [args]\n\nSubcommands: ${names}`;
+  },
 };
 
-export default createOptiquePlugin({
-  name: 'git',
-  commands: [
-    {
-      name: 'git',
-      parser: gitMainParser,
-      aliases: ['g'],
-      description: 'Git version control commands',
-      usage: 'git <subcommand> [args...]',
-      brief: 'Git version control commands',
-      execute: async (parsed, term, { fs }) => {
-        const subcmd = parsed.subcommand;
-        if (subcmd === 'help') {
-          const names = Object.keys(subcommands).join(', ');
-          return `Usage: git <subcommand> [args]\n\nSubcommands: ${names}`;
-        }
-        const handler = subcommands[subcmd];
-        if (!handler) return `Unknown git subcommand: ${subcmd}. Try 'git help'.`;
-        try {
-          if (subcmd !== 'init' && subcmd !== 'clone') {
-            const hasGit = await fs.exists('.git');
-            if (!hasGit) return "Not a git repository. Run 'git init' first.";
-          }
-          const result = await handler(parsed.rest, term, { fs });
-          if (result !== undefined && result !== '') term.log(String(result));
-        } catch (e) {
-          term.error(`${subcmd}: ${e.message}`);
-        }
-      },
-    },
-  ],
+const subcommandParsers = {
+  init: map(object({}), () => ({ subcommand: 'init' })),
+  status: map(object({}), () => ({ subcommand: 'status' })),
+  add: map(object({
+    filepath: optional(argument(string({ metavar: 'FILE' }))),
+  }), (r) => ({ subcommand: 'add', ...r })),
+  commit: map(object({
+    message: option('-m', string({ metavar: 'MESSAGE' })),
+  }), (r) => ({ subcommand: 'commit', ...r })),
+  log: map(object({
+    depth: optional(argument(integer({ metavar: 'DEPTH' }))),
+  }), (r) => ({ subcommand: 'log', ...r })),
+  branch: map(object({}), () => ({ subcommand: 'branch' })),
+  checkout: map(object({
+    branch: argument(string({ metavar: 'BRANCH' })),
+  }), (r) => ({ subcommand: 'checkout', ...r })),
+  clone: map(object({
+    url: argument(string({ metavar: 'URL' })),
+  }), (r) => ({ subcommand: 'clone', ...r })),
+  diff: map(object({
+    filepath: optional(argument(string({ metavar: 'FILE' }))),
+  }), (r) => ({ subcommand: 'diff', ...r })),
+  help: map(object({}), () => ({ subcommand: 'help' })),
+};
+
+const gitParser = or(
+  command('init', subcommandParsers.init),
+  command('status', subcommandParsers.status),
+  command('add', subcommandParsers.add),
+  command('commit', subcommandParsers.commit),
+  command('log', subcommandParsers.log),
+  command('branch', subcommandParsers.branch),
+  command('checkout', subcommandParsers.checkout),
+  command('clone', subcommandParsers.clone),
+  command('diff', subcommandParsers.diff),
+  command('help', subcommandParsers.help),
+);
+
+export default createCommand({
+  name: "git",
+  aliases: ["g"],
+  parser: gitParser,
+  description: message`Git version control commands`,
+  usage: message`git <subcommand> [args...]`,
+  brief: message`Git version control commands`,
+  execute: async (parsed, term) => {
+    const subcommand = /** @type {string} */ (parsed.subcommand);
+    const handler = handlers[/** @type {keyof typeof handlers} */ (subcommand)];
+    if (!handler) return `Unknown git subcommand: ${subcommand}. Try 'git help'.`;
+
+    if (subcommand !== 'init' && subcommand !== 'clone') {
+      const hasGit = await term.fs.exists('.git');
+      if (!hasGit) return "Not a git repository. Run 'git init' first.";
+    }
+
+    try {
+      const result = await handler(parsed, { fs: term.fs, term });
+      if (result != null) return result;
+    } catch (/** @type {any} */ e) {
+      term.error(`${subcommand}: ${e.message}`);
+    }
+  },
 });

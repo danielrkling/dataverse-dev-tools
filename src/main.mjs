@@ -18,6 +18,7 @@ import { previewCommand } from "./commands/preview.mjs";
 import { runCommand } from "./commands/run.mjs";
 import tailwind from "./commands/tailwind.mjs";
 import { uploadCommand } from "./commands/upload.mjs";
+import git from "./commands/git.mjs";
 import { WebTerminal } from "./terminal.mjs";
 
 /** @type {WebTerminal} */
@@ -41,4 +42,5 @@ terminal.registerCommand(runCommand);
 terminal.registerCommand(openCommand);
 terminal.registerCommand(tailwind);
 terminal.registerCommand(uploadCommand);
+terminal.registerCommand(git);
 terminal.registerCommand(esbuild);
