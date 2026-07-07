@@ -1,14 +1,29 @@
 import { dirname, join } from "../utils/path.mjs";
-import { readJSON } from "../utils/json.mjs";
 import { tailwindConfigSchema } from "../utils/schemas.mjs";
 import { createCommand } from "../terminal.mjs";
-import { object, optional, argument, choice, message, option, string, multiple } from "@optique/core";
-import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
+import {
+  object,
+  optional,
+  argument,
+  choice,
+  message,
+  option,
+  string,
+  multiple,
+  map,
+} from "@optique/core";
+import {
+  aliasPlugin,
+  fsPlugin,
+  getEsbuild,
+  httpPlugin,
+} from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 
 const TAILWIND_VERSION = "4.1.6";
 const COMPILE_URL = `https://esm.sh/tailwindcss@${TAILWIND_VERSION}`;
-const ISO_URL = "https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser.js";
+const ISO_URL =
+  "https://cdn.jsdelivr.net/npm/tailwindcss-iso@1.0.6/dist/browser.js";
 const CSS_BASE = `https://cdn.jsdelivr.net/npm/tailwindcss@${TAILWIND_VERSION}`;
 
 /** @type {Map<string, string>} */
@@ -59,16 +74,32 @@ function createLoadStylesheet(fs) {
   return async (id, base) => {
     const name = id.replace(/\.css$/, "");
     if (name === "tailwindcss") {
-      return { path: "virtual:tailwindcss/index.css", base: "/", content: await getCSSAsset("index") };
+      return {
+        path: "virtual:tailwindcss/index.css",
+        base: "/",
+        content: await getCSSAsset("index"),
+      };
     }
     if (name === "tailwindcss/preflight" || name === "./preflight") {
-      return { path: "virtual:tailwindcss/preflight.css", base: "/", content: await getCSSAsset("preflight") };
+      return {
+        path: "virtual:tailwindcss/preflight.css",
+        base: "/",
+        content: await getCSSAsset("preflight"),
+      };
     }
     if (name === "tailwindcss/theme" || name === "./theme") {
-      return { path: "virtual:tailwindcss/theme.css", base: "/", content: await getCSSAsset("theme") };
+      return {
+        path: "virtual:tailwindcss/theme.css",
+        base: "/",
+        content: await getCSSAsset("theme"),
+      };
     }
     if (name === "tailwindcss/utilities" || name === "./utilities") {
-      return { path: "virtual:tailwindcss/utilities.css", base: "/", content: "@tailwind utilities;" };
+      return {
+        path: "virtual:tailwindcss/utilities.css",
+        base: "/",
+        content: "@tailwind utilities;",
+      };
     }
 
     if (id.startsWith("http://") || id.startsWith("https://")) {
@@ -107,11 +138,17 @@ function createLoadModule(fs) {
       write: false,
       plugins: [aliasPlugin(), httpPlugin(), fsPlugin(fs)],
     });
-    const blob = new Blob([result.outputFiles[0].text], { type: "application/javascript" });
+    const blob = new Blob([result.outputFiles[0].text], {
+      type: "application/javascript",
+    });
     const url = URL.createObjectURL(blob);
     try {
       const mod = await import(url);
-      return { path: fullPath, base: dirname(fullPath) || "/", module: mod.default || mod };
+      return {
+        path: fullPath,
+        base: dirname(fullPath) || "/",
+        module: mod.default || mod,
+      };
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -127,19 +164,32 @@ function createLoadModule(fs) {
  */
 function buildCSSInput(config) {
   if (Array.isArray(config.css)) {
-    return config.css.map((item) => {
-      const t = item.trim();
-      if (t.startsWith("@") || t.startsWith("http://") || t.startsWith("https://")) return t;
-      return `@import "${t}"`;
-    }).join("\n");
+    return config.css
+      .map((item) => {
+        const t = item.trim();
+        if (
+          t.startsWith("@") ||
+          t.startsWith("http://") ||
+          t.startsWith("https://")
+        )
+          return t;
+        return `@import "${t}"`;
+      })
+      .join("\n");
   }
   const parts = [];
   if (config.importCSS) parts.push(config.importCSS);
   else parts.push('@import "tailwindcss"');
-  if (config.css && typeof config.css === "string") parts.push(`@import "${config.css}"`);
+  if (config.css && typeof config.css === "string")
+    parts.push(`@import "${config.css}"`);
   if (config.plugins) {
     for (const p of config.plugins) {
-      if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("./") || p.startsWith("/")) {
+      if (
+        p.startsWith("http://") ||
+        p.startsWith("https://") ||
+        p.startsWith("./") ||
+        p.startsWith("/")
+      ) {
         parts.push(`@import "${p}"`);
       } else {
         parts.push(`@plugin "${p}"`);
@@ -157,7 +207,7 @@ function buildCSSInput(config) {
 async function extractClasses(fs, globs) {
   await ensureWasmLoaded();
   const classes = new Set();
-  const isMatch = picomatch(globs.map(g => g.replace(/^\.\//, "")));
+  const isMatch = picomatch(globs.map((g) => g.replace(/^\.\//, "")));
 
   const files = await fs.getFilesFromDirectory("", isMatch);
 
@@ -171,7 +221,10 @@ async function extractClasses(fs, globs) {
   }
 
   for (const [ext, contents] of Object.entries(byExt)) {
-    const results = await /** @type {Function} */ (_getTailwindClasses)({ content: contents.join("\n"), extension: ext });
+    const results = await /** @type {Function} */ (_getTailwindClasses)({
+      content: contents.join("\n"),
+      extension: ext,
+    });
     for (const r of results) {
       classes.add(r);
     }
@@ -197,11 +250,17 @@ function createCompilerCache(config, fs) {
       const compile = await getCompile();
       const ls = createLoadStylesheet(fs);
       const lm = createLoadModule(fs);
-      compiler = await /** @type {Function} */ (compile)(cssInput, { base: "/", loadStylesheet: ls, loadModule: lm });
+      compiler = await /** @type {Function} */ (compile)(cssInput, {
+        base: "/",
+        loadStylesheet: ls,
+        loadModule: lm,
+      });
       lastCSSInput = cssInput;
       return compiler;
     },
-    invalidateCache() { lastCSSInput = null; },
+    invalidateCache() {
+      lastCSSInput = null;
+    },
   };
 }
 
@@ -220,26 +279,48 @@ async function runBuild(config, fs, term) {
   const outfile = config.outfile || "./dist/tailwind.css";
   const dir = dirname(outfile);
   if (dir) {
-    try { await fs.mkdir(dir, { recursive: true }); } catch {}
+    try {
+      await fs.mkdir(dir, { recursive: true });
+    } catch {}
   }
   await fs.writeFile(outfile, result);
   return { outfile, bytes: result.length, classes: classes.length };
 }
 
 const tailwindParser = object({
-  action: optional(argument(choice(["build", "watch"]), { description: message`Tailwind action (build or watch)` })),
-  input: optional(option("-i", "--input", string({ metavar: "FILE" }), {
-    description: message`Input CSS file`,
-  })),
-  output: optional(option("-o", "--output", string({ metavar: "FILE" }), {
-    description: message`Output CSS file`,
-  })),
-  watch: optional(option("--watch", {
-    description: message`Watch for changes and rebuild`,
-  })),
-  content: multiple(option("--content", string({ metavar: "GLOB" }), {
-    description: message`Glob pattern for content files to scan`,
-  })),
+  action: optional(
+    argument(choice(["build", "watch"]), {
+      description: message`Tailwind action (build or watch)`,
+    }),
+  ),
+  config: optional(
+    option("-c", "--config", string({ metavar: "FILE" }), {
+      description: message`Path to config file (default: tailwind.config.json)`,
+    }),
+  ),
+  css: map(
+    optional(
+      option("-i", "--input", string({ metavar: "FILE" }), {
+        description: message`Input CSS file`,
+      }),
+    ),
+    (s) => (s ? [s] : undefined),
+  ),
+  outfile: optional(
+    option("-o", "--output", string({ metavar: "FILE" }), {
+      description: message`Output CSS file`,
+    }),
+  ),
+  watch: optional(
+    option("--watch", {
+      description: message`Watch for changes and rebuild`,
+    }),
+  ),
+  content: multiple(
+    option("--content", string({ metavar: "GLOB" }), {
+      description: message`Glob pattern for content files to scan`,
+    }),
+  ),
 });
 
 export default createCommand({
@@ -250,36 +331,69 @@ export default createCommand({
   usage: message`tailwind [build|watch] [-i FILE] [-o FILE] [--watch] [--content GLOB]...`,
   brief: message`Generate Tailwind CSS using compile() API with WasmScanner`,
   execute: async (parsed, term) => {
-    const rawConfig = (await readJSON(term.fs, "tailwind.config.json")) || {};
-    const parsedConfig = tailwindConfigSchema.safeParse(rawConfig);
-    if (!parsedConfig.success) {
-      term.error(`tailwind.config.json: ${parsedConfig.error.issues.map(i => i.message).join(", ")}`);
+    const configPath = parsed.config || "tailwind.config.json";
+
+    let rawConfig;
+    try {
+      const content = await term.fs.readFile(configPath, { encoding: "utf8" });
+      rawConfig = JSON.parse(content);
+    } catch (e) {
+      if (parsed.config) {
+        term.error(`${configPath}: ${e.message}`);
+        return;
+      }
+      rawConfig = {};
     }
-    const config = parsedConfig.success ? parsedConfig.data : tailwindConfigSchema.parse({});
 
-    if (parsed.input) config.css = [parsed.input];
-    if (parsed.output) config.outfile = parsed.output;
-    if (parsed.content?.length) config.content = parsed.content;
+    const configResult = tailwindConfigSchema.safeParse(rawConfig);
+    if (!configResult.success) {
+      term.error(
+        `${configPath}: ${configResult.error.issues.map((i) => i.message).join(", ")}`,
+      );
+      return;
+    }
+    const validatedConfig = configResult.data;
 
-    const sub = parsed.watch ? "watch" : /** @type {string} */ (parsed.action || "build");
+    const { config: _, ...cliFields } = parsed;
+    const mergedResult = tailwindConfigSchema.safeParse({
+      ...validatedConfig,
+      ...cliFields,
+    });
+    if (!mergedResult.success) {
+      term.error(
+        `Config merge: ${mergedResult.error.issues.map((i) => i.message).join(", ")}`,
+      );
+      return;
+    }
+    const config = mergedResult.data;
+
+    const sub = parsed.watch
+      ? "watch"
+      : /** @type {string} */ (parsed.action || "build");
 
     if (sub === "watch") {
       const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
       term.success(`Built ${outfile} (${bytes} bytes, ${classes} classes)`);
 
-      const isMatch = picomatch(config.content.map(g => g.replace(/^\.\//, "")));
+      const isMatch = picomatch(
+        config.content.map((/** @type {string} */ g) => g.replace(/^\.\//, "")),
+      );
       const handler = async (/** @type {CustomEvent} */ e) => {
         const path = e.detail?.path;
         if (!path) return;
         if (!isMatch(path)) return;
         try {
-          const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
+          const { outfile, bytes, classes } = await runBuild(
+            config,
+            term.fs,
+            term,
+          );
           term.info(`Rebuilt ${outfile} (${bytes} bytes, ${classes} classes)`);
         } catch (/** @type {any} */ e) {
           term.error(`Rebuild failed: ${e.message}`);
         }
       };
-      
+
       term.addEventListener("fs:modified", handler);
       const stopBtn = document.createElement("button");
       stopBtn.textContent = "⏹ stop watching";

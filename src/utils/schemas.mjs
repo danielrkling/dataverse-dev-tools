@@ -80,18 +80,18 @@ export const esbuildConfigSchema = z.object({
   ignoreAnnotations: z.boolean().optional(),
   inject: dropEmpty(z.array(z.string()).optional()),
   keepNames: z.boolean().optional(),
-  mangleProps: z.string().optional(),
+  mangleProps: z.string().optional().transform((v) => (v ? new RegExp(v) : undefined)),
   mangleQuoted: z.boolean().optional(),
-  reserveProps: z.string().optional(),
+  reserveProps: z.string().optional().transform((v) => (v ? new RegExp(v) : undefined)),
   minify: z.boolean().default(false),
   minifyWhitespace: z.boolean().optional(),
   minifyIdentifiers: z.boolean().optional(),
   minifySyntax: z.boolean().optional(),
   pure: dropEmpty(z.array(z.string()).optional()),
-  treeShaking: z.union([z.boolean(), z.enum(["ignore-annotations"])]).optional(),
+  treeShaking: z.boolean().optional(),
 
   // Source maps
-  sourcemap: z.union([z.boolean(), z.string()]).default("inline"),
+  sourcemap: z.union([z.boolean(), z.enum(["inline", "external", "both"])]).default("inline"),
   sourceRoot: z.string().optional(),
   sourcesContent: z.boolean().optional(),
 
@@ -109,7 +109,7 @@ export const esbuildConfigSchema = z.object({
   logLevel: z.enum(["verbose", "debug", "info", "warning", "error", "silent"]).optional(),
   logLimit: z.number().optional(),
   logOverride: dropEmpty(z.record(z.string(), z.string()).optional()),
-}).passthrough();
+});
 
 export const dataverseConfigSchema = z.object({
   prefix: z.string().default(""),

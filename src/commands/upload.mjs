@@ -1,6 +1,5 @@
 import { uploadWebResource, publishWebResources, isValidWebResource } from "../wr.mjs";
 import { createCommand, WebTerminal } from "../terminal.mjs";
-import { readJSON } from "../utils/json.mjs";
 import { dataverseConfigSchema } from "../utils/schemas.mjs";
 import { object, argument, string, message, option, optional, multiple } from "@optique/core";
 import picomatch from "picomatch";
@@ -8,6 +7,9 @@ import picomatch from "picomatch";
 const uploadParser = object({
     paths: multiple(argument(string({ metavar: "FILES" }), {
         description: message`Files or glob patterns to upload`,
+    })),
+    config: optional(option("-c", "--config", string({ metavar: "FILE" }), {
+        description: message`Path to config file (default: dataverse.config.json)`,
     })),
     prefix: optional(option("-p", "--prefix", string({ metavar: "PREFIX" }))),
     solution: optional(option("-s", "--solution", string({ metavar: "SOLUTION" }))),
@@ -24,17 +26,38 @@ export const uploadCommand = createCommand({
     usage: message`upload [files..] [options]`,
     brief: message`Upload web resources to Dataverse`,
     execute: async (parsed, term) => {
-        const raw = await term.fs.readFile("dataverse.config.json", { encoding: "utf8" });
-        const configFile = (() => {
-            const parsed = JSON.parse(raw);
-            const result = dataverseConfigSchema.safeParse(parsed);
-            if (!result.success) {
-                term.error(`dataverse.config.json: ${result.error.issues.map(i => i.message).join(", ")}`);
-                return parsed;
+        const configPath = parsed.config || "dataverse.config.json";
+
+        let rawConfig;
+        try {
+            const content = await term.fs.readFile(configPath, { encoding: "utf8" });
+            rawConfig = JSON.parse(content);
+        } catch (e) {
+            if (parsed.config) {
+                term.error(`${configPath}: ${e.message}`);
+                return;
             }
-            return result.data;
-        })();
-        const paths = parsed.paths;
+            rawConfig = {};
+        }
+
+        const configResult = dataverseConfigSchema.safeParse(rawConfig);
+        if (!configResult.success) {
+            term.error(`${configPath}: ${configResult.error.issues.map(i => i.message).join(", ")}`);
+            return;
+        }
+        const validatedConfig = configResult.data;
+
+        const { config: _, ...cliFields } = parsed;
+        const mergedResult = dataverseConfigSchema.safeParse({ ...validatedConfig, ...cliFields });
+        if (!mergedResult.success) {
+            term.error(`Config merge: ${mergedResult.error.issues.map(i => i.message).join(", ")}`);
+            return;
+        }
+        const config = mergedResult.data;
+
+        /** @type {string[]} */
+        const paths = parsed.paths.map((p) => p.trim()).filter((p) => p.length > 0);
+        /** @type {[string, string][]} */
         const entries = await Promise.all(
             paths.map(async (path) => {
                 const content = await term.fs.readFile(path, { encoding: "utf8" });
@@ -42,15 +65,11 @@ export const uploadCommand = createCommand({
             }),
         );
 
-        const config = {
-            ...configFile,
-            parsed,
-        };
-
         uploadFiles(entries, term, config);
 
         if (parsed.watch) {
             const isMatch = picomatch(paths);
+            /** @type {(e: CustomEvent) => Promise<void>} */
             const handler = async (e) => {
                 const changedPath = /** @type {any} */ (e).detail?.path;
                 if (!changedPath || !isMatch(changedPath)) return;
@@ -68,53 +87,6 @@ export const uploadCommand = createCommand({
         }
     },
 
-    init: async (term) => {
-        term.addEventListener("fs:modified", async (e) => {
-            //@ts-expect-error
-            const path = e.detail.path;
-
-            const rawConfig = await term.fs.readFile("dataverse.config.json", { encoding: "utf8" });
-            const config = (() => {
-                const parsed = JSON.parse(rawConfig);
-                const result = dataverseConfigSchema.safeParse(parsed);
-                if (!result.success) {
-                    term.error(`dataverse.config.json: ${result.error.issues.map(i => i.message).join(", ")}`);
-                    return parsed;
-                }
-                return result.data;
-            })();
-
-            const isMatch = picomatch(config.files);
-            if (isMatch(path)) {
-                const content = await term.fs.readFile(path, { encoding: "utf8" });
-
-                uploadFiles([[path, content]], term, config);
-            }
-        });
-
-        term.addEventListener("fs:init", async (e) => {
-            const rawConfig = await term.fs.readFile("dataverse.config.json", { encoding: "utf8" });
-            const config = (() => {
-                const parsed = JSON.parse(rawConfig);
-                const result = dataverseConfigSchema.safeParse(parsed);
-                if (!result.success) {
-                    term.error(`dataverse.config.json: ${result.error.issues.map(i => i.message).join(", ")}`);
-                    return parsed;
-                }
-                return result.data;
-            })();
-
-            if (!config.files) return;
-            if (!config.prefix) return;
-
-            const isMatch = picomatch(config.files);
-
-            const files = await term.fs.getFilesFromDirectory("", isMatch);
-            // const filtered = Object.entries(files).filter((v) => isMatch(v[0]));
-
-            uploadFiles(files, term, config);
-        });
-    },
 });
 
 /**
