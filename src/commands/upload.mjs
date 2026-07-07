@@ -93,7 +93,7 @@ export const uploadCommand = createCommand({
  *
  * @param {[string,string][]} files
  * @param {WebTerminal} term
- * @param {{prefix:string,solution:string}} config
+ * @param {{prefix:string,solution?:string|undefined}} config
  */
 async function uploadFiles(files, term, config) {
     const validFiles = files.map((v) => [`${config.prefix}/${v[0]}`, v[1]]).filter((v) => isValidWebResource(v[0]));

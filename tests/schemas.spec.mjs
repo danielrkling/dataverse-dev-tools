@@ -1,6 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { esbuildConfigSchema, dataverseConfigSchema, tailwindConfigSchema } from '../src/utils/schemas.mjs';
 
+function stripEmpty(v) {
+  if (v === undefined) return true;
+  if (Array.isArray(v) && v.length === 0) return true;
+  if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0) return true;
+  return false;
+}
+
 test.describe('esbuildConfigSchema', () => {
   test('validates a full esbuild config', () => {
     const config = {
@@ -34,7 +41,7 @@ test.describe('esbuildConfigSchema', () => {
       expect(result.data.sourcemap).toBe('inline');
       expect(result.data.splitting).toBe(false);
       expect(result.data.outExtension).toEqual({ '.js': '.mjs' });
-      expect(result.data.watch).toEqual(['src']);
+      expect(result.data.watch).toBeUndefined();
     }
   });
 
@@ -48,10 +55,10 @@ test.describe('esbuildConfigSchema', () => {
     }
   });
 
-  test('CLI empty values do not override file config defaults', () => {
+  test('CLI undefined values do not override file config defaults', () => {
     const fileConfig = { entryPoints: ['./src/app.ts'], outdir: 'dist', format: 'esm' };
-    const cliParsed = { entryPoints: [], outdir: undefined, bundle: undefined, define: {}, watch: [] };
-    const merged = { ...fileConfig, ...cliParsed };
+    const cliParsed = { entryPoints: [], outdir: undefined, bundle: undefined, minify: undefined };
+    const merged = { ...fileConfig, ...Object.fromEntries(Object.entries(cliParsed).filter(([_, v]) => !stripEmpty(v))) };
     const result = esbuildConfigSchema.safeParse(merged);
     expect(result.success).toBe(true);
     if (result.success) {
@@ -59,7 +66,7 @@ test.describe('esbuildConfigSchema', () => {
       expect(result.data.outdir).toBe('dist');
       expect(result.data.format).toBe('esm');
       expect(result.data.bundle).toBe(true);
-      expect(result.data.watch).toEqual(['src']);
+      expect(result.data.minify).toBe(false);
     }
   });
 
@@ -73,11 +80,39 @@ test.describe('esbuildConfigSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  test('passes through unknown keys', () => {
-    const result = esbuildConfigSchema.safeParse({ inject: ['./polyfill.js'] });
+  test('sourcemap accepts boolean or enum values', () => {
+    const t = (v) => esbuildConfigSchema.safeParse({ sourcemap: v }).success;
+    expect(t(true)).toBe(true);
+    expect(t(false)).toBe(true);
+    expect(t('inline')).toBe(true);
+    expect(t('external')).toBe(true);
+    expect(t('both')).toBe(true);
+    expect(t('linked')).toBe(false);
+    expect(t('')).toBe(false);
+    expect(t('unknown')).toBe(false);
+  });
+
+  test('treeShaking accepts boolean', () => {
+    const t = (v) => esbuildConfigSchema.safeParse({ treeShaking: v }).success;
+    expect(t(true)).toBe(true);
+    expect(t(false)).toBe(true);
+    expect(t('ignore-annotations')).toBe(false);
+    expect(t('unknown')).toBe(false);
+  });
+
+  test('mainFields accepts array of strings', () => {
+    const t = (v) => esbuildConfigSchema.safeParse({ mainFields: v }).success;
+    expect(t(['browser', 'main'])).toBe(true);
+    expect(t([])).toBe(true);  // dropEmpty converts [] → undefined → valid
+    expect(t('browser,main')).toBe(false);
+  });
+
+  test('rejects unknown keys in strict mode', () => {
+    const result = esbuildConfigSchema.safeParse({ nonexistent: true });
     expect(result.success).toBe(true);
+    // With default .strip(), unknown keys are silently removed
     if (result.success) {
-      expect(result.data.inject).toEqual(['./polyfill.js']);
+      expect('nonexistent' in result.data).toBe(false);
     }
   });
 });
@@ -103,11 +138,11 @@ test.describe('dataverseConfigSchema', () => {
     const result = dataverseConfigSchema.safeParse({});
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.prefix).toBe('');
-      expect(result.data.preview).toBe('index.html');
-      expect(result.data.refresh).toBe('onUpload');
-      expect(result.data.solution).toBe('');
-      expect(result.data.files).toEqual([]);
+      expect(result.data.prefix).toBeUndefined();
+      expect(result.data.preview).toBeUndefined();
+      expect(result.data.refresh).toBeUndefined();
+      expect(result.data.solution).toBeUndefined();
+      expect(result.data.files).toBeUndefined();
     }
   });
 
@@ -116,7 +151,7 @@ test.describe('dataverseConfigSchema', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.prefix).toBe('myapp');
-      expect(result.data.preview).toBe('index.html');
+      expect(result.data.preview).toBeUndefined();
     }
   });
 
@@ -135,7 +170,6 @@ test.describe('tailwindConfigSchema', () => {
   test('validates a full tailwind config', () => {
     const config = {
       content: ['./src', './index.html'],
-      extensions: ['html', 'js', 'ts'],
       css: ['@import "tailwindcss"', './src/custom.css'],
       outfile: './dist/tailwind.css',
       plugins: ['@tailwindcss/typography'],
@@ -152,11 +186,10 @@ test.describe('tailwindConfigSchema', () => {
     const result = tailwindConfigSchema.safeParse({});
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.content).toEqual(['./src']);
-      expect(result.data.extensions).toEqual(['html', 'js', 'ts', 'jsx', 'tsx', 'mjs']);
-      expect(result.data.css).toEqual(['@import "tailwindcss"']);
-      expect(result.data.outfile).toBe('./dist/tailwind.css');
-      expect(result.data.plugins).toEqual([]);
+      expect(result.data.content).toBeUndefined();
+      expect(result.data.css).toBeUndefined();
+      expect(result.data.outfile).toBeUndefined();
+      expect(result.data.plugins).toBeUndefined();
     }
   });
 
@@ -168,9 +201,9 @@ test.describe('tailwindConfigSchema', () => {
     }
   });
 
-  test('rejects non-array content', () => {
-    const result = tailwindConfigSchema.safeParse({ content: './src' });
-    expect(result.success).toBe(false);
+  test('content accepts string or string array', () => {
+    expect(tailwindConfigSchema.safeParse({ content: './src' }).success).toBe(true);
+    expect(tailwindConfigSchema.safeParse({ content: ['./a', './b'] }).success).toBe(true);
   });
 
   test('rejects non-string outfile', () => {

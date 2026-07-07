@@ -2,11 +2,11 @@ import { z } from "zod";
 
 /**
  * Drops empty values from a schema
- * @param {import("zod").ZodTypeAny} schema - The schema to preprocess
- * @returns {import("zod").ZodTypeAny} - The preprocessed schema
+ * @param {import("zod").ZodTypeAny} schema - The schema to transform
+ * @returns {import("zod").ZodTypeAny} - The transformed schema
  */
 function dropEmpty(schema) {
-  return z.preprocess((val) => {
+  return schema.transform((val) => {
     if (val === undefined) return undefined;
     if (Array.isArray(val) && val.length === 0) return undefined;
     if (
@@ -17,16 +17,15 @@ function dropEmpty(schema) {
     )
       return undefined;
     return val;
-  }, schema);
+  });
 }
 
 export const esbuildConfigSchema = z.object({
   // Input
-  entryPoints: dropEmpty(
+  entryPoints:
     z.union([z.string(), z.array(z.string())])
       .transform(v => typeof v === "string" ? [v] : v)
       .default(["./src/app.ts"]),
-  ),
   loader: dropEmpty(z.record(z.string(), z.string()).optional()),
 
   // Output contents
@@ -43,7 +42,7 @@ export const esbuildConfigSchema = z.object({
   outdir: z.string().default("dist"),
   outfile: z.string().optional(),
   outbase: z.string().optional(),
-  outExtension: dropEmpty(z.record(z.string(), z.string()).default({ ".js": ".mjs" })),
+  outExtension: z.record(z.string(), z.string()).default({ ".js": ".mjs" }),
   entryNames: z.string().optional(),
   chunkNames: z.string().optional(),
   assetNames: z.string().optional(),
@@ -112,23 +111,23 @@ export const esbuildConfigSchema = z.object({
 });
 
 export const dataverseConfigSchema = z.object({
-  prefix: z.string().default(""),
-  preview: z.string().default("index.html"),
-  refresh: z.string().default("onUpload"),
-  solution: z.string().default(""),
-  files: dropEmpty(z.array(z.string()).default([])),
+  prefix: z.string(),
+  preview: z.string().optional(),
+  refresh: z.string().optional(),
+  solution: z.string().optional(),
+  files: dropEmpty(z.array(z.string()).optional()),
 });
 
 export const tailwindConfigSchema = z.object({
   content: dropEmpty(
     z.union([z.string(), z.array(z.string())])
       .transform(v => typeof v === "string" ? [v] : v)
-      .default(["./src/**/*.{html,js,ts,jsx,tsx,mjs}"]),
+      .optional(),
   ),
   css: z
     .union([z.string(), z.array(z.string())])
-    .default(['@import "tailwindcss"']),
-  outfile: z.string().default("./dist/tailwind.css"),
+    .optional(),
+  outfile: z.string().optional(),
   importCSS: z.string().optional(),
-  plugins: dropEmpty(z.array(z.string()).default([])),
+  plugins: dropEmpty(z.array(z.string()).optional()),
 });

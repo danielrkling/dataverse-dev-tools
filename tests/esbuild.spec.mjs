@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import { dirname, join, normalize } from '../src/utils/path.mjs';
-import { getLoaderFromContentType, fsPlugin } from '../src/commands/esbuild.mjs';
 
 test.describe('path helpers', () => {
     test('dirname extracts parent directory', () => {
@@ -38,48 +37,89 @@ test.describe('path helpers', () => {
 });
 
 test.describe('getLoaderFromContentType', () => {
-    test('returns jsx for javascript content type', () => {
-        expect(getLoaderFromContentType('text/javascript', '')).toBe('jsx');
-        expect(getLoaderFromContentType('application/javascript', '')).toBe('jsx');
+    test('returns jsx for javascript content type', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { getLoaderFromContentType } = await import('../src/utils/esbuild.mjs');
+            return [getLoaderFromContentType('text/javascript', ''), getLoaderFromContentType('application/javascript', '')];
+        });
+        expect(result).toEqual(['jsx', 'jsx']);
     });
 
-    test('returns jsx for typescript content type', () => {
-        expect(getLoaderFromContentType('text/typescript', '')).toBe('jsx');
+    test('returns jsx for typescript content type', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { getLoaderFromContentType } = await import('../src/utils/esbuild.mjs');
+            return getLoaderFromContentType('text/typescript', '');
+        });
+        expect(result).toBe('jsx');
     });
 
-    test('returns css for css content type', () => {
-        expect(getLoaderFromContentType('text/css', '')).toBe('css');
+    test('returns css for css content type', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { getLoaderFromContentType } = await import('../src/utils/esbuild.mjs');
+            return getLoaderFromContentType('text/css', '');
+        });
+        expect(result).toBe('css');
     });
 
-    test('returns json for json content type', () => {
-        expect(getLoaderFromContentType('application/json', '')).toBe('json');
+    test('returns json for json content type', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { getLoaderFromContentType } = await import('../src/utils/esbuild.mjs');
+            return getLoaderFromContentType('application/json', '');
+        });
+        expect(result).toBe('json');
     });
 
-    test('returns text for text content type', () => {
-        expect(getLoaderFromContentType('text/plain', '')).toBe('text');
+    test('returns text for text content type', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { getLoaderFromContentType } = await import('../src/utils/esbuild.mjs');
+            return getLoaderFromContentType('text/plain', '');
+        });
+        expect(result).toBe('text');
     });
 
-    test('defaults loader based on URL extension when content type is empty', () => {
-        expect(getLoaderFromContentType('', 'file.js')).toBe('js');
-        expect(getLoaderFromContentType('', 'file.ts')).toBe('js');
-        expect(getLoaderFromContentType('', 'file.css')).toBe('css');
-        expect(getLoaderFromContentType('', 'file.json')).toBe('json');
+    test('defaults loader based on URL extension when content type is empty', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { getLoaderFromContentType } = await import('../src/utils/esbuild.mjs');
+            return [getLoaderFromContentType('', 'file.js'), getLoaderFromContentType('', 'file.ts'), getLoaderFromContentType('', 'file.css'), getLoaderFromContentType('', 'file.json')];
+        });
+        expect(result).toEqual(['js', 'js', 'css', 'json']);
     });
 
-    test('returns text for unknown content type', () => {
-        expect(getLoaderFromContentType('application/octet-stream', '')).toBe('text');
+    test('returns text for unknown content type', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { getLoaderFromContentType } = await import('../src/utils/esbuild.mjs');
+            return getLoaderFromContentType('application/octet-stream', '');
+        });
+        expect(result).toBe('text');
     });
 });
 
 test.describe('fsPlugin', () => {
-    test('returns a valid esbuild plugin', () => {
-        const plugin = fsPlugin(/** @type {any} */ ({}));
-        expect(plugin.name).toBe('browser-fs');
-        expect(typeof plugin.setup).toBe('function');
+    test('returns a valid esbuild plugin', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { fsPlugin } = await import('../src/utils/esbuild.mjs');
+            const plugin = fsPlugin({});
+            return { name: plugin.name, hasSetup: typeof plugin.setup === 'function' };
+        });
+        expect(result.name).toBe('browser-fs');
+        expect(result.hasSetup).toBe(true);
     });
 
-    test('accepts an external config', () => {
-        const plugin = fsPlugin(/** @type {any} */ ({}), { external: ['react'] });
-        expect(plugin.name).toBe('browser-fs');
+    test('accepts an external config', async ({ page }) => {
+        await page.goto('/');
+        const result = await page.evaluate(async () => {
+            const { fsPlugin } = await import('../src/utils/esbuild.mjs');
+            const plugin = fsPlugin({}, { external: ['react'] });
+            return plugin.name;
+        });
+        expect(result).toBe('browser-fs');
     });
 });
