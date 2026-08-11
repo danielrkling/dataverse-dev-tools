@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Editor</title>
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+    <link rel="stylesheet" href="./editor.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="sidebar">
+        <div id="sidebar-header">
+          <span id="project-name"></span>
+        </div>
+        <div id="tree-container"></div>
+      </div>
+      <div id="divider"></div>
+      <div id="editor-area">
+        <div id="tabs-bar">
+          <button id="tabs-left" class="tab-scroll-btn" disabled>&#x25C0;</button>
+          <div id="tabs"></div>
+          <button id="tabs-right" class="tab-scroll-btn" disabled>&#x25B6;</button>
+        </div>
+        <div id="monaco-container"></div>
+      </div>
+    </div>
+    <script type="module" src="./editor.mjs"></script>
+  </body>
+</html>

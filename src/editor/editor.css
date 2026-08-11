@@ -1,0 +1,155 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+}
+
+#sidebar {
+  width: 260px;
+  min-width: 180px;
+  max-width: 400px;
+  background: #252526;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#sidebar-header {
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #bbb;
+  border-bottom: 1px solid #333;
+}
+
+#tree-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#divider {
+  width: 4px;
+  cursor: col-resize;
+  background: #333;
+  flex-shrink: 0;
+}
+
+#divider:hover {
+  background: #007acc;
+}
+
+#editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#tabs-bar {
+  display: flex;
+  background: #252526;
+  border-bottom: 1px solid #333;
+  min-height: 35px;
+  align-items: stretch;
+}
+
+.tab-scroll-btn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  flex-shrink: 0;
+  color: #888;
+  cursor: pointer;
+  border-right: 1px solid #333;
+  font-size: 10px;
+}
+
+.tab-scroll-btn:hover:not(:disabled) {
+  background: #333;
+  color: #d4d4d4;
+}
+
+.tab-scroll-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+#tabs {
+  display: flex;
+  overflow: hidden;
+  flex: 1;
+}
+
+.tab {
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  border-right: 1px solid #333;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #969696;
+}
+
+.tab:hover {
+  background: #2a2d2e;
+}
+
+.tab.active {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-bottom: 2px solid #007acc;
+}
+
+.tab .close {
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0;
+  border-radius: 3px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab:hover .close {
+  opacity: 0.7;
+}
+
+.tab .close:hover {
+  background: #555;
+  opacity: 1;
+}
+
+#monaco-container {
+  flex: 1;
+}
+
+#loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #888;
+  font-size: 14px;
+}

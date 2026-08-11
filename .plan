@@ -1,0 +1,52 @@
+# Editor Integration Plan
+
+## Context
+Build a Monaco editor + @pierre/trees file explorer that integrates with the existing `WebFileSystem` module. A new `edit` terminal command will open the editor in a new browser tab with `window.fs` set.
+
+## Files to Create
+
+### 1. `src/editor/editor.html`
+Standalone HTML page (like `index.html`) with:
+- `<script type="importmap">` for Monaco (via `https://esm.sh/monaco-editor`) and `@pierre/trees` (via `https://esm.sh/@pierre/trees`)
+- Layout: left panel (file tree) + right panel (Monaco editor)
+- Loads `src/editor/editor.mjs`
+
+### 2. `src/editor/editor.mjs`
+Vanilla JS entry point (`.mjs`). Responsibilities:
+- Retrieve FS handle from IndexedDB (reuse `getHandle`/`listHandles` from `src/commands/open.mjs`)
+- Create `WebFileSystem` instance, set `window.fs`
+- Collect file paths via `fs.getFilesFromDirectory()`
+- Create `FileTree` from `@pierre/trees` with those paths
+- Initialize Monaco editor
+- Wire tree selection → load file content into Monaco
+- Wire save (Ctrl+S) → write Monaco content back to fs via `fs.writeFile()`
+- Listen for `fs:modified` / `fs:deleted` events to update the tree
+
+### 3. `src/editor/editor.css`
+Styles for the split-pane layout (file tree left, editor right).
+
+### 4. `src/commands/edit.mjs`
+New terminal command following the existing `createCommand` pattern:
+- Name: `edit` (alias: `e`)
+- Opens `editor.html` in a new tab via `window.open()`
+- No arguments needed initially
+
+## Files to Modify
+
+### 5. `src/main.mjs`
+- Import `editCommand` from `./commands/edit.mjs`
+- Register it with `terminal.registerCommand(editCommand)`
+
+## Key Design Decisions
+- **FS sharing**: Editor page reads the directory handle from IndexedDB (same store as `open` command) rather than postMessage, since handles are structured-clone-safe and already persisted
+- **CDN loading**: Monaco and @pierre/trees loaded via importmap from esm.sh, matching existing pattern
+- **No npm install needed**: All deps via CDN
+- **Language detection**: Map file extensions to Monaco languages for syntax highlighting
+
+## Verification
+- Run `npm run dev` (Vite dev server)
+- In terminal: `open` a folder, then `edit`
+- New tab opens with file tree on left, Monaco on right
+- Click file in tree → loads in editor with syntax highlighting
+- Edit + Ctrl+S → saves back to fs
+- Files changed externally → tree updates
