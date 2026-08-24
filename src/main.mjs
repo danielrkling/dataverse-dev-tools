@@ -15,10 +15,11 @@ import { historyCommand } from "./commands/history.mjs";
 // import { initConfig } from "./commands/init-config.mjs";
 import { npmCommand } from "./commands/npm.mjs";
 import { openCommand } from "./commands/open.mjs";
-import { runCommand } from "./commands/run.mjs";
+// import { runCommand } from "./commands/run.mjs"; // TODO: run.mjs missing — build breaks
 import tailwind from "./commands/tailwind.mjs";
 import { uploadCommand, previewCommand, cacheCommand } from "./commands/dataverse.mjs";
 import git from "./commands/git.mjs";
+import gitlab from "./commands/gitlab.mjs";
 import { WebTerminal } from "./terminal.mjs";
 
 /** @type {WebTerminal} */
@@ -41,7 +42,8 @@ terminal.registerCommand(mkdirCommand);
 // terminal.registerCommand(initConfig);
 terminal.registerCommand(previewCommand);
 terminal.registerCommand(npmCommand);
-terminal.registerCommand(runCommand);
+// terminal.registerCommand(runCommand); // TODO: run.mjs missing
+terminal.registerCommand(gitlab);
 terminal.registerCommand(openCommand);
 terminal.registerCommand(tailwind);
 terminal.registerCommand(uploadCommand);

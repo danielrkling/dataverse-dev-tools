@@ -77,6 +77,43 @@ function extractTar(buffer) {
 
 const REGISTRY = "https://registry.npmjs.org";
 
+/** @type {Promise<void>} */
+let fsWriteQueue = Promise.resolve();
+
+/**
+ * Run a filesystem mutation exclusively — OPFS directory handles cache state,
+ * and concurrent mkdir/write on shared parents throws InvalidStateError.
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+function withFsLock(fn) {
+    const task = fsWriteQueue.then(fn);
+    fsWriteQueue = task.then(
+        () => {},
+        () => {},
+    );
+    return task;
+}
+
+/**
+ * Run an async mapper over items with bounded concurrency.
+ * @template T
+ * @param {T[]} items
+ * @param {(item: T, index: number) => Promise<any>} fn
+ * @param {number} [limit]
+ */
+async function eachWithConcurrency(items, fn, limit = 8) {
+    let next = 0;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (next < items.length) {
+            const index = next++;
+            await fn(items[index], index);
+        }
+    });
+    await Promise.all(workers);
+}
+
 /**
  * @param {string} name
  * @returns {string}
@@ -229,13 +266,16 @@ async function installOne(fs, term, name, version, tsOnly) {
     installing.add(name);
 
     const targetDir = `node_modules/${name}`;
-    if (await fs.exists(targetDir)) {
-        const pkg = await fs.readFile(`${targetDir}/package.json`,"utf8")
-        const pkgJson = JSON.parse(pkg)
-        if (satisfies(pkgJson.version,version)){
+    // Read under the fs lock so we don't read a directory mid-mutation.
+    const alreadyInstalled = await withFsLock(async () => {
+        if (!(await fs.exists(targetDir))) return false;
+        const pkgRaw = await fs.readFile(`${targetDir}/package.json`, "utf8");
+        const pkgJson = JSON.parse(pkgRaw);
+        return satisfies(pkgJson.version, version);
+    });
+    if (alreadyInstalled) {
         term.info(`    ${name} already installed`);
         return;
-        }
     }
 
     const meta = await fetchPackageMeta(name);
@@ -255,23 +295,54 @@ async function installOne(fs, term, name, version, tsOnly) {
     const files = extractTar(tarBuffer);
     const filtered = filterFiles(files, tsOnly);
 
+    // Group files by directory so we only mkdir each dir once.
+    /** @type {Map<string, { path: string, data: Uint8Array }[]>} */
+    const byDir = new Map();
     for (const file of filtered) {
         const fp = `${targetDir}/${file.path}`;
         const dir = dirname(fp);
-        if (dir) await fs.mkdir(dir, { recursive: true });
-        await fs.writeFile(fp, file.data);
+        if (!byDir.has(dir)) byDir.set(dir, []);
+        byDir.get(dir).push(file);
     }
+
+    // All writes go through the fs lock: downloads stay parallel, disk stays serialized.
+    await Promise.all(
+        [...byDir.entries()].map(([dir, files]) =>
+            withFsLock(async () => {
+                if (dir) await fs.mkdir(dir, { recursive: true });
+                for (const file of files) {
+                    await fs.writeFile(`${targetDir}/${file.path}`, file.data);
+                }
+            }),
+        ),
+    );
 
     term.success(`    ${name}@${resolved} installed`);
 
-    const deps = pkg.dependencies || {};
-    for (const [depName, depRange] of Object.entries(deps)) {
+    const deps = Object.entries(pkg.dependencies || {});
+    await eachWithConcurrency(deps, async ([depName, depRange]) => {
         try {
             await installOne(fs, term, depName, depRange, tsOnly);
         } catch (e) {
             term.error(`    Failed to install ${depName}: ${e.message}`);
         }
-    }
+    });
+}
+
+/** @type {Promise<void>} */
+let pkgJsonQueue = Promise.resolve();
+
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} name
+ * @param {string} version
+ * @param {boolean} [dev]
+ */
+function updatePackageJson(fs, name, version, dev) {
+    // Serialize read-modify-write cycles so concurrent installs don't clobber each other.
+    const task = pkgJsonQueue.then(() => writePackageJson(fs, name, version, dev));
+    pkgJsonQueue = task.catch(() => {});
+    return task;
 }
 
 /**
@@ -280,7 +351,7 @@ async function installOne(fs, term, name, version, tsOnly) {
  * @param {string} version
  * @param {boolean} [dev]
  */
-async function updatePackageJson(fs, name, version, dev) {
+async function writePackageJson(fs, name, version, dev) {
     /** @type {Record<string, any>} */
     const pkg = (await readJSON(fs, "package.json")) || {};
     if (dev) {
@@ -290,7 +361,7 @@ async function updatePackageJson(fs, name, version, dev) {
         pkg.dependencies = pkg.dependencies || {};
         pkg.dependencies[name] = `^${version}`;
     }
-    await fs.writeFile("package.json", JSON.stringify(pkg, null, 2));
+    await withFsLock(() => fs.writeFile("package.json", JSON.stringify(pkg, null, 2)));
 }
 
 const installParser = object({
@@ -403,13 +474,13 @@ export const npmCommand = createCommand({
                 return "";
             }
 
-            for (const [depName, depRange] of entries) {
+            await eachWithConcurrency(entries, async ([depName, depRange]) => {
                 try {
                     await installOne(fs, term, depName, depRange, tsOnly);
                 } catch (e) {
                     term.error(`  Failed to install ${depName}: ${e.message}`);
                 }
-            }
+            });
             return "";
         }
 
@@ -451,7 +522,7 @@ export const npmCommand = createCommand({
                     // Assuming your WebFileSystem supports a recursive rm/unlink helper.
                     // If not, installOne will overwrite files, but removing old ones is cleaner.
                     try {
-                        await fs.rm(targetDir, { recursive: true });
+                        await withFsLock(() => fs.rm(targetDir, { recursive: true }));
                     } catch {
                         // Fallback if rm isn't implemented: proceed with overwrite
                     }
@@ -519,13 +590,13 @@ export const npmCommand = createCommand({
                 return "";
             }
 
-            for (const [depName, depRange] of entries) {
+            await eachWithConcurrency(entries, async ([depName, depRange]) => {
                 try {
                     await performUpdate(depName, depRange);
                 } catch (e) {
                     term.error(`Failed to update ${depName}: ${e.message}`);
                 }
-            }
+            });
             return "";
         }
     },
