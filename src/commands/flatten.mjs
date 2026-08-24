@@ -86,3 +86,41 @@ export const flatten = createCommand({
         }
     },
 });
+
+export const templateCommand = createCommand({
+    name: "template",
+    parser: object({
+        input: argument(string({ metavar: "INPUT" }), {
+            description: message`Directory or file path to flatten`,
+        }),
+        output: argument(string({ metavar: "OUTPUT" }), {
+            description: message`Directory or file path to flatten`,
+        }),
+    }),
+    aliases:["inject"],
+    description: message`Inject files via template syntax {{script.js}}`,
+    usage: message`template <input> <output>`,
+    brief: message`Inject files via template syntax {{script.js}}`,
+    execute: async (parsed, term) => {
+        const { fs } = term;
+
+        const regex = /\{\{(.+?)\}\}/g;
+        const input = await fs.readFile(parsed.input, "utf8");
+        const matches = [...input.matchAll(regex)]
+        if (!matches || matches.length===0) {
+            await fs.writeFile(parsed.output, input);
+            term.log(`Wrote ${parsed.output} (${input.length} bytes)`);
+            return;
+        }
+
+        const replacements = await Promise.all(matches.map(async (match) => [match[0], await fs.readFile(match[1].trim(), "utf8")]));
+
+        let result = input;
+        for (const [placeholder, value] of replacements) {
+            result = result.replace(placeholder, value);
+        }
+
+        await fs.writeFile(parsed.output, result);
+        term.log(`Wrote ${parsed.output} (${result.length} bytes)`);
+    },
+});

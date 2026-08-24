@@ -338,7 +338,7 @@ customElements.define("web-terminal", WebTerminal);
  * @property {import("@optique/core").Message} [usage]
  * @property {import("@optique/core").Message} [brief]
  * @property {TParser} parser
- * @property {(args: import("@optique/core").InferValue<TParser>, terminal: WebTerminal) => string | undefined | Promise<string | undefined>} execute
+ * @property {(args: import("@optique/core").InferValue<TParser>, terminal: WebTerminal) => any | Promise<any>} execute
  * @property {(terminal: WebTerminal) => void} [init]
  * @property {(args: string[]) => string[]} [transformArgs]
  */

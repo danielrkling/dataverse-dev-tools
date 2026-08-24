@@ -1,6 +1,6 @@
 import { argument, message, object, optional, string } from "@optique/core";
 import { createCommand, WebTerminal } from "../terminal.mjs";
-import { createDebouncer } from "../utils/debounce.mjs";
+import { createDebouncer, debounce } from "../utils/debounce.mjs";
 import { WebFileSystem } from "../fs.mjs";
 
 /** @type {FileSystemObserver | null} */
@@ -88,15 +88,13 @@ async function loadFS(terminal, fs) {
         terminal.prompt = fs.rootName;
         terminal.loadHistory(fs.rootName);
 
-        terminal.dispatchEvent(new CustomEvent("fs:init"))
+        terminal.dispatchEvent(new CustomEvent("fs:init"));
 
         await createObserver(terminal);
     } else {
         terminal.error(`Invalid permissions`);
     }
 }
-
-const debounceEmit = createDebouncer(100);
 
 /**
  *
@@ -115,11 +113,17 @@ async function createObserver(terminal) {
             if (name === "desktop.ini" || (name && name.endsWith(".crswap"))) continue;
 
             if (record.type === "appeared" || record.type === "modified") {
-                debounceEmit(path, () => terminal.dispatchEvent(new CustomEvent("fs:modified", { detail: { path } })));
+                debounce(100, `fs:${path}`, () =>
+                    terminal.dispatchEvent(new CustomEvent("fs:modified", { detail: { path } })),
+                );
             } else if (record.type === "disappeared") {
-                debounceEmit(path, () => terminal.dispatchEvent(new CustomEvent("fs:deleted", { detail: { path } })));
+                debounce(100, `fs:${path}`, () =>
+                    terminal.dispatchEvent(new CustomEvent("fs:deleted", { detail: { path } })),
+                );
             } else if (record.type === "moved") {
-                debounceEmit(path, () => terminal.dispatchEvent(new CustomEvent("fs:modified", { detail: { path } })));
+                debounce(100, `fs:${path}`, () =>
+                    terminal.dispatchEvent(new CustomEvent("fs:modified", { detail: { path } })),
+                );
             } else {
                 continue;
             }
