@@ -1,22 +1,6 @@
 import { argument, message, object, optional, string } from "@optique/core";
-import { createCommand, WebTerminal } from "../terminal.mjs";
-import { createDebouncer, debounce } from "../utils/debounce.mjs";
-import { WebFileSystem } from "../fs.mjs";
-
-/** @type {FileSystemObserver | null} */
-let rootObserver = null;
-
-// export class FSChange extends CustomEvent {
-//     /**
-//      * @param {'modified'|'deleted'} type
-//      * @param {string} path
-//      */
-//     constructor(type, path) {
-//         super("fs:change", {
-//             detail: { path, type },
-//         });
-//     }
-// }
+import { createCommand } from "../terminal.mjs";
+import { workspace, listHandles } from "../services/workspace.mjs";
 
 export const openCommand = createCommand({
     name: "open",
@@ -33,14 +17,12 @@ export const openCommand = createCommand({
     }),
     execute: async (parsed, terminal) => {
         if (parsed.path) {
-            const handle = await getHandle(parsed.path);
-            if (handle) {
-                loadFS(terminal, new WebFileSystem(handle));
-            } else {
-                throw new Error(`No Recent folder found with name ${parsed.path}`);
-            }
+            await workspace.openRecent(parsed.path, terminal);
         } else {
-            loadFS(terminal, await WebFileSystem.fromPicker());
+            const opened = await workspace.openPicker(terminal);
+            if (!opened) {
+                terminal.error(`Invalid permissions`);
+            }
         }
     },
     init: async (terminal) => {
@@ -52,8 +34,8 @@ export const openCommand = createCommand({
             const button = document.createElement("button");
             button.innerText = `  ${folder.id}`;
 
-            button.onclick = () => {
-                loadFS(terminal, new WebFileSystem(folder.handle));
+            button.onclick = async () => {
+                await workspace.openRecent(folder.id, terminal);
                 elem.innerHTML = "";
             };
             elem.appendChild(button);
@@ -62,7 +44,7 @@ export const openCommand = createCommand({
         const button = document.createElement("button");
         button.innerText = "  Select New Folder";
         button.onclick = async () => {
-            loadFS(terminal, await WebFileSystem.fromPicker());
+            await workspace.openPicker(terminal);
             elem.innerHTML = "";
         };
         elem.appendChild(button);
@@ -71,171 +53,6 @@ export const openCommand = createCommand({
     },
 });
 
-/**
- * @param {WebTerminal} terminal
- * @param {WebFileSystem} fs
- */
-async function loadFS(terminal, fs) {
-    const permission = await fs.verifyPermission();
-    if (permission) {
-        await terminal._persistHistory();
-        saveHandle(fs.rootName, fs.rootHandle);
-        terminal.fs = fs;
-
-        window.fs = fs;
-
-        terminal.log(`Loading ${fs.rootName}`);
-        terminal.prompt = fs.rootName;
-        terminal.loadHistory(fs.rootName);
-
-        terminal.dispatchEvent(new CustomEvent("fs:init"));
-
-        await createObserver(terminal);
-    } else {
-        terminal.error(`Invalid permissions`);
-    }
-}
-
-/**
- *
- * @param {WebTerminal} terminal
- */
-async function createObserver(terminal) {
-    if (rootObserver) {
-        rootObserver.disconnect();
-        rootObserver = null;
-    }
-
-    const observer = new FileSystemObserver((records) => {
-        for (const record of records) {
-            const path = record.relativePathComponents.join("/");
-            const name = record.relativePathComponents.at(-1);
-            if (name === "desktop.ini" || (name && name.endsWith(".crswap"))) continue;
-
-            if (record.type === "appeared" || record.type === "modified") {
-                debounce(100, `fs:${path}`, () =>
-                    terminal.dispatchEvent(new CustomEvent("fs:modified", { detail: { path } })),
-                );
-            } else if (record.type === "disappeared") {
-                debounce(100, `fs:${path}`, () =>
-                    terminal.dispatchEvent(new CustomEvent("fs:deleted", { detail: { path } })),
-                );
-            } else if (record.type === "moved") {
-                debounce(100, `fs:${path}`, () =>
-                    terminal.dispatchEvent(new CustomEvent("fs:modified", { detail: { path } })),
-                );
-            } else {
-                continue;
-            }
-        }
-    });
-
-    await observer.observe(terminal.fs.rootHandle, { recursive: true });
-    rootObserver = observer;
-}
-
-const DB_NAME = "filesystem-db";
-const HANDLE_STORE = "handles";
-const HISTORY_STORE = "history";
-const DB_VERSION = 2;
-
-/**
- * @typedef {Object} StoredHandle
- * @property {string} id
- * @property {FileSystemDirectoryHandle} handle
- * @property {number} savedAt
- */
-
-/** @returns {Promise<IDBDatabase>} */
-function openDB() {
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-        request.onupgradeneeded = () => {
-            const db = request.result;
-
-            if (!db.objectStoreNames.contains(HANDLE_STORE)) {
-                db.createObjectStore(HANDLE_STORE, {
-                    keyPath: "id",
-                });
-            }
-            if (!db.objectStoreNames.contains(HISTORY_STORE)) {
-                db.createObjectStore(HISTORY_STORE, { keyPath: "key" });
-            }
-        };
-
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
-}
-
-/**
- * @param {string} id
- * @param {FileSystemDirectoryHandle} handle
- * @returns {Promise<void>}
- */
-export async function saveHandle(id, handle) {
-    const db = await openDB();
-
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(HANDLE_STORE, "readwrite");
-
-        tx.objectStore(HANDLE_STORE).put({
-            id,
-            handle,
-            savedAt: Date.now(),
-        });
-
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    });
-}
-
-/**
- * @param {string} id
- * @returns {Promise<FileSystemDirectoryHandle | null>}
- */
-export async function getHandle(id) {
-    const db = await openDB();
-
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(HANDLE_STORE, "readonly");
-        const req = tx.objectStore(HANDLE_STORE).get(id);
-
-        req.onsuccess = () => {
-            resolve(req.result?.handle ?? null);
-        };
-
-        req.onerror = () => reject(req.error);
-    });
-}
-
-/** @returns {Promise<StoredHandle[]>} */
-export async function listHandles() {
-    const db = await openDB();
-
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(HANDLE_STORE, "readonly");
-        const req = tx.objectStore(HANDLE_STORE).getAll();
-
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-    });
-}
-
-/**
- * @param {string} id
- * @returns {Promise<void>}
- */
-export async function deleteHandle(id) {
-    const db = await openDB();
-
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(HANDLE_STORE, "readwrite");
-
-        tx.objectStore(HANDLE_STORE).delete(id);
-
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    });
-}
+// Re-exports kept for backwards compatibility — new code should import from
+// services/workspace.mjs directly.
+export { saveHandle, getHandle, listHandles, deleteHandle } from "../services/workspace.mjs";

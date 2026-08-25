@@ -21,6 +21,9 @@ import { uploadCommand, previewCommand, cacheCommand } from "./commands/datavers
 import git from "./commands/git.mjs";
 import gitlab from "./commands/gitlab.mjs";
 import { WebTerminal } from "./terminal.mjs";
+import "./components/ide-app.mjs";
+import "./components/file-tree.mjs";
+import "./components/editor-pane.mjs";
 
 /** @type {WebTerminal} */
 export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-terminal"));

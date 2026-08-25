@@ -9,8 +9,15 @@
       body {
         padding: 0;
         margin: 0;
+        height: 100%;
       }
 
+      /* Temporary layout — will be replaced by <ide-app> in step 5 */
+      #app {
+        display: grid;
+        grid-template-columns: 250px 1fr;
+        height: 100vh;
+      }
       web-terminal {
         height: 100vh;
       }
@@ -19,6 +26,8 @@
     <script type="importmap">
       {
         "imports": {
+          "@pierre/trees": "https://esm.sh/@pierre/trees@1.0.0-beta.6",
+          "@pierre/trees/web-components": "https://esm.sh/@pierre/trees@1.0.0-beta.6/web-components",
           "@optique/core": "https://esm.sh/@optique/core@1.1.1",
           "isomorphic-git": "https://esm.sh/isomorphic-git@1.27.1",
           "tailwindcss": "https://esm.sh/tailwindcss@4.1.6",
@@ -29,9 +38,12 @@
         }
       }
     </script>
-    <script type="module" crossorigin src="/assets/index-DQ1V2752.js"></script>
+    <script type="module" crossorigin src="/assets/index-DZ7xJJza.js"></script>
   </head>
   <body>
-    <web-terminal></web-terminal>
+    <div id="app">
+      <file-tree></file-tree>
+      <web-terminal></web-terminal>
+    </div>
   </body>
 </html>

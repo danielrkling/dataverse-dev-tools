@@ -58,6 +58,18 @@ export class WebFileSystem {
     }
 
     /**
+     * A filesystem view anchored at the workspace ROOT, independent of the
+     * terminal's current working directory. Panels (tree/editor) should use
+     * this so their operations always address the same tree the user sees.
+     * @returns {WebFileSystem}
+     */
+    get root() {
+        const view = Object.create(this);
+        Object.defineProperty(view, "cwd", { value: "/", writable: false });
+        return /** @type {WebFileSystem} */ (view);
+    }
+
+    /**
      * Creates a WebFileSystem instance backed by the Origin Private File System (OPFS).
      * Useful for testing or isolated storage scenarios.
      * @param {string} [id='web-fs'] Name of the root directory within OPFS.

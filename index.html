@@ -9,15 +9,15 @@
       body {
         padding: 0;
         margin: 0;
-      }
-
-      web-terminal {
-        height: 100vh;
+        height: 100%;
       }
     </style>
     <script type="importmap">
       {
         "imports": {
+          "@pierre/trees": "https://esm.sh/@pierre/trees@1.0.0-beta.6",
+          "@pierre/trees/web-components": "https://esm.sh/@pierre/trees@1.0.0-beta.6/web-components",
+          "@vaadin/split-layout": "https://esm.sh/@vaadin/split-layout@25.2.8",
           "@optique/core": "https://esm.sh/@optique/core@1.1.1",
           "isomorphic-git": "https://esm.sh/isomorphic-git@1.27.1",
           "tailwindcss": "https://esm.sh/tailwindcss@4.1.6",
@@ -39,6 +39,10 @@
     <script src="src/main.mjs" defer type="module"></script>
   </head>
   <body>
-    <web-terminal></web-terminal>
+    <ide-app>
+      <file-tree slot="sidebar"></file-tree>
+      <editor-pane slot="editor"></editor-pane>
+      <web-terminal slot="terminal"></web-terminal>
+    </ide-app>
   </body>
 </html>

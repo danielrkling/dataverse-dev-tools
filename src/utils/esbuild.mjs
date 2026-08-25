@@ -1,4 +1,4 @@
-import { WebFileSystem } from "../fs.mjs";
+import { WebFileSystem } from "../services/fs.mjs";
 import { dirname, join, EXTENSIONS } from "../utils/path.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { object, optional, option, string, passThrough, message } from "@optique/core";

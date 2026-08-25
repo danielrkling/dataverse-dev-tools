@@ -1,6 +1,7 @@
 import { command, message, or, parse, runParser } from "@optique/core";
 import parseArgs from "string-argv";
-import { WebFileSystem } from "./fs.mjs";
+import { WebFileSystem } from "./services/fs.mjs";
+import { workspace } from "./services/workspace.mjs";
 import { saveCommandHistory, loadCommandHistory, clearCommandHistory } from "./utils/history.mjs";
 
 
@@ -14,8 +15,10 @@ export class WebTerminal extends HTMLElement {
         this._history = [];
         /** @type {number} */
         this._historyIndex = -1;
+        // Fallback filesystem (OPFS) until a real workspace folder is opened.
+        this._opfsFs = null;
         WebFileSystem.fromOPFS().then((fs) => {
-            this.fs = fs;
+            this._opfsFs = fs;
         });
 
         const root = /** @type {ShadowRoot} */ (this.shadowRoot);
@@ -198,6 +201,22 @@ export class WebTerminal extends HTMLElement {
     /** @param {string} text */
     set prompt(text) {
         this._prompt.textContent = text;
+    }
+
+    /**
+     * The active filesystem. Reads from the workspace service; falls back to
+     * OPFS before a workspace folder is opened. Kept as a getter for
+     * backwards compatibility with commands that do `terminal.fs.*`.
+     * @type {WebFileSystem}
+     */
+    get fs() {
+        return /** @type {WebFileSystem} */ (workspace.fs ?? this._opfsFs);
+    }
+
+    /** @param {WebFileSystem} fs */
+    set fs(fs) {
+        workspace.fs = fs;
+        this._opfsFs = fs;
     }
 
     /** @returns {string} */
