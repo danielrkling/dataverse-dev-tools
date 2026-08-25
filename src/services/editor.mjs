@@ -59,6 +59,10 @@ function configureTypeScript(monaco) {
         target: ts.ScriptTarget.ESNext,
         module: ts.ModuleKind.ESNext,
         moduleResolution: ts.ModuleResolutionKind.NodeJs,
+        // Models live at /node_modules/<pkg>/... — let bare specifiers like
+        // "zod" resolve against the virtual node_modules tree.
+        baseUrl: "/",
+        paths: { "*": ["node_modules/*", "node_modules/@types/*"] },
         allowNonTsExtensions: true,
         allowJs: true,
         checkJs: false,
@@ -74,6 +78,73 @@ function configureTypeScript(monaco) {
     });
     // Eagerly load defaults so cross-file resolution works immediately.
     ts.typescriptDefaults.setEagerModelSync(true);
+}
+
+/**
+ * Strip // and block comments plus trailing commas from JSONC (tsconfig).
+ * @param {string} text
+ */
+function parseJsonc(text) {
+    const withoutComments = text
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:"'\\])\/\/.*$/gm, "$1");
+    const withoutTrailing = withoutComments.replace(/,\s*([}\]])/g, "$1");
+    return JSON.parse(withoutTrailing);
+}
+
+/**
+ * Resolve a value against a Monaco TS enum (accepts string names like
+ * "ESNext" / "NodeJs", case-insensitively).
+ * @param {Record<string, any>} enumObj
+ * @param {any} value
+ */
+function pickEnum(enumObj, value) {
+    if (value == null) return undefined;
+    if (typeof value === "number") return value;
+    const key = Object.keys(enumObj).find((k) => k.toLowerCase() === String(value).toLowerCase());
+    return key !== undefined ? enumObj[key] : undefined;
+}
+
+/**
+ * Read /tsconfig.json from the workspace and apply its compilerOptions.
+ * Monaco never reads tsconfig on its own — we translate it.
+ * @param {(p: string) => Promise<any>} readFile
+ */
+async function applyTsConfig(readFile) {
+    /** @type {any} */
+    let config;
+    try {
+        config = parseJsonc(/** @type {string} */ (await readFile("/tsconfig.json")));
+    } catch {
+        return; // no tsconfig — keep defaults
+    }
+
+    const user = config.compilerOptions ?? {};
+    const monaco = /** @type {typeof import("monaco-editor")} */ (/** @type {any} */ (window).monaco);
+    const ts = monaco.languages.typescript;
+
+    /** @type {Record<string, any>} */
+    const options = {};
+    const target = pickEnum(ts.ScriptTarget, user.target);
+    if (target !== undefined) options.target = target;
+    const moduleKind = pickEnum(ts.ModuleKind, user.module);
+    if (moduleKind !== undefined) options.module = moduleKind;
+    const moduleRes = pickEnum(ts.ModuleResolutionKind, user.moduleResolution);
+    if (moduleRes !== undefined) options.moduleResolution = moduleRes;
+    const jsx = pickEnum(ts.JsxEmit, user.jsx);
+    if (jsx !== undefined) options.jsx = jsx;
+
+    for (const key of [
+        "strict", "noImplicitAny", "strictNullChecks", "esModuleInterop",
+        "allowJs", "checkJs", "skipLibCheck", "allowSyntheticDefaultImports",
+        "resolveJsonModule", "experimentalDecorators",
+    ]) {
+        if (key in user) options[key] = !!user[key];
+    }
+    if (user.baseUrl) options.baseUrl = user.baseUrl;
+    if (user.paths) options.paths = user.paths;
+
+    ts.typescriptDefaults.setCompilerOptions(options);
 }
 
 /**
@@ -166,7 +237,86 @@ class EditorStateImpl {
         model.onDidChangeContent(() => {
             this.dirty.add(path);
         });
+        // Lazily pull in type models for any npm packages this file imports.
+        void this._hydrateImportsFor(path).catch((e) => console.warn("import hydration failed:", e));
         return model;
+    }
+
+    /**
+     * Scan a source file's import specifiers and lazily load type models for
+     * any bare npm packages it imports.
+     * @param {string} path clean root-relative path
+     */
+    async _hydrateImportsFor(path) {
+        if (path.startsWith("node_modules/")) return;
+        const model = this.models.get(path);
+        if (!model || model.isDisposed()) return;
+
+        for (const spec of extractImportSpecifiers(model.getValue())) {
+            const pkg = packageNameFromSpecifier(spec);
+            if (pkg) await this._ensurePackageTypes(pkg);
+        }
+    }
+
+    /**
+     * Load a single npm package's type entry into the registry (no-op if
+     * already loaded or not installed).
+     * @param {string} name package name, e.g. "zod" or "@scope/pkg"
+     */
+    async _ensurePackageTypes(name) {
+        const fs = workspace.fs?.root;
+        if (!fs) return;
+        const dir = `node_modules/${name}`;
+
+        // Already loaded?
+        for (const key of this.models.keys()) {
+            if (key.startsWith(`${dir}/`)) return;
+        }
+
+        /** @type {any} */
+        let pkg;
+        try {
+            pkg = JSON.parse(/** @type {string} */ (await fs.readFile(`/${dir}/package.json`, "utf8")));
+        } catch {
+            return; // not installed / unreadable
+        }
+
+        /** @type {string[]} candidate type/entry files */
+        const candidates = [];
+        const typesField = pkg.types ?? pkg.typings;
+        if (typesField) candidates.push(joinPosix(dir, typesField));
+        if (pkg.main) {
+            candidates.push(joinPosix(dir, pkg.main).replace(/\.js$/, ".d.ts"));
+            candidates.push(joinPosix(dir, pkg.main));
+        }
+        candidates.push(
+            joinPosix(dir, "index.d.ts"),
+            joinPosix(dir, "index.js"),
+            `${dir}/package.json`, // last resort: at least exports metadata
+        );
+
+        for (const candidate of candidates) {
+            if (!/\.(d\.ts|js|mjs|cjs|json)$/.test(candidate)) continue;
+            if (await this._tryCreateModelFromDisk(candidate)) break;
+        }
+    }
+
+    /**
+     * Try to read a file from the workspace root and register its model.
+     * @param {string} path clean root-relative path
+     * @returns {Promise<boolean>} whether a model was created
+     */
+    async _tryCreateModelFromDisk(path) {
+        try {
+            const fs = workspace.fs?.root;
+            if (!fs) return false;
+            const content = await fs.readFile(`/${path}`, "utf8");
+            if (typeof content !== "string") return false;
+            if (!this.models.has(path)) this._createModel(path, content);
+            return true;
+        } catch {
+            return false; // vanished mid-scan or binary
+        }
     }
 
     /** Reset all editor state when a new workspace opens. */
@@ -188,8 +338,11 @@ class EditorStateImpl {
         this._hydrating = true;
         try {
             await ensureMonaco();
+            // Apply the project's own tsconfig.json, if present.
+            const rfs = fs.root;
+            await applyTsConfig((p) => rfs.readFile(p, "utf8"));
             const { paths } = await scanPaths(fs);
-            const sourceFiles = paths.filter((p) => /\.(ts|tsx|js|jsx|mjs|cjs|json)$/.test(p));
+            const sourceFiles = paths.filter((p) => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(p));
             let hydrated = 0;
 
             for (const path of sourceFiles) {
@@ -220,3 +373,56 @@ export const editorState = new EditorStateImpl();
 bus.on("workspace:open", () => {
     editorState.reset();
 });
+
+/**
+ * Join a base directory and a relative entry, POSIX style.
+ * @param {string} dir
+ * @param {string} rel
+ */
+function joinPosix(dir, rel) {
+    if (rel.startsWith("./")) rel = rel.slice(2);
+    if (rel.startsWith("/")) return rel.slice(1);
+    return `${dir}/${rel}`;
+}
+
+/**
+ * Extract module specifiers from import/export/require statements.
+ * @param {string} source
+ * @returns {string[]}
+ */
+export function extractImportSpecifiers(source) {
+    /** @type {Set<string>} */
+    const found = new Set();
+    const patterns = [
+        /from\s*["']([^"']+)["']/g,
+        /\bimport\s*\(\s*["']([^"']+)["']/g,
+        /\brequire\s*\(\s*["']([^"']+)["']/g,
+        /\bimport\s+["']([^"']+)["']/g,
+    ];
+    for (const re of patterns) {
+        for (const m of source.matchAll(re)) {
+            const spec = m[1];
+            if (spec && !spec.startsWith(".") && !spec.startsWith("/") && !/^[a-z]+:/i.test(spec)) {
+                found.add(spec);
+            }
+        }
+    }
+    return [...found];
+}
+
+/**
+ * Reduce an import specifier to its package name ("zod", "@scope/pkg").
+ * @param {string} specifier
+ * @returns {string | null}
+ */
+export function packageNameFromSpecifier(specifier) {
+    if (specifier.startsWith(".") || specifier.startsWith("/") || /^[a-z]+:/i.test(specifier)) {
+        return null;
+    }
+    const clean = specifier.split("?")[0];
+    const segments = clean.split("/");
+    if (segments[0].startsWith("@") && segments.length >= 2) {
+        return `${segments[0]}/${segments[1]}`;
+    }
+    return segments[0] ?? null;
+}

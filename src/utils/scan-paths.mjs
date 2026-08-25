@@ -1,5 +1,5 @@
 /** Directories never included in project scans. */
-export const SCAN_IGNORED = ["node_modules", ".git"];
+export const SCAN_IGNORED = [".git"];
 
 /**
  * Recursively collect every path under the workspace root.
@@ -15,9 +15,11 @@ export const SCAN_IGNORED = ["node_modules", ".git"];
  * entry is classified (dir vs file) via stat() BEFORE being added.
  *
  * @param {import("../services/fs.mjs").WebFileSystem} fs
+ * @param {{ ignore?: string[] }} [options]
  * @returns {Promise<{paths: string[], dirs: Set<string>}>}
  */
-export async function scanPaths(fs) {
+export async function scanPaths(fs, options = {}) {
+    const ignore = options.ignore ?? SCAN_IGNORED;
     /** @type {string[]} */
     const paths = [];
     /** @type {Set<string>} */
@@ -38,7 +40,7 @@ export async function scanPaths(fs) {
         names.sort(); // codepoint order — matches @pierre/trees' comparator
 
         for (const name of names) {
-            if (SCAN_IGNORED.includes(name)) continue;
+            if (ignore.includes(name)) continue;
             const path = dirPath ? `${dirPath}/${name}` : name;
             if (seen.has(path)) continue;
 
