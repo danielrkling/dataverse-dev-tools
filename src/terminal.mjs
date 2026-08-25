@@ -126,7 +126,8 @@ export class WebTerminal extends HTMLElement {
     }
 
     /**
-     * Log a message to the terminal output.
+     * Log a message to the terminal output. String content is rendered as
+     * plain text (HTML-escaped), so user input can never inject markup.
      * @param {string|HTMLElement} content
      * @param {Record<string, string>} [attributes]
      * @returns {HTMLDivElement}
@@ -138,12 +139,23 @@ export class WebTerminal extends HTMLElement {
         if (content instanceof HTMLElement) {
             line.appendChild(content);
         } else {
-            line.innerHTML = String(content);
+            line.textContent = String(content);
         }
 
         this._output.appendChild(line);
         this._output.scrollTop = this._output.scrollHeight;
         return line;
+    }
+
+    /**
+     * Log trusted, pre-built HTML. Only use this for markup the app itself
+     * generated — never interpolate user input or file contents into it.
+     * @param {string} html
+     * @param {Record<string, string>} [attributes]
+     * @returns {HTMLDivElement}
+     */
+    html(html, attributes = {}) {
+        return this.log(/** @type {any} */ (document.createRange().createContextualFragment(html)), attributes);
     }
 
     /**

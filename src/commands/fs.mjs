@@ -40,7 +40,7 @@ export const lsCommand = createCommand({
       const prefix = s.isDirectory ? "[DIR]" : "[FILE]";
       return `  ${prefix.padEnd(7)} ${s.name}`;
     });
-    term.log(lines.join("/n"));
+    term.log(lines.join("\n"));
   },
 });
 export const cdCommand = createCommand({

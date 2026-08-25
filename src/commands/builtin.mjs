@@ -20,7 +20,6 @@ export const help = createCommand({
             return;
         }
         const cmds = Array.from(new Set(term.commands.values())).sort((a, b) => a.name.localeCompare(b.name));
-        console.log(cmds);
         const lines = cmds.map((c) => `  ${c.name.padEnd(15)} ${formatMessage(c.description)}`);
         term.info(`Available commands (${cmds.length}):\n${lines.join("\n")}`);
     },

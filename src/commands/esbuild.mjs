@@ -176,9 +176,6 @@ const esbuildParser = object({
     watch: optional(option("--watch", { description: message`Watch for changes and rebuild` })),
 
     // Input
-    // loader: map(multiple(option("--loader", string({ metavar: "EXT=NAME" }))), (arr) =>
-    //     Object.fromEntries(arr.map((s) => splitEq(s))),
-    // ),
 
     // Output contents
     format: optional(
@@ -187,12 +184,6 @@ const esbuildParser = object({
         }),
     ),
     splitting: optional(option("--splitting", { description: message`Enable code splitting` })),
-    // banner: map(multiple(option("--banner", string({ metavar: "TYPE=TEXT" }))), (arr) =>
-    //     Object.fromEntries(arr.map((s) => splitEq(s))),
-    // ),
-    // footer: map(multiple(option("--footer", string({ metavar: "TYPE=TEXT" }))), (arr) =>
-    //     Object.fromEntries(arr.map((s) => splitEq(s))),
-    // ),
     charset: optional(
         option("--charset", choice(["utf8", "ascii"], { metavar: "CHARSET" }), {
             description: message`Character set (utf8, ascii)`,
@@ -236,9 +227,6 @@ const esbuildParser = object({
             description: message`Base directory for output paths`,
         }),
     ),
-    // outExtension: map(multiple(option("--out-extension", string({ metavar: "EXT=EXT" }))), (arr) =>
-    //     Object.fromEntries(arr.map((s) => splitEq(s))),
-    // ),
     entryNames: optional(
         option("--entry-names", string({ metavar: "PATTERN" }), {
             description: message`Pattern for entry point output file names`,
@@ -266,36 +254,6 @@ const esbuildParser = object({
     ),
 
     // Path resolution
-    // alias: map(multiple(option("--alias", string({ metavar: "FROM=TO" }))), (arr) =>
-    //     Object.fromEntries(arr.map((s) => splitEq(s))),
-    // ),
-    conditions: map(multiple(option("--conditions", string({ metavar: "COND" }))), (v) => (v.length ? v : undefined)),
-    external: map(multiple(option("--external", string({ metavar: "NAME" }))), (v) => (v.length ? v : undefined)),
-    // mainFields: map(
-    //     optional(
-    //         option("--main-fields", string({ metavar: "FIELDS" }), {
-    //             description: message`Main fields to use (comma-separated)`,
-    //         }),
-    //     ),
-    //     (s) => (s ? s.split(",").map((x) => x.trim()) : undefined),
-    // ),
-    // nodePaths: map(
-    //     optional(
-    //         option("--node-paths", string({ metavar: "PATHS" }), {
-    //             description: message`Node paths for module resolution (comma-separated)`,
-    //         }),
-    //     ),
-    //     (s) => (s ? s.split(",").map((x) => x.trim()) : undefined),
-    // ),
-    preserveSymlinks: optional(option("--preserve-symlinks", { description: message`Preserve symlinks` })),
-    // resolveExtensions: map(
-    //     optional(
-    //         option("--resolve-extensions", string({ metavar: "EXTS" }), {
-    //             description: message`Resolve extensions (comma-separated)`,
-    //         }),
-    //     ),
-    //     (s) => (s ? s.split(",").map((x) => x.trim()) : undefined),
-    // ),
     packages: optional(
         option("--packages", choice(["bundle","external"], { metavar: "MODE" }), {
             description: message`Packages mode (external)`,
@@ -330,14 +288,6 @@ const esbuildParser = object({
         }),
     ),
     jsxSideEffects: optional(option("--jsx-side-effects", { description: message`JSX side effects` })),
-    // supported: map(multiple(option("--supported", string({ metavar: "FEATURE=BOOL" }))), (arr) => {
-    //     const obj = /** @type {Record<string, boolean>} */ ({});
-    //     for (const s of arr) {
-    //         const [k, v] = splitEq(s);
-    //         obj[k] = v === "true" ? true : v === "false" ? false : /** @type {any} */ (v);
-    //     }
-    //     return obj;
-    // }),
     target: optional(
         option("--target", string({ metavar: "TARGET" }), {
             description: message`Language target (es2020, esnext, etc.)`,
@@ -345,9 +295,6 @@ const esbuildParser = object({
     ),
 
     // Optimization
-    // define: map(multiple(option("--define", string({ metavar: "KEY=VALUE" }))), (arr) =>
-    //     Object.fromEntries(arr.map((s) => splitEq(s))),
-    // ),
     drop: map(multiple(option("--drop", choice(["console", "debugger"], { metavar: "WHAT" }))), (v) =>
         v.length ? v : undefined,
     ),
@@ -425,9 +372,6 @@ const esbuildParser = object({
             description: message`Log message limit`,
         }),
     ),
-    // logOverride: map(multiple(option("--log-override", string({ metavar: "KEY=LEVEL" }))), (arr) =>
-    //     Object.fromEntries(arr.map((s) => splitEq(s))),
-    // ),
 });
 
 // --- COMMAND ---
@@ -466,14 +410,11 @@ export default createCommand({
         }
         const validatedConfig = configResult.data;
 
-        console.log(validatedConfig, parsed);
-
         const { config: _, ...cliFields } = parsed;
         const mergedResult = esbuildConfigSchema.safeParse({
             ...validatedConfig,
             ...dropUndefined(cliFields),
         });
-        console.log(mergedResult);
         if (!mergedResult.success) {
             terminal.error(`Config merge: ${mergedResult.error.issues.map((i) => i.message).join(", ")}`);
             return;
@@ -489,8 +430,6 @@ export default createCommand({
             matched.length > 0
                 ? matched.map(([p]) => `/${p}`)
                 : epPatterns.map((p) => (p.startsWith("/") ? p : `/${p}`));
-
-        console.log(resolvedEntryPoints);
 
         const buildOptions = {
             ...rest,

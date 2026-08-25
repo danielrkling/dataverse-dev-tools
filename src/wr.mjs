@@ -59,21 +59,6 @@ export async function getWebResources(root) {
         .then((v) => v.value);
 }
 
-/**
- *
- * @param {string} name
- */
-export async function deleteWebResource(name) {
-    return getWebResource(name).then((wr) => {
-        if (wr) {
-            return fetch(`/api/data/v9.2/webresourceset(${wr.webresourceid})`, {
-                headers: getHeaders(),
-                method: "DELETE",
-            });
-        }
-    });
-}
-
 /** @type {Map<string,WebResource>} */
 const cache = new Map();
 
@@ -89,19 +74,19 @@ export async function uploadWebResource(name, text, solution) {
     if (!text) throw new Error(`Content cannot be empty`);
     let wr = cache.get(name);
     if (wr) {
-        await fetch(`/api/data/v9.2/webresourceset(${wr.webresourceid})/content`, {
+        const res = await fetch(`/api/data/v9.2/webresourceset(${wr.webresourceid})/content`, {
             headers: getHeaders(solution),
             method: "PUT",
             body: JSON.stringify({
                 value: b64EncodeUnicode(text),
             }),
         });
+        if (!res.ok) throw new Error(`Failed to update ${name}: HTTP ${res.status}`);
         return wr;
     }
     wr = await getWebResource(name);
-    cache.set(name, wr);
     const webresourcetype = getWebResourceType(name);
-    const result = await fetch(`/api/data/v9.2/webresourceset(${wr?.webresourceid ?? ""})?$select=name,webresourceid`, {
+    const res = await fetch(`/api/data/v9.2/webresourceset(${wr?.webresourceid ?? ""})?$select=name,webresourceid`, {
         headers: getHeaders(solution),
         method: wr ? "PATCH" : "POST",
         body: JSON.stringify({
@@ -109,8 +94,14 @@ export async function uploadWebResource(name, text, solution) {
             webresourcetype,
             name,
         }),
-    }).then((r) => r.json());
-
+    });
+    if (!res.ok) throw new Error(`Failed to upload ${name}: HTTP ${res.status}`);
+    // Prefer: return=representation gives us the full record back on create/update.
+    /** @type {any} */
+    const returned = await res.json();
+    wr = returned?.webresourceid ? /** @type {WebResource} */ (returned) : await getWebResource(name);
+    if (!wr?.webresourceid) throw new Error(`Uploaded ${name} but could not read it back for publishing`);
+    cache.set(name, wr);
     return wr;
 }
 
@@ -131,7 +122,7 @@ export function isValidWebResource(name) {
 export async function publishWebResources(value, solution) {
     value = value.filter((v) => v && v.webresourceid);
     if (value.length) {
-        return fetch(`/api/data/v9.2/PublishXml`, {
+        const res = await fetch(`/api/data/v9.2/PublishXml`, {
             method: "POST",
             headers: getHeaders(solution),
             body: JSON.stringify({
@@ -140,6 +131,8 @@ export async function publishWebResources(value, solution) {
                     .join("")}</webresources></importexportxml>`,
             }),
         });
+        if (!res.ok) throw new Error(`Publish failed: HTTP ${res.status}`);
+        return res;
     }
 }
 
@@ -151,22 +144,6 @@ export async function publishWebResources(value, solution) {
 function b64EncodeUnicode(str) {
     return btoa(
         encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => String.fromCharCode(parseInt("0x" + p1, 16))),
-    );
-}
-
-/**
- * Decodes a Base64 string that was encoded with Unicode support.
- * This is the direct inverse of the b64EncodeUnicode function.
- *
- * @param {string} str The Base64 encoded string.
- * @returns {string} The original, decoded Unicode string.
- */
-function b64DecodeUnicode(str) {
-    return decodeURIComponent(
-        atob(str)
-            .split("")
-            .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-            .join(""),
     );
 }
 
@@ -207,24 +184,4 @@ function getWebResourceType(name) {
         default:
             return null; // or any default value you prefer
     }
-}
-
-/**
- * Represents a Solution record from the Dataverse Web API,
- * containing identifying information for a solution.
- *
- * @typedef {object} Solution
- * @property {string} solutionid - The primary key (GUID) for the solution record.
- * @property {string} uniquename - The unique, non-localizable name used by the system to identify the solution (e.g., "Active", "Default").
- * @property {string} friendlyname - The localizable display name shown to users in the UI (e.g., "Active Solution").
- */
-
-/**
- *
- * @returns {Promise<Solution[]>}
- */
-export async function getSolutions() {
-    return fetch(`/api/data/v9.2/solutions?$select=friendlyname,uniquename&$filter=ismanaged eq false`)
-        .then((s) => s.json())
-        .then((v) => v.value);
 }
