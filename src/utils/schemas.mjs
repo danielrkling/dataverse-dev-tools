@@ -20,6 +20,16 @@ function dropEmpty(schema) {
   });
 }
 
+/**
+ * Schema for dataverse.config.json
+ */
+export const dataverseConfigSchema = z
+  .object({
+    /** Web resource path to open with the `preview` command when no path given */
+    preview: z.string().optional(),
+  })
+  .passthrough();
+
 
 
 

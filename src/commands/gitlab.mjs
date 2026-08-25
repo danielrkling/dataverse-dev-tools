@@ -1,5 +1,6 @@
 import { command, or, object, optional, argument, string, option, integer, map, message } from '@optique/core';
 import { createCommand } from "../terminal.mjs";
+import { makeGitFs } from "./git.mjs";
 
 // ---------------------------------------------------------------------------
 // Config / auth
@@ -8,26 +9,8 @@ import { createCommand } from "../terminal.mjs";
 const DEFAULT_HOST = 'gitlab.com';
 
 /**
- * Token lookup: repo-scoped store (<repoRoot>/.git/creds.json) first, then the
- * global bootstrap store (/.gitcreds.json). Same format as the `git creds`
- * command: { "<host>": "<token>" }.
- * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {string} host
- * @returns {Promise<string | undefined>}
- */
-async function getToken(fs, host) {
-  for (const file of ['.git/creds.json', '/.gitcreds.json']) {
-    try {
-      const creds = JSON.parse(await fs.readFile(file, { encoding: 'utf8' }));
-      if (creds[host]) return creds[host];
-    } catch {}
-  }
-  return undefined;
-}
-
-/**
  * Parses "group/repo", a full https URL or a numeric project id into
- * { host, projectPath (URL-encoded), projectId? }.
+ * { host, id } where id is URL-encoded or numeric.
  * @param {string} input
  * @returns {{ host: string | null, id: string }}
  */
@@ -120,6 +103,7 @@ async function listTree(auth, projectId, ref, log) {
  * @param {string} pathWithQuery
  */
 async function fetchRaw(auth, pathWithQuery) {
+  /** @type {Record<string, string>} */
   const headers = { Accept: 'application/json' };
   if (auth.token) headers['PRIVATE-TOKEN'] = auth.token;
   const response = await fetch(`https://${auth.host}/api/v4${pathWithQuery}`, { headers });
@@ -131,22 +115,23 @@ async function fetchRaw(auth, pathWithQuery) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {string} inputHost user-supplied host override or null
- * @param {string | null} parsedHost host from a pasted URL
- * @returns {Promise<{ host: string, token?: string }>}
+ * Builds the auth context for API calls. The token lives in the project's
+ * .gitlab.json manifest (set once at clone time) — credentials are always
+ * scoped to a project.
+ * @param {string} host
+ * @param {string | undefined} token
+ * @returns {{ host: string, token?: string }}
  */
-async function makeAuth(fs, inputHost, parsedHost) {
-  const host = inputHost || parsedHost || DEFAULT_HOST;
-  const token = await getToken(fs, host);
-  return { host, token };
+function makeAuth(host, token) {
+  return { host: host || DEFAULT_HOST, token };
 }
 
 // ---------------------------------------------------------------------------
 // Local mirror repo (isomorphic-git) — keeps `git status` / `git diff` working
 // ---------------------------------------------------------------------------
 
-const MANIFEST_FILE = '.gitlab.json';
+/** Lives inside .git so it is hidden from listings and can never be committed. */
+const MANIFEST_FILE = '.git/gitlab.json';
 
 /**
  * Author for local mirror commits. Mirrors git.mjs's getAuthor: cached in the
@@ -190,7 +175,7 @@ function isDirty(row) {
  */
 async function mirrorCommit(git, gitFs, dir, message, author) {
   await git.init({ fs: gitFs, dir });
-  const matrix = await git.statusMatrix({ fs: gitFs, dir, filter: (f) => f !== MANIFEST_FILE });
+  const matrix = await git.statusMatrix({ fs: gitFs, dir, filter: (/** @type {string} */ f) => !f.startsWith('.git') });
   for (const [filepath, head, workdir, stage] of matrix) {
     if (workdir === 0 && stage !== 0) await git.remove({ fs: gitFs, dir, filepath });
     else if (workdir !== 0 && workdir !== stage) await git.add({ fs: gitFs, dir, filepath });
@@ -220,13 +205,91 @@ async function readManifest(fs, root) {
 // ---------------------------------------------------------------------------
 
 /**
- * @param {Uint8Array | ArrayBuffer} data
- * @returns {Promise<string>} lowercase hex sha256
+ * Computes the git blob object id (sha1) of file content — the same id the
+ * tree API returns. This makes push's change detection completely offline.
+ * @param {Uint8Array} content
+ * @returns {Promise<string>} 40-char hex sha1
  */
-async function sha256Hex(data) {
-  const digest = await crypto.subtle.digest('SHA-256', /** @type {ArrayBuffer} */ (data));
+async function gitBlobSha(content) {
+  const header = new TextEncoder().encode(`blob ${content.length}\0`);
+  const data = new Uint8Array(header.length + content.length);
+  data.set(header);
+  data.set(content, header.length);
+  const digest = await crypto.subtle.digest('SHA-1', /** @type {BufferSource} */ (data));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+/**
+ * Builds a create/update action, choosing text or base64 encoding based on
+ * whether the content round-trips as UTF-8. Binary files (images, fonts,
+ * wasm...) must not go through the text path or they get corrupted.
+ * @param {'create' | 'update'} action
+ * @param {string} filePath
+ * @param {Uint8Array} bytes
+ * @returns {any}
+ */
+function actionWithContent(action, filePath, bytes) {
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  // Re-encode and compare: identical means it is valid UTF-8 text.
+  if (new TextEncoder().encode(text).every((b, i) => b === bytes[i])) {
+    return { action, file_path: filePath, content: text };
+  }
+  return {
+    action,
+    file_path: filePath,
+    content: base64FromBytes(bytes),
+    encoding: 'base64',
+  };
+}
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+function base64FromBytes(bytes) {
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Splits actions into chunks that stay under a byte budget and item count so
+ * each commit request comfortably clears GitLab's size limits.
+ * @param {any[]} actions
+ * @param {number} maxBytes approximate content byte budget per chunk
+ * @param {number} maxCount max actions per chunk
+ * @returns {any[][]}
+ */
+function chunkActions(actions, maxBytes, maxCount) {
+  /** @type {any[][]} */
+  const chunks = [[]];
+  let size = 0;
+  for (const a of actions) {
+    const cost = a.content?.length ?? 0;
+    const current = chunks[chunks.length - 1];
+    if (current.length > 0 && (size + cost > maxBytes || current.length >= maxCount)) {
+      chunks.push([]);
+      size = 0;
+    }
+    chunks[chunks.length - 1].push(a);
+    size += cost;
+  }
+  return chunks;
+}
+
+/** @param {number} bytes @returns {string} */
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
 
 /**
  * Fetches one raw file; returns text content.
@@ -278,8 +341,8 @@ const handlers = {
    */
   async clone(parsed, { fs, term }) {
     const { host, id } = parseProject(parsed.project);
-    const auth = await makeAuth(fs, parsed.host, host);
-    term.log(`Looking up project ${parsed.project} on ${auth.host}${auth.token ? '' : ' (unauthenticated)'}...`);
+    const auth = makeAuth(parsed.host || host || '', parsed.token);
+    term.log(`Looking up project ${parsed.project} on ${auth.host}...`);
 
     const project = await api(auth, `/projects/${id}`);
     const ref = parsed.ref || project.default_branch;
@@ -310,6 +373,7 @@ const handlers = {
     for (const b of blobs) files[b.path] = b.id;
     await fs.writeFile(`${root}/${MANIFEST_FILE}`, JSON.stringify({
       host: auth.host,
+      token: auth.token,
       projectId: project.id,
       projectPath: project.path_with_namespace,
       ref,
@@ -320,7 +384,6 @@ const handlers = {
     // Local mirror commit so existing git commands work in this folder.
     try {
       const git = await import('isomorphic-git');
-      const { makeGitFs } = await import('./git.mjs');
       const gitFs = makeGitFs(fs);
       term.log('Creating local snapshot...');
       await mirrorCommit(git, gitFs, root, `Clone ${project.path_with_namespace}@${sha.slice(0, 8)}`, await getLocalAuthor(fs));
@@ -335,11 +398,17 @@ const handlers = {
    * gitlab pull — applies commits made on GitLab since the last sync.
    * Uses the compare endpoint so only changed files are downloaded.
    */
+  /**
+   * gitlab pull [--force]
+   * Applies commits made on GitLab since the last sync. Files that were
+   * modified locally since the sync are treated as conflicts and left alone
+   * unless --force is given.
+   */
   async pull(parsed, { fs, term }) {
     const manifest = await readManifest(fs, fs.cwd);
     if (!manifest) return `No ${MANIFEST_FILE} found. Are you inside a gitlab-cloned project?`;
 
-    const auth = await makeAuth(fs, manifest.host, manifest.host);
+    const auth = makeAuth(manifest.host, manifest.token);
     const head = await api(auth, `/projects/${manifest.projectId}/repository/commits/${encodeURIComponent(manifest.ref)}`);
     if (head.id === manifest.sha) return 'Already up to date';
 
@@ -349,9 +418,46 @@ const handlers = {
     });
     const diffs = compare.diffs ?? [];
 
+    /** @param {string} rel @returns {Promise<boolean>} */
+    async function isLocallyModified(rel) {
+      try {
+        const buf = new Uint8Array(/** @type {ArrayBuffer} */ (
+          await fs.readFile(`${fs.cwd}/${rel}`.replace(/\/+/g, '/'))
+        ));
+        return (await gitBlobSha(buf)) !== manifest.files[rel];
+      } catch {
+        return false; // missing locally -> nothing to clobber
+      }
+    }
+
     let updated = 0, deleted = 0;
+    /** @type {string[]} */
+    const conflicts = [];
+    /** @type {Set<string>} */
+    const conflictedPaths = new Set();
+
     for (const d of diffs) {
-      if (d.deleted_file && d.old_path) {
+      // A rename shows up as one diff entry with old_path + new_path.
+      /** @type {string[]} */
+      const touched = [];
+      if (d.deleted_file && d.old_path) touched.push(d.old_path);
+      if (d.new_path) touched.push(d.new_path);
+
+      const dirty = [];
+      for (const p of touched) {
+        if (!parsed.force && (await fs.exists(`${fs.cwd}/${p}`.replace(/\/+/g, '/'))) && (await isLocallyModified(p))) {
+          dirty.push(p);
+        }
+      }
+      if (dirty.length > 0) {
+        for (const p of dirty) {
+          conflicts.push(`${p} (${d.deleted_file ? 'deleted' : d.renamed_file ? 'renamed' : 'modified'} remotely)`);
+          conflictedPaths.add(p);
+        }
+        continue;
+      }
+
+      if (d.deleted_file && d.old_path && !conflictedPaths.has(d.old_path)) {
         await fs.unlink(`${fs.cwd}/${d.old_path}`.replace(/\/+/g, '/')).catch(() => {});
         deleted++;
       } else if (d.new_path) {
@@ -361,78 +467,62 @@ const handlers = {
       }
     }
 
-    // Refresh blob ids from the tree for the changed paths.
+    // Refresh blob ids from the tree. Conflicted paths keep their OLD
+    // recorded id so push still sees them as changed relative to remote
+    // instead of silently treating them as in-sync.
     const entries = await listTree(auth, String(manifest.projectId), manifest.ref, () => {});
     /** @type {Record<string, string>} */
     const files = {};
     for (const e of entries) if (e.type === 'blob') files[e.path] = e.id;
+    for (const p of conflictedPaths) {
+      if (manifest.files[p] !== undefined) files[p] = manifest.files[p];
+    }
     manifest.sha = head.id;
     manifest.files = files;
     await fs.writeFile(`${fs.cwd}/${MANIFEST_FILE}`, JSON.stringify(manifest, null, 2));
 
-    return `Pulled ${updated} file(s) updated, ${deleted} deleted (now at ${head.id.slice(0, 8)})`;
+    const parts = [`Pulled ${updated} file(s) updated, ${deleted} deleted (now at ${head.id.slice(0, 8)})`];
+    if (conflicts.length > 0) {
+      term.log('CONFLICTS — kept your local versions:');
+      for (const c of conflicts) term.log(`  ${c}`);
+      parts.push(`${conflicts.length} conflicted file(s) kept local — edit/merge manually, then push.`);
+    }
+    return parts.join('\n');
   },
 
   /**
    * gitlab push -m "message" [--branch B]
-   * Builds actions from local changes vs the last-synced state and creates a
-   * single multi-file commit via the commits API.
+   * Builds actions by comparing local files against the blob ids recorded in
+   * the manifest at clone/pull time — entirely offline. Git blob sha1 is
+   * sha1("blob <size>\0" + content), so no per-file API round-trips are
+   * needed. Large change sets are split into multiple commits to stay under
+   * the API's request-size limits.
    */
   async push(parsed, { fs, term }) {
     const manifest = await readManifest(fs, fs.cwd);
     if (!manifest) return `No ${MANIFEST_FILE} found. Are you inside a gitlab-cloned project?`;
 
-    // Detect changes by comparing file contents against the recorded tree.
-    // We don't rely on the local git index: whatever differs from the last
-    // sync gets pushed.
-    const auth = await makeAuth(fs, manifest.host, manifest.host);
+    const auth = makeAuth(manifest.host, manifest.token);
     const branch = parsed.branch || manifest.ref;
+
+    // Stale-push guard: the commits API happily commits onto whatever the
+    // branch tip currently is, so pushing on top of someone else's newer
+    // commit would silently overwrite their file contents. Refuse unless
+    // the branch is where we last synced (or --force was given).
+    if (!parsed.force) {
+      const head = await api(auth, `/projects/${manifest.projectId}/repository/commits/${encodeURIComponent(branch)}`);
+      if (head.id !== manifest.sha) {
+        return [
+          `Remote ${branch} has moved ahead (${manifest.sha.slice(0, 8)} -> ${head.id.slice(0, 8)}), likely by someone else.`,
+          "Run 'gitlab pull' first to integrate their changes, then push again.",
+          'Use gitlab push --force to overwrite anyway (may clobber their changes).',
+        ].join('\n');
+      }
+    }
 
     /** @type {any[]} */
     const actions = [];
     const seen = new Set();
-
-    // Walk local files recursively (excluding .git and manifest).
-    /**
-     * @param {string} rel
-     */
-    async function walk(rel) {
-      const abs = `${fs.cwd}/${rel}`.replace(/\/+/g, '/');
-      for (const name of await fs.readdir(abs)) {
-        const childRel = rel ? `${rel}/${name}` : name;
-        if (childRel === '.git' || childRel === MANIFEST_FILE) continue;
-        const st = await fs.stat(`${fs.cwd}/${childRel}`.replace(/\/+/g, '/'));
-        if (st.isDirectory) {
-          await walk(childRel);
-          continue;
-        }
-        seen.add(childRel);
-
-        if (manifest.files[childRel] === undefined) {
-          // New file: not present at last sync.
-          actions.push({ action: 'create', file_path: childRel, content: await readLocal(childRel) });
-          continue;
-        }
-
-        // Tracked file: compare local content hash against the remote
-        // content_sha256 reported by the files API.
-        const meta = await api(auth, `/projects/${manifest.projectId}/repository/files/${encodeURIComponent(childRel)}`, {
-          query: { ref: branch },
-        }).catch(() => null);
-        const localSha = await sha256Hex(await readLocalBytes(childRel));
-        if (!meta || meta.content_sha256 !== localSha) {
-          actions.push({ action: 'update', file_path: childRel, content: await readLocal(childRel) });
-        }
-      }
-    }
-
-    /**
-     * @param {string} rel
-     * @returns {Promise<string>}
-     */
-    async function readLocal(rel) {
-      return fs.readFile(`${fs.cwd}/${rel}`.replace(/\/+/g, '/'), { encoding: 'utf8' });
-    }
 
     /**
      * @param {string} rel
@@ -443,30 +533,80 @@ const handlers = {
       return new Uint8Array(/** @type {ArrayBuffer} */ (buf));
     }
 
+    // Walk local files recursively (excluding .git and manifest).
+    /**
+     * @param {string} rel
+     */
+    async function walk(rel) {
+      const abs = `${fs.cwd}/${rel}`.replace(/\/+/g, '/');
+      for (const name of await fs.readdir(abs)) {
+        const childRel = rel ? `${rel}/${name}` : name;
+        if (childRel === '.git') continue;
+        const st = await fs.stat(`${fs.cwd}/${childRel}`.replace(/\/+/g, '/'));
+        if (st.isDirectory) {
+          await walk(childRel);
+          continue;
+        }
+        seen.add(childRel);
+
+        const bytes = await readLocalBytes(childRel);
+        const localBlobId = await gitBlobSha(bytes);
+
+        if (manifest.files[childRel] === undefined) {
+          // New file: not present at last sync.
+          actions.push(actionWithContent('create', childRel, bytes));
+        } else if (manifest.files[childRel] !== localBlobId) {
+          // Changed vs last sync — zero network calls for this comparison.
+          actions.push(actionWithContent('update', childRel, bytes));
+        }
+      }
+    }
+
     await walk('');
 
     // Deletions: tracked at last sync but missing locally.
     for (const path of Object.keys(manifest.files)) {
-      if (!seen.has(path) && !(await fs.exists(`${fs.cwd}/${path}`.replace(/\/+/g, '/')))) {
-        actions.push({ action: 'delete', file_path: path });
+      if (!seen.has(path)) {
+        if (!(await fs.exists(`${fs.cwd}/${path}`.replace(/\/+/g, '/')))) {
+          actions.push({ action: 'delete', file_path: path });
+        } else {
+          // Case-only rename or similar oddity: refresh tracking so it does
+          // not show up as deleted forever.
+          manifest.files[path] = await gitBlobSha(await readLocalBytes(path));
+        }
       }
     }
 
     if (actions.length === 0) return 'Nothing to push: local tree matches last sync';
-    term.log(`Pushing ${actions.length} action(s) to ${manifest.projectPath}@${branch}...`);
 
-    const result = await api(auth, `/projects/${manifest.projectId}/repository/commits`, {
-      method: 'POST',
-      body: {
-        branch,
-        start_branch: branch === manifest.ref ? undefined : manifest.ref,
-        commit_message: parsed.message,
-        actions,
-      },
-    });
+    const totalBytes = actions.reduce((sum, a) => sum + (a.content?.length ?? 0), 0);
+    term.log(`Pushing ${actions.length} action(s), ~${formatSize(totalBytes)} of content...`);
+
+    // Split into chunks that stay well under the commits API limits
+    // (requests >20MB get rate-limited, hard limit is 300MB).
+    const chunks = chunkActions(actions, 5 * 1024 * 1024, 200);
+    if (chunks.length > 1) term.log(`Splitting into ${chunks.length} commit(s)...`);
+
+    /** @type {string | undefined} */
+    let lastSha;
+    for (let i = 0; i < chunks.length; i++) {
+      const suffix = chunks.length > 1 ? ` (part ${i + 1}/${chunks.length})` : '';
+      term.log(`Committing ${chunks[i].length} action(s)${suffix}...`);
+      const result = await api(auth, `/projects/${manifest.projectId}/repository/commits`, {
+        method: 'POST',
+        body: {
+          branch,
+          start_branch: branch === manifest.ref && i === 0 ? undefined : branch,
+          commit_message: parsed.message + suffix,
+          actions: chunks[i],
+        },
+      });
+      lastSha = result.id;
+      term.log(`[${result.id.slice(0, 7)}] committed ${chunks[i].length} action(s)${suffix}`);
+    }
 
     // Refresh manifest to the new remote state.
-    manifest.sha = result.id;
+    manifest.sha = /** @type {string} */ (lastSha);
     const entries = await listTree(auth, String(manifest.projectId), branch, () => {});
     /** @type {Record<string, string>} */
     const files = {};
@@ -475,13 +615,14 @@ const handlers = {
     manifest.ref = branch;
     await fs.writeFile(`${fs.cwd}/${MANIFEST_FILE}`, JSON.stringify(manifest, null, 2));
 
-    return `[${result.id.slice(0, 7)}] Pushed ${actions.length} change(s) to ${manifest.projectPath}@${branch}`;
+    const verb = chunks.length > 1 ? ` in ${chunks.length} commit(s)` : '';
+    return `Pushed ${actions.length} change(s) to ${manifest.projectPath}@${branch}${verb}`;
   },
 
   async log(parsed, { fs }) {
     const manifest = await readManifest(fs, fs.cwd);
     if (!manifest) return `No ${MANIFEST_FILE} found. Are you inside a gitlab-cloned project?`;
-    const auth = await makeAuth(fs, manifest.host, manifest.host);
+    const auth = makeAuth(manifest.host, manifest.token);
     const commits = await api(auth, `/projects/${manifest.projectId}/repository/commits`, {
       query: { ref_name: manifest.ref, per_page: parsed.depth || 10 },
     });
@@ -506,14 +647,11 @@ const handlers = {
 
   async branches(parsed, { fs }) {
     const manifest = await readManifest(fs, fs.cwd);
-    if (!manifest && !parsed.project) {
-      return 'Not inside a gitlab-cloned project. Specify one: gitlab branches group/repo';
-    }
-    const { host, id } = manifest ? { host: manifest.host, id: String(manifest.projectId) } : parseProject(parsed.project);
-    const auth = await makeAuth(fs, host, host);
-    const branches = await api(auth, `/projects/${id}/repository/branches`);
+    if (!manifest) return `No ${MANIFEST_FILE} found. Are you inside a gitlab-cloned project?`;
+    const auth = makeAuth(manifest.host, manifest.token);
+    const branches = await api(auth, `/projects/${manifest.projectId}/repository/branches`);
     return branches.map((/** @type {any} */ b) =>
-      b.name === manifest?.ref ? `* ${b.name}` : `  ${b.name}`,
+      b.name === manifest.ref ? `* ${b.name}` : `  ${b.name}`,
     ).join('\n');
   },
 
@@ -524,13 +662,14 @@ const handlers = {
       'Subcommands: clone, pull, push, log, status, branches, help',
       '',
       'Uses the GitLab REST API directly (works from static hosts / Dataverse).',
-      'Tokens are looked up in .gitcreds stores set via `git creds set <host> <token>`.',
+      'The access token is provided once at clone time (-t) and stored in the',
+      "project's .git/gitlab.json — credentials are always scoped to a project.",
       '',
       'Examples:',
-      '  gitlab clone group/repo',
-      '  gitlab clone https://gitlab.example.com/group/repo --host gitlab.example.com',
-      '  cd repo && gitlab pull',
-      '  gitlab push -m "update webresources" [-b feature-branch]',
+      '  gitlab clone group/repo -t <PAT>',
+      '  gitlab clone https://gitlab.example.com/group/repo --host gitlab.example.com -t <PAT>',
+      '  cd repo && gitlab pull [--force]',
+      '  gitlab push -m "update webresources" [-b feature-branch] [--force]',
     ].join('\n');
   },
 };
@@ -538,14 +677,18 @@ const handlers = {
 const subcommandParsers = {
   clone: map(object({
     project: argument(string({ metavar: 'PROJECT' })),
+    token: option('-t', '--token', string({ metavar: 'PAT' })),
     host: optional(option('--host', string({ metavar: 'HOST' }))),
     ref: optional(option('-b', '--ref', string({ metavar: 'REF' }))),
     dir: optional(argument(string({ metavar: 'DIR' }))),
   }), (r) => ({ subcommand: 'clone', ...r })),
-  pull: map(object({}), () => ({ subcommand: 'pull' })),
+  pull: map(object({
+    force: optional(option('--force')),
+  }), (r) => ({ subcommand: 'pull', ...r })),
   push: map(object({
     message: option('-m', '--message', string({ metavar: 'MESSAGE' })),
     branch: optional(option('-b', '--branch', string({ metavar: 'BRANCH' }))),
+    force: optional(option('--force')),
   }), (r) => ({ subcommand: 'push', ...r })),
   log: map(object({
     depth: optional(argument(integer({ metavar: 'DEPTH' }))),

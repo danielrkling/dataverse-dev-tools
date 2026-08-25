@@ -418,9 +418,25 @@ export class WebFileSystem {
         });
     }
 
-    /** @param {...*} args */
-    async rm(...args) {
-        throw new Error("Not Implemented");
+    /**
+     * Removes a file or directory, mirroring node's fs.rm.
+     * @param {string} path
+     * @param {{ recursive?: boolean, force?: boolean }} options
+     * @returns {Promise<void>}
+     */
+    async rm(path, options = {}) {
+        let info;
+        try {
+            info = await this.stat(path);
+        } catch (e) {
+            if (options.force) return;
+            throw e;
+        }
+        if (info.isDirectory) {
+            await this.rmdir(path, { recursive: !!options.recursive });
+        } else {
+            await this.unlink(path);
+        }
     }
 
     /**
@@ -594,7 +610,6 @@ export class WebFileSystem {
             create: true,
         });
         const writable = await fileHandle.createWritable();
-        //@ts-expect-error
         await writable.write(data);
         await writable.close();
     }

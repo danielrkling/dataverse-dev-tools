@@ -163,7 +163,10 @@ async function saveRemotes(fs, remotes) {
   await fs.writeFile(`${root}/.git/remotes.json`, JSON.stringify(remotes, null, 2));
 }
 
-/** @returns {Promise<Record<string, string>>} host -> token */
+/**
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {Promise<Record<string, string>>} host -> token
+ */
 async function loadCreds(fs) {
   // Repo-scoped credentials take precedence over the global bootstrap store.
   try {
@@ -212,7 +215,7 @@ function hostOf(urlOrHost) {
  * (username as anything, password = token).
  * @param {import('../fs.mjs').WebFileSystem} fs
  * @param {string[]} urls candidate remote URLs, most specific first
- * @returns {(url: string) => { username: string, password: string } | undefined}
+ * @returns {Promise<(url: string) => { username: string, password: string } | undefined>}
  */
 async function makeOnAuth(fs, urls = []) {
   const creds = await loadCreds(fs);
@@ -634,7 +637,7 @@ const handlers = {
     const { git, gitFs } = await gitCtx(fs);
     const oid = await git.resolveRef({ fs: gitFs, dir: fs.cwd, ref: 'HEAD' }).catch(() => null);
     const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
-    const changed = matrix.filter((/** @type {any[]} */ row) => {
+    const changed = matrix.filter((/** @type {[string, number, number, number]} */ row) => {
       const label = statusLabel(row);
       if (!label) return false;
       if (parsed.filepath && row[0] !== parsed.filepath) return false;
@@ -776,24 +779,28 @@ const subcommandParsers = {
 };
 
 const gitParser = or(
-  command('init', subcommandParsers.init),
-  command('status', subcommandParsers.status),
-  command('add', subcommandParsers.add),
-  command('rm', subcommandParsers.rm),
-  command('mv', subcommandParsers.mv),
-  command('commit', subcommandParsers.commit),
-  command('log', subcommandParsers.log),
-  command('branch', subcommandParsers.branch),
-  command('checkout', subcommandParsers.checkout),
-  command('clone', subcommandParsers.clone),
-  command('fetch', subcommandParsers.fetch),
-  command('pull', subcommandParsers.pull),
-  command('push', subcommandParsers.push),
-  command('remote', subcommandParsers.remote),
-  command('reset', subcommandParsers.reset),
-  command('creds', subcommandParsers.creds),
-  command('diff', subcommandParsers.diff),
-  command('help', subcommandParsers.help),
+  or(
+    command('init', subcommandParsers.init),
+    command('status', subcommandParsers.status),
+    command('add', subcommandParsers.add),
+    command('rm', subcommandParsers.rm),
+    command('mv', subcommandParsers.mv),
+    command('commit', subcommandParsers.commit),
+    command('log', subcommandParsers.log),
+    command('branch', subcommandParsers.branch),
+    command('checkout', subcommandParsers.checkout),
+  ),
+  or(
+    command('clone', subcommandParsers.clone),
+    command('fetch', subcommandParsers.fetch),
+    command('pull', subcommandParsers.pull),
+    command('push', subcommandParsers.push),
+    command('remote', subcommandParsers.remote),
+    command('reset', subcommandParsers.reset),
+    command('creds', subcommandParsers.creds),
+    command('diff', subcommandParsers.diff),
+    command('help', subcommandParsers.help),
+  ),
 );
 
 export default createCommand({

@@ -260,14 +260,16 @@ const installing = new Set();
  * @param {string} name
  * @param {string} version
  * @param {boolean} tsOnly
+ * @param {boolean} [force]
  */
-async function installOne(fs, term, name, version, tsOnly) {
-    if (installing.has(name)) return;
+async function installOne(fs, term, name, version, tsOnly, force = false) {
+    if (force) installing.delete(name); // bypass the per-session dedupe on forced installs
+    else if (installing.has(name)) return;
     installing.add(name);
 
     const targetDir = `node_modules/${name}`;
     // Read under the fs lock so we don't read a directory mid-mutation.
-    const alreadyInstalled = await withFsLock(async () => {
+    const alreadyInstalled = !force && await withFsLock(async () => {
         if (!(await fs.exists(targetDir))) return false;
         const pkgRaw = await fs.readFile(`${targetDir}/package.json`, "utf8");
         const pkgJson = JSON.parse(pkgRaw);
@@ -302,7 +304,7 @@ async function installOne(fs, term, name, version, tsOnly) {
         const fp = `${targetDir}/${file.path}`;
         const dir = dirname(fp);
         if (!byDir.has(dir)) byDir.set(dir, []);
-        byDir.get(dir).push(file);
+        byDir.get(dir)?.push(file);
     }
 
     // All writes go through the fs lock: downloads stay parallel, disk stays serialized.
@@ -322,11 +324,94 @@ async function installOne(fs, term, name, version, tsOnly) {
     const deps = Object.entries(pkg.dependencies || {});
     await eachWithConcurrency(deps, async ([depName, depRange]) => {
         try {
-            await installOne(fs, term, depName, depRange, tsOnly);
+            await installOne(fs, term, depName, depRange, tsOnly, force);
         } catch (e) {
             term.error(`    Failed to install ${depName}: ${e.message}`);
         }
     });
+}
+
+/**
+ * Install all dependencies from a package.json object.
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../terminal.mjs').WebTerminal} term
+ * @param {Record<string, any>} pkg
+ * @param {boolean} tsOnly
+ */
+async function installAll(fs, term, pkg, tsOnly) {
+    const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const entries = Object.entries(allDeps);
+    if (entries.length === 0) {
+        term.info("No dependencies in package.json");
+        return;
+    }
+
+    await eachWithConcurrency(entries, async ([depName, depRange]) => {
+        try {
+            await installOne(fs, term, depName, depRange, tsOnly);
+        } catch (e) {
+            term.error(`  Failed to install ${depName}: ${e.message}`);
+        }
+    });
+}
+
+/**
+ * Read and parse package.json, returning null when missing/invalid.
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {Promise<Record<string, any> | null>}
+ */
+async function readPackageJson(fs) {
+    try {
+        const raw = await fs.readFile("package.json", { encoding: "utf8" });
+        return JSON.parse(/** @type {string} */ (raw));
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * List all installed package names, expanding @scope folders into full names.
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @returns {Promise<string[]>}
+ */
+async function listInstalled(fs) {
+    /** @type {string[]} */
+    let top = [];
+    try {
+        top = await fs.readdir("node_modules");
+    } catch {
+        return [];
+    }
+    /** @type {string[]} */
+    const names = [];
+    for (const entry of top.sort()) {
+        if (entry.startsWith("@")) {
+            /** @type {string[]} */
+            let scoped = [];
+            try {
+                scoped = await fs.readdir(`node_modules/${entry}`);
+            } catch {}
+            for (const sub of scoped.sort()) names.push(`${entry}/${sub}`);
+        } else {
+            names.push(entry);
+        }
+    }
+    return names;
+}
+
+/**
+ * Get the installed version of a package, or null when not installed.
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} name
+ * @returns {Promise<string | null>}
+ */
+async function getInstalledVersion(fs, name) {
+    try {
+        const raw = await fs.readFile(`node_modules/${name}/package.json`, { encoding: "utf8" });
+        return JSON.parse(/** @type {string} */ (raw)).version ?? null;
+    } catch {
+        return null;
+    }
 }
 
 /** @type {Promise<void>} */
@@ -364,6 +449,34 @@ async function writePackageJson(fs, name, version, dev) {
     await withFsLock(() => fs.writeFile("package.json", JSON.stringify(pkg, null, 2)));
 }
 
+/**
+ * Remove a package from dependencies/devDependencies in package.json.
+ * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {string} name
+ */
+function removeFromPackageJson(fs, name) {
+    // Same serialization as updatePackageJson — read-modify-write must not interleave.
+    const task = pkgJsonQueue.then(async () => {
+        const pkg = (await readJSON(fs, "package.json")) || {};
+        let changed = false;
+        for (const section of ["dependencies", "devDependencies"]) {
+            if (pkg[section]?.[name]) {
+                delete pkg[section][name];
+                changed = true;
+            }
+        }
+        if (changed) {
+            await withFsLock(() => fs.writeFile("package.json", JSON.stringify(pkg, null, 2)));
+        }
+        return changed;
+    });
+    pkgJsonQueue = task.then(
+        () => {},
+        () => {},
+    );
+    return task;
+}
+
 const installParser = object({
     subcommand: constant("install"),
     spec: optional(
@@ -381,12 +494,86 @@ const installParser = object({
             description: message`Save as a devDependency`,
         }),
     ),
+    force: optional(
+        option("--force", {
+            description: message`Force refetch and overwrite even if already installed`,
+        }),
+    ),
 });
 
 const runParser = object({
     subcommand: constant("run"),
     script: argument(string({ metavar: "SCRIPT" }), {
         description: message`Script name from package.json`,
+    }),
+});
+
+const ciParser = object({
+    subcommand: constant("ci"),
+    tsOnly: optional(
+        option("--ts-only", {
+            description: message`Only install TypeScript definition files`,
+        }),
+    ),
+});
+
+const uninstallParser = object({
+    subcommand: constant("uninstall"),
+    spec: argument(string({ metavar: "PACKAGE" }), {
+        description: message`Package name to remove`,
+    }),
+});
+
+const pruneParser = object({
+    subcommand: constant("prune"),
+});
+
+const lsParser = object({
+    subcommand: constant("ls"),
+    spec: optional(
+        argument(string({ metavar: "PACKAGE" }), {
+            description: message`Filter output by package name`,
+        }),
+    ),
+});
+
+const outdatedParser = object({
+    subcommand: constant("outdated"),
+});
+
+const viewParser = object({
+    subcommand: constant("view"),
+    spec: argument(string({ metavar: "PACKAGE" }), {
+        description: message`Package name to inspect`,
+    }),
+    field: optional(
+        argument(string({ metavar: "FIELD" }), {
+            description: message`Metadata field to display (e.g. version, description)`,
+        }),
+    ),
+});
+
+const initParser = object({
+    subcommand: constant("init"),
+    yes: optional(
+        option("-y", {
+            description: message`Skip questions and accept defaults`,
+        }),
+    ),
+});
+
+const dedupeParser = object({
+    subcommand: constant("dedupe"),
+});
+
+const auditParser = object({
+    subcommand: constant("audit"),
+});
+
+const whyParser = object({
+    subcommand: constant("why"),
+    spec: argument(string({ metavar: "PACKAGE" }), {
+        description: message`Package to explain`,
     }),
 });
 
@@ -404,19 +591,40 @@ const updateParser = object({
     ),
 });
 
+// optique's or() accepts at most 15 parsers, so group the commands.
 const npmParser = or(
-    command("install", installParser),
-    command("i", installParser),
-    command("run", runParser),
-    command("update", updateParser),
-    command("up", updateParser),
+    or(
+        command("install", installParser),
+        command("i", installParser),
+        command("run", runParser),
+        command("update", updateParser),
+        command("up", updateParser),
+        command("uninstall", uninstallParser),
+        command("remove", uninstallParser),
+        command("rm", uninstallParser),
+        command("un", uninstallParser),
+        command("ci", ciParser),
+    ),
+    or(
+        command("prune", pruneParser),
+        command("ls", lsParser),
+        command("list", lsParser),
+        command("outdated", outdatedParser),
+        command("view", viewParser),
+        command("info", viewParser),
+        command("init", initParser),
+        command("dedupe", dedupeParser),
+        command("audit", auditParser),
+        command("why", whyParser),
+        command("explain", whyParser),
+    ),
 );
 
 export const npmCommand = createCommand({
     name: "npm",
     parser: npmParser,
     description: message`Manage npm packages and scripts`,
-    usage: message`npm install [package@version] [--ts-only] [-D] | npm run <script>`,
+    usage: message`npm install [package] [--ts-only] [-D] [--force] | npm update [package] | npm uninstall <package> | npm ci | npm prune | npm ls [package] | npm outdated | npm view <package> [field] | npm init [-y] | npm dedupe | npm audit | npm why <package> | npm run <script>`,
     brief: message`Manage npm packages and scripts`,
     init: async (term) => {
         term.addEventListener("fs:init", async () => {
@@ -439,12 +647,13 @@ export const npmCommand = createCommand({
         if (subcommand === "install") {
             const tsOnly = parsed.tsOnly ?? false;
             const dev = parsed.dev ?? false;
+            const force = parsed.force ?? false;
             const spec = parsed.spec;
 
             if (spec) {
                 const { name, version } = parsePackageSpec(spec);
                 try {
-                    await installOne(fs, term, name, version, tsOnly);
+                    await installOne(fs, term, name, version, tsOnly, force);
                     const meta = await fetchPackageMeta(name);
                     const versions = Object.keys(meta.versions || {});
                     const resolved = pickBestVersion(versions, version || "latest");
@@ -459,28 +668,392 @@ export const npmCommand = createCommand({
                 return "";
             }
 
-            let pkg;
-            try {
-                const raw = await fs.readFile("package.json", { encoding: "utf8" });
-                pkg = JSON.parse(/** @type {string} */ (raw));
-            } catch {
+            let pkg = await readPackageJson(fs);
+            if (!pkg) {
                 return "No package.json found.";
             }
 
-            const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-            const entries = Object.entries(allDeps);
-            if (entries.length === 0) {
-                term.info("No dependencies in package.json");
+            await installAll(fs, term, pkg, tsOnly);
+            return "";
+        }
+
+        if (subcommand === "uninstall") {
+            const { name } = parsePackageSpec(parsed.spec);
+            try {
+                const targetDir = `node_modules/${name}`;
+                if (await fs.exists(targetDir)) {
+                    await withFsLock(() => fs.rm(targetDir, { recursive: true }));
+                }
+                installing.delete(name);
+                metaCache.delete(name);
+
+                const changed = await removeFromPackageJson(fs, name);
+                if (changed) {
+                    term.success(`Removed ${name} from package.json`);
+                } else {
+                    term.info(`Removed ${name} from node_modules (was not in package.json)`);
+                }
+            } catch (e) {
+                return `npm uninstall failed for ${name}: ${e.message}`;
+            }
+            return "";
+        }
+
+        if (subcommand === "ci") {
+            if (!(await fs.exists("package.json"))) {
+                return "No package.json found. Nothing to ci.";
+            }
+            term.info("Removing node_modules...");
+            try {
+                await withFsLock(() => fs.rm("node_modules", { recursive: true }));
+            } catch {
+                // node_modules may not exist yet
+            }
+            installing.clear();
+
+            let pkg = await readPackageJson(fs);
+            if (!pkg) {
+                return "No package.json found.";
+            }
+            await installAll(fs, term, pkg, parsed.tsOnly ?? false);
+            return "";
+        }
+
+        if (subcommand === "prune") {
+            const pkg = await readPackageJson(fs);
+            if (!pkg) {
+                return "No package.json found. Nothing to prune.";
+            }
+            const wanted = new Set([
+                ...Object.keys(pkg.dependencies || {}),
+                ...Object.keys(pkg.devDependencies || {}),
+            ]);
+
+            const installed = await listInstalled(fs);
+            if (installed.length === 0) {
+                term.info("No node_modules directory. Nothing to prune.");
                 return "";
             }
 
-            await eachWithConcurrency(entries, async ([depName, depRange]) => {
+            const stale = installed.filter((n) => !wanted.has(n));
+            if (stale.length === 0) {
+                term.success("Nothing to prune.");
+                return "";
+            }
+
+            // Group scoped packages so we can remove the whole @scope dir when empty.
+            /** @type {Set<string>} */
+            const dirsToRemove = new Set();
+            for (const name of stale) {
+                if (name.startsWith("@")) dirsToRemove.add(name.split("/")[0]);
+                else dirsToRemove.add(name);
+            }
+            // Only remove a @scope dir if every package inside it is stale.
+            for (const dir of [...dirsToRemove]) {
+                if (!dir.startsWith("@")) continue;
+                const allStale = installed
+                    .filter((n) => n.startsWith(`${dir}/`))
+                    .every((n) => stale.includes(n));
+                if (!allStale) dirsToRemove.delete(dir);
+            }
+
+            await eachWithConcurrency([...dirsToRemove], async (name) => {
+                term.info(`Removing extraneous ${name}...`);
+                await withFsLock(() => fs.rm(`node_modules/${name}`, { recursive: true }));
+                installing.delete(name);
+                metaCache.delete(name);
+            });
+            term.success(`Pruned ${stale.length} package${stale.length === 1 ? "" : "s"}`);
+            return "";
+        }
+
+        if (subcommand === "ls") {
+            const installed = await listInstalled(fs);
+            if (installed.length === 0) {
+                term.info("node_modules is empty. Run npm install first.");
+                return "";
+            }
+            const filter = parsed.spec;
+            let count = 0;
+            for (const name of installed) {
+                if (filter && !name.includes(filter)) continue;
+                const version = await getInstalledVersion(fs, name);
+                count++;
+                if (version) term.log(`  ${name}@${version}`);
+                else term.error(`  ${name} (missing package.json)`);
+            }
+            if (count === 0) term.info(`No packages matching "${filter}"`);
+            return "";
+        }
+
+        if (subcommand === "outdated") {
+            const pkg = await readPackageJson(fs);
+            if (!pkg) return "No package.json found.";
+            const entries = Object.entries({
+                ...(pkg.dependencies || {}),
+                ...(pkg.devDependencies || {}),
+            });
+            if (entries.length === 0) {
+                term.info("No dependencies in package.json.");
+                return "";
+            }
+
+            /** @type {Array<{ name: string, current: string, wanted: string, latest: string }>} */
+            const rows = [];
+            await eachWithConcurrency(entries, async ([name, range]) => {
                 try {
-                    await installOne(fs, term, depName, depRange, tsOnly);
+                    const current = (await getInstalledVersion(fs, name)) ?? "(missing)";
+                    const meta = await fetchPackageMeta(name);
+                    const latest = meta["dist-tags"]?.latest ?? "?";
+                    const wanted =
+                        pickBestVersion(Object.keys(meta.versions || {}), range || "*") ?? "?";
+                    if (current !== wanted || current !== latest) {
+                        rows.push({ name, current: String(current), wanted, latest });
+                    }
                 } catch (e) {
-                    term.error(`  Failed to install ${depName}: ${e.message}`);
+                    term.error(`  Failed to check ${name}: ${e.message}`);
                 }
             });
+
+            if (rows.length === 0) {
+                term.success("All dependencies are up to date.");
+                return "";
+            }
+            const w = Math.max(...rows.map((r) => r.name.length));
+            for (const r of rows.sort((a, b) => a.name.localeCompare(b.name))) {
+                term.log(
+                    `  ${r.name.padEnd(w)}  current: ${r.current.padEnd(12)} wanted: ${r.wanted.padEnd(12)} latest: ${r.latest}`,
+                );
+            }
+            return "";
+        }
+
+        if (subcommand === "view") {
+            const { name } = parsePackageSpec(parsed.spec);
+            try {
+                const meta = await fetchPackageMeta(name);
+                const latestManifest = meta.versions?.[meta["dist-tags"]?.latest] ?? {};
+
+                // Resolve dotted paths like "dist-tags.latest" or "dependencies.foo".
+                /**
+                 * @param {any} obj
+                 * @param {string} path
+                 */
+                const resolveField = (obj, path) =>
+                    path
+                        .split(".")
+                        .reduce((/** @type {any} */ acc, /** @type {string} */ key) => (acc == null ? acc : acc[key]), obj);
+
+                if (parsed.field) {
+                    const field = parsed.field;
+                    // npm treats "version" as the latest version.
+                    const value =
+                        field === "version"
+                            ? meta["dist-tags"]?.latest
+                            : resolveField(latestManifest, field) ??
+                              resolveField(meta, field);
+                    if (value === undefined) {
+                        return `No field "${field}" on ${name}`;
+                    }
+                    term.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+                } else {
+                    term.log(`  ${name}@${meta["dist-tags"]?.latest ?? "?"}`);
+                    if (latestManifest.description)
+                        term.log(`  ${latestManifest.description}`);
+                    if (latestManifest.license) term.log(`  license: ${latestManifest.license}`);
+                    if (latestManifest.homepage)
+                        term.log(`  homepage: ${latestManifest.homepage}`);
+                    const depCount = Object.keys(latestManifest.dependencies || {}).length;
+                    term.log(`  dependencies: ${depCount}`);
+                }
+            } catch (e) {
+                return `npm view failed for ${name}: ${e.message}`;
+            }
+            return "";
+        }
+
+        if (subcommand === "init") {
+            const existing = await readPackageJson(fs);
+            if (existing && !parsed.yes) {
+                return "package.json already exists. Use `npm init -y` to overwrite with defaults.";
+            }
+            let name = "my-project";
+            try {
+                const cwd = fs.cwd || "/";
+                const base = cwd.split("/").filter(Boolean).pop();
+                if (base) name = base;
+            } catch {}
+
+            const starter = {
+                name,
+                version: "1.0.0",
+                description: "",
+                type: "module",
+                scripts: {
+                    start: "echo \"Error: no script specified\" && exit 1",
+                },
+                dependencies: {},
+                devDependencies: {},
+            };
+            await withFsLock(() =>
+                fs.writeFile("package.json", JSON.stringify(starter, null, 2)),
+            );
+            term.success(`Created package.json (${name}@1.0.0). Edit it to add scripts and deps.`);
+            return "";
+        }
+
+        if (subcommand === "dedupe") {
+            // This installer uses a flat layout (everything in root node_modules),
+            // so duplicates only occur as nested node_modules dirs from older installs.
+            /** @type {string[]} */
+            const nested = [];
+            /**
+             * @param {string} dir
+             * @param {number} depth
+             */
+            const scan = async (dir, depth) => {
+                if (depth > 6) return;
+                /** @type {string[]} */
+                let entries = [];
+                try {
+                    entries = await fs.readdir(dir);
+                } catch {
+                    return;
+                }
+                for (const entry of entries) {
+                    const child = `${dir}/${entry}`;
+                    if (entry === "node_modules") {
+                        nested.push(child);
+                        continue;
+                    }
+                    await scan(child, depth + 1);
+                }
+            };
+            await scan("node_modules", 0);
+
+            if (nested.length === 0) {
+                term.success("Already deduped — no nested node_modules found.");
+                return "";
+            }
+            await eachWithConcurrency(nested, async (dir) => {
+                term.info(`Removing duplicate ${dir}...`);
+                await withFsLock(() => fs.rm(dir, { recursive: true }));
+            });
+            term.success(`Removed ${nested.length} duplicate folder(s)`);
+            return "";
+        }
+
+        if (subcommand === "audit") {
+            const installed = await listInstalled(fs);
+            if (installed.length === 0) {
+                term.info("Nothing installed. Nothing to audit.");
+                return "";
+            }
+            /** @type {Array<[string, string]>} */
+            const packages = [];
+            await eachWithConcurrency(installed, async (name) => {
+                const version = await getInstalledVersion(fs, name);
+                if (version) packages.push([name, version]);
+            });
+
+            // The npm registry's bulk advisories endpoint doesn't handle CORS
+            // preflights (it's designed for the server-side npm CLI), so query
+            // the GitHub Security Advisories API instead, which is CORS-enabled.
+            term.info("Querying security advisories...");
+            /** @type {Array<{ name: string, version: string, id: string, severity: string, summary: string, url: string }>} */
+            const findings = [];
+            let failed = 0;
+            // Unauthenticated GitHub allows 60 req/hour — keep batches small.
+            await eachWithConcurrency(packages.slice(0, 50), async ([name, version]) => {
+                try {
+                    const res = await fetch(
+                        `https://api.github.com/advisories?ecosystem=npm&affects=${encodeURIComponent(`${name}@${version}`)}`,
+                    );
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    /** @type {any[]} */
+                    const advisories = await res.json();
+                    for (const adv of advisories) {
+                        findings.push({
+                            name,
+                            version,
+                            id: adv.ghsa_id ?? "?",
+                            severity: adv.severity ?? "?",
+                            summary: adv.summary ?? "advisory",
+                            url: adv.html_url ?? "",
+                        });
+                    }
+                } catch {
+                    failed++;
+                }
+            }, 4);
+
+            if (failed > 0) {
+                term.error(`  Could not check ${failed} package(s) (rate limit or network error)`);
+            }
+
+            findings.sort((a, b) => a.name.localeCompare(b.name));
+            for (const f of findings) {
+                term.error(`  ${f.name}@${f.version} — ${f.summary} [${f.id}, ${f.severity}]`);
+                if (f.url) term.log(`    ${f.url}`);
+            }
+            if (findings.length === 0 && failed === 0) {
+                term.success(`No known vulnerabilities found in ${packages.length} packages.`);
+            } else if (findings.length > 0) {
+                term.info(`Found ${findings.length} vulnerabilit${findings.length === 1 ? "y" : "ies"}.`);
+            }
+            return "";
+        }
+
+        if (subcommand === "why") {
+            const target = parsed.spec;
+            const pkg = await readPackageJson(fs);
+            if (!pkg) return "No package.json found.";
+
+            // DFS from the roots in package.json through installed manifests,
+            // collecting every dependency chain that reaches the target.
+            /**
+             * @param {string} name
+             * @param {Set<string>} visited
+             * @param {string[]} chain
+             * @returns {Promise<string[][]>}
+             */
+            const findChains = async (name, visited, chain) => {
+                if (visited.has(name)) return [];
+                visited.add(name);
+                const nextChain = [...chain, name];
+                if (name === target) return [nextChain];
+
+                const manifest = await readJSON(fs, `node_modules/${name}/package.json`);
+                if (!manifest?.dependencies) return [];
+                /** @type {string[][]} */
+                const chains = [];
+                for (const dep of Object.keys(manifest.dependencies)) {
+                    if (!(await getInstalledVersion(fs, dep))) continue;
+                    chains.push(...(await findChains(dep, new Set(visited), nextChain)));
+                }
+                return chains;
+            };
+
+            const roots = [
+                ...Object.keys(pkg.dependencies || {}),
+                ...Object.keys(pkg.devDependencies || {}),
+            ];
+            /** @type {string[][]} */
+            const allChains = [];
+            for (const root of roots) {
+                if (!(await getInstalledVersion(fs, root))) continue;
+                allChains.push(...(await findChains(root, new Set(), [])));
+            }
+
+            if (allChains.length === 0) {
+                return `${target} is not reachable from any installed dependency.`;
+            }
+            for (const chain of allChains.slice(0, 20)) {
+                term.log("  " + chain.map((c) => c).join(" > "));
+            }
+            if (allChains.length > 20) {
+                term.info(`...and ${allChains.length - 20} more chain(s)`);
+            }
             return "";
         }
 

@@ -367,7 +367,7 @@ export default createCommand({
             const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
             term.success(`Built ${outfile} (${bytes} bytes, ${classes} classes)`);
 
-            const isMatch = picomatch(config.content.map((/** @type {string} */ g) => g.replace(/^\.\//, "")));
+            const isMatch = picomatch((config.content ?? []).map((/** @type {string} */ g) => g.replace(/^\.\//, "")));
             const handler = async (/** @type {CustomEvent} */ e) => {
                 const path = e.detail?.path;
                 if (!path) return;

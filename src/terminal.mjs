@@ -248,7 +248,7 @@ export class WebTerminal extends HTMLElement {
         }
     }
 
-    /** @type {Map<string, TerminalCommand<import("@optique/core").Parser<any>>>} */
+    /** @type {Map<string, TerminalCommand<any>>} */
     commands = new Map();
 
     /**
