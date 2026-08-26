@@ -1,9 +1,12 @@
 import { FileTree, prepareFileTreeInput } from "@pierre/trees";
 import "@pierre/trees/web-components"; // registers <file-tree-container> + styles
+import "https://ka-f.webawesome.com/webawesome@3.12.0/components/button/button.js";
+import "https://ka-f.webawesome.com/webawesome@3.12.0/components/spinner/spinner.js";
 import { bus } from "../services/bus.mjs";
 import { workspace, listHandles } from "../services/workspace.mjs";
 import { WebFileSystem } from "../services/fs.mjs";
 import { scanPaths } from "../utils/scan-paths.mjs";
+import { faSvg } from "../utils/icons.mjs";
 
 /**
  * Sidebar file tree, backed by @pierre/trees (loaded from the CDN import map).
@@ -58,14 +61,28 @@ export class FileTreePane extends HTMLElement {
                     overflow: hidden;
                     text-overflow: ellipsis;
                 }
-                .actions button {
+                .actions {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 2px;
+                }
+                .actions .icon-btn {
+                    --wa-button-size: 26px;
+                    font-size: 14px;
+                }
+                /* Render WA buttons as subtle, transparent toolbar icons */
+                .actions .icon-btn::part(button) {
                     all: unset;
-                    padding: 0 0.35rem;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: var(--wa-button-size, 26px);
+                    height: var(--wa-button-size, 26px);
                     cursor: pointer;
                     color: #a0a0a0;
                     border-radius: 3px;
                 }
-                .actions button:hover {
+                .actions .icon-btn:hover::part(button) {
                     background: #3a3a3a;
                     color: #fff;
                 }
@@ -77,23 +94,67 @@ export class FileTreePane extends HTMLElement {
                     padding: 1rem;
                     color: #808080;
                 }
+                /* Recent-folders list rows rendered as full-width WA buttons */
+                .recent-item {
+                    width: 100%;
+                    --wa-button-font-size: 12px;
+                }
+                .recent-item::part(button) {
+                    all: unset;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    width: 100%;
+                    box-sizing: border-box;
+                    padding: 6px 10px;
+                    cursor: pointer;
+                    color: #d4d4d4;
+                    font-size: 12px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    border-radius: 3px;
+                }
+                .recent-item:hover::part(button) {
+                    background: #094771;
+                }
+                /* Loading overlay shown while the workspace is being scanned */
+                #loading {
+                    display: none;
+                    flex: 1;
+                    min-height: 0;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 0.5rem;
+                    color: #808080;
+                    flex-direction: column;
+                }
+                #loading.visible {
+                    display: flex;
+                }
+                #loading wa-spinner {
+                    font-size: 1.75rem;
+                    color: #569cd6;
+                }
             </style>
             <header>
                 <span id="title">No folder open</span>
                 <span class="actions">
-                    <button id="new-file" title="New File">＋📄</button>
-                    <button id="new-folder" title="New Folder">＋📁</button>
-                    <button id="refresh" title="Refresh">⟳</button>
-                    <button id="open-folder" title="Open Folder">📂</button>
+                    <wa-button class="icon-btn" id="new-file" aria-label="New File">${faSvg("file")}</wa-button>
+                    <wa-button class="icon-btn" id="new-folder" aria-label="New Folder">${faSvg("folderPlus")}</wa-button>
+                    <wa-button class="icon-btn" id="refresh" aria-label="Refresh">${faSvg("rotateRight")}</wa-button>
+                    <wa-button class="icon-btn" id="open-folder" aria-label="Open Folder">${faSvg("folderOpen")}</wa-button>
                 </span>
             </header>
-            <div id="empty">Click 📂 above to open a folder (or the terminal's <b>open</b> command).</div>
+            <div id="empty">Click the folder button above to open a folder.</div>
+            <div id="loading"><wa-spinner></wa-spinner><span>Loading files…</span></div>
             <div id="mount"></div>
         `;
 
         this._title = /** @type {HTMLSpanElement} */ (root.querySelector("#title"));
         this._empty = /** @type {HTMLDivElement} */ (root.querySelector("#empty"));
         this._mount = /** @type {HTMLDivElement} */ (root.querySelector("#mount"));
+        this._loading = /** @type {HTMLDivElement} */ (root.querySelector("#loading"));
 
         root.querySelector("#new-file")?.addEventListener("click", () => this._createEntry("file"));
         root.querySelector("#new-folder")?.addEventListener("click", () => this._createEntry("directory"));
@@ -137,22 +198,13 @@ export class FileTreePane extends HTMLElement {
         const list = document.createElement("div");
         Object.assign(list.style, { display: "flex", flexDirection: "column", gap: "2px" });
 
-        const item = (/** @type {string} */ label, /** @type {() => Promise<void> | void} */ fn) => {
-            const btn = document.createElement("button");
-            btn.textContent = label;
-            Object.assign(btn.style, {
-                all: "unset",
-                display: "block",
-                padding: "6px 10px",
-                cursor: "pointer",
-                color: "#d4d4d4",
-                fontSize: "12px",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-            });
-            btn.addEventListener("mouseenter", () => (btn.style.background = "#094771"));
-            btn.addEventListener("mouseleave", () => (btn.style.background = ""));
+        const item = (/** @type {string} */ html, /** @type {() => Promise<void> | void} */ fn) => {
+            const btn = document.createElement("wa-button");
+            btn.setAttribute("appearance", "plain");
+            btn.setAttribute("variant", "neutral");
+            // App-controlled markup (icons + escaped labels) — see callers.
+            btn.innerHTML = html;
+            btn.classList.add("recent-item");
             btn.addEventListener("click", async () => {
                 list.remove();
                 await fn();
@@ -160,8 +212,13 @@ export class FileTreePane extends HTMLElement {
             list.appendChild(btn);
         };
 
+        const esc = (/** @type {string} */ s) =>
+            s.replace(/[&<>"']/g, (c) =>
+                ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+            );
+
         for (const folder of recents) {
-            item(`📁 ${folder.id}`, async () => {
+            item(`${faSvg("folderOpen")} ${esc(folder.id)}`, async () => {
                 try {
                     await workspace.openRecent(folder.id);
                 } catch (error) {
@@ -178,8 +235,8 @@ export class FileTreePane extends HTMLElement {
             list.appendChild(hr);
         }
 
-        item("📂  Select New Folder…", () => this.openFolderPicker());
-        item("⚡  Use OPFS Workspace", async () => {
+        item(`${faSvg("folderOpen")}  Select New Folder…`, () => this.openFolderPicker());
+        item(`${faSvg("bolt")}  Use OPFS Workspace`, async () => {
             try {
                 await workspace.open(await WebFileSystem.fromOPFS());
             } catch (error) {
@@ -214,6 +271,9 @@ export class FileTreePane extends HTMLElement {
 
         this._title.textContent = fs.rootName;
         this._empty.style.display = "none";
+        // Show the spinner while we walk the filesystem (may take a moment on
+        // large workspaces). Hidden again once the tree is rendered below.
+        this._loading.classList.add("visible");
 
         const { paths, dirs } = await scanPaths(fs);
         if (generation !== this._rebuildGeneration) return; // superseded
@@ -221,8 +281,12 @@ export class FileTreePane extends HTMLElement {
         this._preparedInput = prepareFileTreeInput(sanitizePaths(paths), {});
 
         if (this._tree) {
+            // Existing tree: resetPaths updates its state in place. The tree DOM
+            // is already mounted in #mount, so do NOT clear it here.
             this._tree.resetPaths({ preparedInput: this._preparedInput });
         } else {
+            // First render: clear any placeholder, then mount the tree.
+            this._mount.innerHTML = "";
             this._tree = new FileTree({
                 id: "workspace-tree",
                 preparedInput: this._preparedInput,
@@ -249,6 +313,9 @@ export class FileTreePane extends HTMLElement {
             });
             this._tree.render({ containerWrapper: this._mount });
         }
+
+        // Files are loaded — drop the spinner.
+        this._loading.classList.remove("visible");
     }
 
     /**

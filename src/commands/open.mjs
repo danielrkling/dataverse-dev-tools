@@ -1,6 +1,6 @@
 import { argument, message, object, optional, string } from "@optique/core";
 import { createCommand } from "../terminal.mjs";
-import { workspace, listHandles } from "../services/workspace.mjs";
+import { workspace } from "../services/workspace.mjs";
 
 export const openCommand = createCommand({
     name: "open",
@@ -26,30 +26,7 @@ export const openCommand = createCommand({
         }
     },
     init: async (terminal) => {
-        const recentFolders = await listHandles();
-        const elem = document.createElement("div");
-        elem.append(`Select a recent folder or open a new one`);
-
-        for (const folder of recentFolders) {
-            const button = document.createElement("button");
-            button.innerText = `  ${folder.id}`;
-
-            button.onclick = async () => {
-                await workspace.openRecent(folder.id, terminal);
-                elem.innerHTML = "";
-            };
-            elem.appendChild(button);
-        }
-
-        const button = document.createElement("button");
-        button.innerText = "  Select New Folder";
-        button.onclick = async () => {
-            await workspace.openPicker(terminal);
-            elem.innerHTML = "";
-        };
-        elem.appendChild(button);
-
-        terminal.log(elem);
+        terminal.info("Open a new or recent directory. Provide a name to reopen a recent folder, or run with no arguments to pick one.");
     },
 });
 

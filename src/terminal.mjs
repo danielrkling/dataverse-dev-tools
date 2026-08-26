@@ -1,7 +1,8 @@
 import { command, message, or, parse, runParser } from "@optique/core";
 import parseArgs from "string-argv";
 import { WebFileSystem } from "./services/fs.mjs";
-import { workspace } from "./services/workspace.mjs";
+import { workspace, } from "./services/workspace.mjs";
+import { bus } from "./services/bus.mjs";
 import { saveCommandHistory, loadCommandHistory, clearCommandHistory } from "./utils/history.mjs";
 
 
@@ -15,6 +16,8 @@ export class WebTerminal extends HTMLElement {
         this._history = [];
         /** @type {number} */
         this._historyIndex = -1;
+        /** @type {(() => void)[]} */
+        this._unsubs = [];
         // Fallback filesystem (OPFS) until a real workspace folder is opened.
         this._opfsFs = null;
         WebFileSystem.fromOPFS().then((fs) => {
@@ -126,6 +129,42 @@ export class WebTerminal extends HTMLElement {
                 this._input.focus();
             }
         });
+
+        // The terminal is inert until a workspace folder is opened. React to
+        // that event (emitted by workspace.open, regardless of caller).
+        this._unsubs.push(bus.on("workspace:open", () => this._enable()));
+
+        // If a folder is already open (e.g. restored before connect), enable.
+        if (workspace.fs) {
+            this._enable();
+        } else {
+            this._disable();
+        }
+    }
+
+    disconnectedCallback() {
+        for (const unsub of this._unsubs) unsub();
+        this._unsubs = [];
+    }
+
+    /** Lock the terminal out until a workspace folder is selected. */
+    _disable() {
+        this._input.disabled = true;
+        this._input.placeholder = "Open a folder to use the terminal…";
+        this.prompt = "";
+        this.info("No folder open — use the folder button in the sidebar to open one.");
+    }
+
+    /** Unlock the terminal once a workspace folder is available. */
+    _enable() {
+        this._input.disabled = false;
+        this._input.placeholder = "";
+        // Wipe the "no folder open" hint now that a folder is loaded.
+        this.clear();
+        if (workspace.fs) {
+            this.prompt = workspace.fs.rootName;
+            this.loadHistory(workspace.fs.rootName);
+        }
     }
 
     /**

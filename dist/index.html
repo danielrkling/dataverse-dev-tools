@@ -11,16 +11,6 @@
         margin: 0;
         height: 100%;
       }
-
-      /* Temporary layout — will be replaced by <ide-app> in step 5 */
-      #app {
-        display: grid;
-        grid-template-columns: 250px 1fr;
-        height: 100vh;
-      }
-      web-terminal {
-        height: 100vh;
-      }
     </style>
 
     <script type="importmap">
@@ -38,12 +28,13 @@
         }
       }
     </script>
-    <script type="module" crossorigin src="/assets/index-DZ7xJJza.js"></script>
+    <script type="module" crossorigin src="/assets/index-Dw4_WlwJ.js"></script>
   </head>
   <body>
-    <div id="app">
-      <file-tree></file-tree>
-      <web-terminal></web-terminal>
-    </div>
+    <ide-app>
+      <file-tree slot="sidebar"></file-tree>
+      <editor-pane slot="editor"></editor-pane>
+      <web-terminal slot="terminal"></web-terminal>
+    </ide-app>
   </body>
 </html>
