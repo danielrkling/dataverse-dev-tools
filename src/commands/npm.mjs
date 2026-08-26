@@ -2,6 +2,7 @@ import { createCommand } from "../terminal.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { dirname } from "../utils/path.mjs";
 import { object, optional, argument, string, message, or, command, constant, option } from "@optique/core";
+import * as semver from "semver";
 
 // ---- tar extraction (inlined) ----
 
@@ -162,77 +163,29 @@ function filterFiles(files, tsOnly) {
 }
 
 /**
- * @param {string} v
- * @returns {{ major: number, minor: number, patch: number } | null}
- */
-function parseSemver(v) {
-    const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
-    return m ? { major: +m[1], minor: +m[2], patch: +m[3] } : null;
-}
-
-/**
- * @param {{ major: number, minor: number, patch: number }} a
- * @param {{ major: number, minor: number, patch: number }} b
- * @returns {number}
- */
-function compareSemver(a, b) {
-    return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
-}
-
-/**
- * @param {{ major: number, minor: number, patch: number }} sv
- * @param {string} range
- * @returns {boolean}
- */
-function satisfies(sv, range) {
-    if (!range || range === "*" || range === "latest") return true;
-
-    if (/^\d+\.\d+\.\d+$/.test(range)) {
-        const p = range.split(".");
-        return sv.major === +p[0] && sv.minor === +p[1] && sv.patch === +p[2];
-    }
-
-    const c = range.match(/^\^(\d+)\.(\d+)\.(\d+)/);
-    if (c) {
-        const cm = +c[1],
-            cmin = +c[2],
-            cp = +c[3];
-        if (sv.major !== cm) return false;
-        if (cm === 0) {
-            if (cmin === 0) return sv.patch >= cp;
-            return sv.minor === cmin && sv.patch >= cp;
-        }
-        return sv.minor >= cmin;
-    }
-
-    const t = range.match(/^~(\d+)\.(\d+)\.(\d+)/);
-    if (t) {
-        return sv.major === +t[1] && sv.minor === +t[2] && sv.patch >= +t[3];
-    }
-
-    const g = range.match(/^>=(\d+)\.(\d+)\.(\d+)/);
-    if (g) {
-        return compareSemver(sv, { major: +g[1], minor: +g[2], patch: +g[3] }) >= 0;
-    }
-
-    return true;
-}
-
-/**
- * @param {string[]} versions
- * @param {string} range
+ * Resolve a version spec (range, dist-tag, or bare "latest") to a concrete
+ * version. Dist-tags (e.g. "alpha", "beta", "next") are looked up in the
+ * package's `dist-tags` so `npm install pkg@alpha` works just like the real
+ * npm CLI. Plain ranges (^1.2.3, ~1.2.3, >=, exact) are resolved against the
+ * available versions with semver.
+ *
+ * @param {string[]} versions available versions
+ * @param {Record<string, string>} distTags package metadata `dist-tags`
+ * @param {string} spec range, tag, or "latest"
  * @returns {string | undefined}
  */
-function pickBestVersion(versions, range) {
-    /** @type {Array<{ major: number, minor: number, patch: number }>} */
-    const parsed = [];
-    for (const v of versions) {
-        if (!/^\d+\.\d+\.\d+$/.test(v)) continue;
-        const sv = parseSemver(v);
-        if (sv && satisfies(sv, range)) parsed.push(sv);
+function pickBestVersion(versions, distTags, spec) {
+    const range = spec && spec !== "latest" ? spec : "*";
+
+    // A dist-tag that isn't a recognisable semver range wins outright.
+    if (spec && spec !== "*" && !semver.validRange(spec)) {
+        const tagged = distTags?.[spec];
+        if (tagged) return tagged;
+        // Unknown tag: fall through to the general resolver which will fail clearly.
     }
-    parsed.sort((a, b) => compareSemver(b, a));
-    return parsed[0] ? `${parsed[0].major}.${parsed[0].minor}.${parsed[0].patch}` : undefined;
+
+    const valid = versions.filter((v) => semver.valid(v));
+    return semver.maxSatisfying(valid, range) ?? undefined;
 }
 
 /** @type {Map<string, any>} */
@@ -253,6 +206,8 @@ async function fetchPackageMeta(name) {
 
 /** @type {Set<string>} */
 const installing = new Set();
+/** @type {Set<string>} */
+const inFlight = new Set();
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
@@ -263,72 +218,91 @@ const installing = new Set();
  * @param {boolean} [force]
  */
 async function installOne(fs, term, name, version, tsOnly, force = false) {
-    if (force) installing.delete(name); // bypass the per-session dedupe on forced installs
-    else if (installing.has(name)) return;
-    installing.add(name);
-
-    const targetDir = `node_modules/${name}`;
-    // Read under the fs lock so we don't read a directory mid-mutation.
-    const alreadyInstalled = !force && await withFsLock(async () => {
-        if (!(await fs.exists(targetDir))) return false;
-        const pkgRaw = await fs.readFile(`${targetDir}/package.json`, "utf8");
-        const pkgJson = JSON.parse(pkgRaw);
-        return satisfies(pkgJson.version, version);
-    });
-    if (alreadyInstalled) {
-        term.info(`    ${name} already installed`);
+    // Recursion/cycle guard: if this package is already being resolved higher
+    // up the call stack, stop. This is independent of --force so circular
+    // dependency trees (e.g. A -> B -> A) can never loop forever.
+    if (inFlight.has(name)) {
+        term.info(`    ${name} (already resolving up the tree — skipping to avoid a cycle)`);
         return;
     }
+    // Session dedupe: skip a package we've already fully installed in this run.
+    // --force bypasses this so the requested package is re-fetched, but it must
+    // not reopen the recursion door (the inFlight guard above already handles
+    // that), and it must not re-grant entry to shared leaves in the dep tree.
+    if (!force && installing.has(name)) return;
 
-    const meta = await fetchPackageMeta(name);
-    const versions = Object.keys(meta.versions || {});
-    const resolved = pickBestVersion(versions, version || "latest");
-    if (!resolved) {
-        throw new Error(`No version of ${name} matches ${version}`);
-    }
-    const pkg = meta.versions[resolved];
+    inFlight.add(name);
+    try {
+        const targetDir = `node_modules/${name}`;
 
-    term.log(`  ↓ ${name}@${resolved}`);
-
-    const res = await fetch(pkg.dist.tarball);
-    if (!res.ok) throw new Error(`Download failed for ${name}@${resolved}`);
-
-    const tarBuffer = await decompressGzip(await res.arrayBuffer());
-    const files = extractTar(tarBuffer);
-    const filtered = filterFiles(files, tsOnly);
-
-    // Group files by directory so we only mkdir each dir once.
-    /** @type {Map<string, { path: string, data: Uint8Array }[]>} */
-    const byDir = new Map();
-    for (const file of filtered) {
-        const fp = `${targetDir}/${file.path}`;
-        const dir = dirname(fp);
-        if (!byDir.has(dir)) byDir.set(dir, []);
-        byDir.get(dir)?.push(file);
-    }
-
-    // All writes go through the fs lock: downloads stay parallel, disk stays serialized.
-    await Promise.all(
-        [...byDir.entries()].map(([dir, files]) =>
-            withFsLock(async () => {
-                if (dir) await fs.mkdir(dir, { recursive: true });
-                for (const file of files) {
-                    await fs.writeFile(`${targetDir}/${file.path}`, file.data);
-                }
-            }),
-        ),
-    );
-
-    term.success(`    ${name}@${resolved} installed`);
-
-    const deps = Object.entries(pkg.dependencies || {});
-    await eachWithConcurrency(deps, async ([depName, depRange]) => {
-        try {
-            await installOne(fs, term, depName, depRange, tsOnly, force);
-        } catch (e) {
-            term.error(`    Failed to install ${depName}: ${e.message}`);
+        const meta = await fetchPackageMeta(name);
+        const versions = Object.keys(meta.versions || {});
+        const resolved = pickBestVersion(versions, meta["dist-tags"] || {}, version || "latest");
+        if (!resolved) {
+            throw new Error(`No version of ${name} matches ${version}`);
         }
-    });
+
+        // Read under the fs lock so we don't read a directory mid-mutation.
+        // Only short-circuit when the already-installed version is exactly the one
+        // we just resolved (tags like @alpha can move, so they always refetch).
+        const alreadyInstalled = !force && await withFsLock(async () => {
+            if (!(await fs.exists(targetDir))) return false;
+            const pkgRaw = await fs.readFile(`${targetDir}/package.json`, "utf8");
+            const pkgJson = JSON.parse(pkgRaw);
+            return pkgJson.version === resolved || (semver.validRange(version) && semver.satisfies(pkgJson.version, version));
+        });
+        if (alreadyInstalled) {
+            term.info(`    ${name} already installed`);
+            return;
+        }
+
+        const pkg = meta.versions[resolved];
+
+        term.log(`  ↓ ${name}@${resolved}`);
+
+        const res = await fetch(pkg.dist.tarball);
+        if (!res.ok) throw new Error(`Download failed for ${name}@${resolved}`);
+
+        const tarBuffer = await decompressGzip(await res.arrayBuffer());
+        const files = extractTar(tarBuffer);
+        const filtered = filterFiles(files, tsOnly);
+
+        // Group files by directory so we only mkdir each dir once.
+        /** @type {Map<string, { path: string, data: Uint8Array }[]>} */
+        const byDir = new Map();
+        for (const file of filtered) {
+            const fp = `${targetDir}/${file.path}`;
+            const dir = dirname(fp);
+            if (!byDir.has(dir)) byDir.set(dir, []);
+            byDir.get(dir)?.push(file);
+        }
+
+        // All writes go through the fs lock: downloads stay parallel, disk stays serialized.
+        await Promise.all(
+            [...byDir.entries()].map(([dir, files]) =>
+                withFsLock(async () => {
+                    if (dir) await fs.mkdir(dir, { recursive: true });
+                    for (const file of files) {
+                        await fs.writeFile(`${targetDir}/${file.path}`, file.data);
+                    }
+                }),
+            ),
+        );
+
+        term.success(`    ${name}@${resolved} installed`);
+        installing.add(name);
+
+        const deps = Object.entries(pkg.dependencies || {});
+        await eachWithConcurrency(deps, async ([depName, depRange]) => {
+            try {
+                await installOne(fs, term, depName, depRange, tsOnly, force);
+            } catch (e) {
+                term.error(`    Failed to install ${depName}: ${e.message}`);
+            }
+        });
+    } finally {
+        inFlight.delete(name);
+    }
 }
 
 /**
@@ -656,7 +630,7 @@ export const npmCommand = createCommand({
                     await installOne(fs, term, name, version, tsOnly, force);
                     const meta = await fetchPackageMeta(name);
                     const versions = Object.keys(meta.versions || {});
-                    const resolved = pickBestVersion(versions, version || "latest");
+                    const resolved = pickBestVersion(versions, meta["dist-tags"] || {}, version || "latest");
                     if (resolved) {
                         await updatePackageJson(fs, name, resolved, dev);
                         const target = dev ? "devDependencies" : "dependencies";
@@ -806,7 +780,7 @@ export const npmCommand = createCommand({
                     const meta = await fetchPackageMeta(name);
                     const latest = meta["dist-tags"]?.latest ?? "?";
                     const wanted =
-                        pickBestVersion(Object.keys(meta.versions || {}), range || "*") ?? "?";
+                        pickBestVersion(Object.keys(meta.versions || {}), meta["dist-tags"] || {}, range || "*") ?? "?";
                     if (current !== wanted || current !== latest) {
                         rows.push({ name, current: String(current), wanted, latest });
                     }
@@ -1111,7 +1085,7 @@ export const npmCommand = createCommand({
                 // If the package is in package.json, we respect its semver range limit.
                 // If not, we update to "latest".
                 const range = currentRange || "latest";
-                const resolved = pickBestVersion(versions, range);
+                const resolved = pickBestVersion(versions, meta["dist-tags"] || {}, range);
 
                 if (!resolved) {
                     throw new Error(`No compatible version found for ${name} matching ${range}`);
