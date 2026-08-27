@@ -1,13 +1,15 @@
+import { LitElement, html } from "lit";
 import { bus } from "../services/bus.mjs";
 import { workspace } from "../services/workspace.mjs";
 import { editorState, ensureMonaco } from "../services/editor.mjs";
 
 /**
- * Center panel: Monaco editor with a tab strip.
+ * Center panel: Monaco editor with a tab strip (LitElement).
  *
- * NOTE: deliberately rendered in LIGHT DOM (no shadow root). Monaco injects
- * its stylesheet into document.head, which cannot reach inside a shadow root,
- * so a shadow-DOM host renders the editor unstyled/broken.
+ * NOTE: deliberately rendered in LIGHT DOM (createRenderRoot → this). Monaco
+ * injects its stylesheet into document.head, which cannot reach inside a
+ * shadow root, so a shadow-DOM host renders the editor unstyled/broken. The
+ * <style> block therefore lives in the template like classic custom elements.
  *
  * Listens only to the bus + services:
  * - "editor:open"    -> open file in a tab
@@ -15,9 +17,15 @@ import { editorState, ensureMonaco } from "../services/editor.mjs";
  * - "fs:changed"     -> reload non-dirty models from disk
  * Ctrl+S saves the active buffer through workspace.fs.
  */
-export class EditorPane extends HTMLElement {
+export class EditorPane extends LitElement {
+    static properties = {
+        /** bumped whenever tab/dirty/active state changes, to re-render tabs */
+        _tick: { type: Number, state: true },
+    };
+
     constructor() {
         super();
+        this._tick = 0;
         /** @type {import("monaco-editor").editor.IStandaloneCodeEditor | null} */
         this._editor = null;
         /** @type {Map<string, import("monaco-editor").editor.ICodeEditorViewState>} path -> saved view state */
@@ -26,8 +34,15 @@ export class EditorPane extends HTMLElement {
         this._unsubs = [];
         /** @type {((e: KeyboardEvent) => void) | null} */
         this._onKeyDown = null;
+    }
 
-        this.innerHTML = `
+    /** Light DOM: Monaco's head-injected styles must reach the editor. */
+    createRenderRoot() {
+        return this;
+    }
+
+    render() {
+        return html`
             <style>
                 /* Light DOM: real selectors, not :host */
                 editor-pane {
@@ -72,6 +87,7 @@ export class EditorPane extends HTMLElement {
                     padding: 0 3px;
                     border-radius: 3px;
                     line-height: 1;
+                    display: inline-flex;
                 }
                 .tab .close:hover { background: #444; }
                 .tab.dirty .name::after { content: " ●"; color: #e2c08d; }
@@ -86,17 +102,34 @@ export class EditorPane extends HTMLElement {
                     color: #606060;
                 }
             </style>
-            <div id="tabs"></div>
+            <div id="tabs">
+                ${editorState.tabs.map(
+                    (tab) => html`
+                        <div
+                            class="tab ${tab.path === editorState.activePath ? "active" : ""}
+                                   ${editorState.dirty.has(tab.path) ? "dirty" : ""}"
+                            @click=${() => this.openFile(tab.path)}
+                            @auxclick=${(e) => { if (e.button === 1) this._closeTab(tab.path); }}
+                        >
+                            <span class="name" title=${tab.path}>
+                                ${tab.path.split("/").at(-1) ?? tab.path}
+                            </span>
+                            <button
+                                class="close"
+                                aria-label=${`Close ${tab.path.split("/").at(-1) ?? tab.path}`}
+                                @click=${(e) => { e.stopPropagation(); this._closeTab(tab.path); }}
+                            ><wa-icon name="xmark"></wa-icon></button>
+                        </div>
+                    `,
+                )}
+            </div>
             <div id="container"></div>
             <div id="placeholder">Open a file from the tree to start editing</div>
         `;
-
-        this._tabsEl = /** @type {HTMLDivElement} */ (this.querySelector("#tabs"));
-        this._containerEl = /** @type {HTMLDivElement} */ (this.querySelector("#container"));
-        this._placeholderEl = /** @type {HTMLDivElement} */ (this.querySelector("#placeholder"));
     }
 
     async connectedCallback() {
+        super.connectedCallback();
         this._unsubs.push(
             bus.on("editor:open", (e) => this.openFile(e.detail.path)),
             bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),
@@ -106,7 +139,7 @@ export class EditorPane extends HTMLElement {
         const monaco = await ensureMonaco();
         if (this._editor || !this.isConnected) return;
 
-        this._editor = monaco.editor.create(this._containerEl, {
+        this._editor = monaco.editor.create(this.renderRoot.querySelector("#container"), {
             automaticLayout: true,
             theme: "vs-dark",
             fontSize: 13,
@@ -120,13 +153,11 @@ export class EditorPane extends HTMLElement {
         this._editor.onDidChangeModelContent(() => {
             const model = this._editor?.getModel();
             if (!model) return;
-            const path = /** @type {string} */ (
-                model.uri.path.replace(/^\//, "")
-            );
+            const path = /** @type {string} */ (model.uri.path.replace(/^\//, ""));
             if (!editorState.dirty.has(path)) {
                 editorState.dirty.add(path);
             }
-            this._renderTabs();
+            this._invalidate();
         });
 
         // Ctrl/Cmd+S saves the active buffer.
@@ -140,11 +171,17 @@ export class EditorPane extends HTMLElement {
     }
 
     disconnectedCallback() {
+        super.disconnectedCallback();
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
         if (this._onKeyDown) document.removeEventListener("keydown", this._onKeyDown);
         this._editor?.dispose();
         this._editor = null;
+    }
+
+    /** Re-render the tab strip (state lives in editorState, not properties). */
+    _invalidate() {
+        this._tick++;
     }
 
     /**
@@ -191,8 +228,8 @@ export class EditorPane extends HTMLElement {
         // keep working immediately, like VS Code. Users click into the editor
         // when they want to type.
 
-        this._placeholderEl.style.display = "none";
-        this._renderTabs();
+        this.renderRoot.querySelector("#placeholder").style.display = "none";
+        this._invalidate();
     }
 
     /**
@@ -213,11 +250,11 @@ export class EditorPane extends HTMLElement {
                 this.openFile(next.path);
             } else {
                 this._editor?.setModel(null);
-                this._placeholderEl.style.display = "";
-                this._renderTabs();
+                this.renderRoot.querySelector("#placeholder").style.display = "";
+                this._invalidate();
             }
         } else {
-            this._renderTabs();
+            this._invalidate();
         }
     }
 
@@ -230,7 +267,7 @@ export class EditorPane extends HTMLElement {
 
         await fs.writeFile(`/${path}`, model.getValue());
         editorState.dirty.delete(path);
-        this._renderTabs();
+        this._invalidate();
     }
 
     /**
@@ -293,43 +330,12 @@ export class EditorPane extends HTMLElement {
         editorState.reset();
         this._viewStates.clear();
         this._editor?.setModel(null);
-        this._placeholderEl.style.display = "";
-        this._renderTabs();
+        this.renderRoot.querySelector("#placeholder").style.display = "";
+        this._invalidate();
 
         // Hydrate project models in the background for cross-file IntelliSense.
         if (workspace.fs) {
             editorState.hydrateProject(workspace.fs);
-        }
-    }
-
-    _renderTabs() {
-        this._tabsEl.innerHTML = "";
-        for (const tab of editorState.tabs) {
-            const el = document.createElement("div");
-            el.className = "tab";
-            if (tab.path === editorState.activePath) el.classList.add("active");
-            if (editorState.dirty.has(tab.path)) el.classList.add("dirty");
-
-            const name = document.createElement("span");
-            name.className = "name";
-            name.textContent = tab.path.split("/").at(-1) ?? tab.path;
-            name.title = tab.path;
-
-            const close = document.createElement("button");
-            close.className = "close";
-            close.innerHTML = `<wa-icon name="xmark"></wa-icon>`;
-            close.setAttribute("aria-label", `Close ${tab.path.split("/").at(-1) ?? tab.path}`);
-            close.addEventListener("click", (e) => {
-                e.stopPropagation();
-                this._closeTab(tab.path);
-            });
-
-            el.append(name, close);
-            el.addEventListener("click", () => this.openFile(tab.path));
-            el.addEventListener("auxclick", (e) => {
-                if (e.button === 1) this._closeTab(tab.path); // middle click
-            });
-            this._tabsEl.appendChild(el);
         }
     }
 }

@@ -14,5 +14,9 @@ export default defineConfig({
   },
   optimizeDeps: {
     exclude: ['isomorphic-git'],
+    // Pre-bundle lit so every component shares ONE copy — duplicated Lit
+    // instances break adoptedStyleSheets ("Failed to convert value to
+    // CSSStyleSheet") and render nothing.
+    include: ['lit'],
   },
 });

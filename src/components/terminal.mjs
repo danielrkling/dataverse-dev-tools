@@ -1,14 +1,31 @@
+import { LitElement, html as litHtml } from "lit";
 import { WebFileSystem } from "../services/fs.mjs";
 import { workspace, } from "../services/workspace.mjs";
 import { bus } from "../services/bus.mjs";
 import { CommandRegistry } from "../services/commands.mjs";
 import { saveCommandHistory, loadCommandHistory, clearCommandHistory } from "../utils/history.mjs";
 
+/**
+ * <web-terminal>: LitElement with shadow DOM. The static shell (styles,
+ * output area, input line) is Lit-templated; log output is appended
+ * imperatively for speed (commands may emit hundreds of lines).
+ *
+ * Command registration/execution lives in services/commands.mjs — this
+ * element is the output sink + execution context commands receive.
+ */
+export class WebTerminal extends LitElement {
+    /** Reactive: rendered into the prompt span. */
+    static properties = {
+        prompt: { state: true },
+        _disabled: { state: true },
+        _placeholder: { state: true },
+    };
 
-export class WebTerminal extends HTMLElement {
     constructor() {
         super();
-        this.attachShadow({ mode: "open" });
+        this.prompt = "";
+        this._disabled = true;
+        this._placeholder = "";
         /** @type {Set<(args: string[], term: WebTerminal) => any>} */
         this._handlers = new Set();
         /** @type {string[]} */
@@ -22,106 +39,88 @@ export class WebTerminal extends HTMLElement {
         WebFileSystem.fromOPFS().then((fs) => {
             this._opfsFs = fs;
         });
-
-        const root = /** @type {ShadowRoot} */ (this.shadowRoot);
-        root.innerHTML = `
-            <style>
-                :host {
-                    display: flex;
-                    flex-direction: column;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                    background-color: #1e1e1e;
-                    color: #d4d4d4;
-                    padding: 1rem;
-                    border-radius: 5px;
-                    /* Fill the split-panel slot; let the panel control sizing.
-                       min-height:0 is required so the host can shrink below
-                       content height inside a flex column. */
-                    height: 100%;
-                    min-height: 0;
-                    box-sizing: border-box;
-                }
-                #output {
-                    flex-grow: 1;
-                    /* min-height:0 lets the scroll area shrink and scroll
-                       instead of expanding to fit all the log lines. */
-                    min-height: 0;
-                    overflow-y: auto;
-                    overflow-x: hidden;
-                    white-space: pre-wrap;
-                    word-break: break-all;
-                }
-                #output::-webkit-scrollbar {
-                    width: 8px;
-                }
-                #output::-webkit-scrollbar-track {
-                    background: #2d2d2d;
-                    border-radius: 10px;
-                }
-                #output::-webkit-scrollbar-thumb {
-                    background: #555;
-                    border-radius: 10px;
-                }
-                #output::-webkit-scrollbar-thumb:hover {
-                    background: #777;
-                }
-
-                #output  button {
-                    all: unset;
-                    display: block;
-                    width:100%;
-                    box-sizing: border-box;
-                }
-
-                #output button:hover {
-                    background: #555;
-                    cursor: pointer;
-                }
-                #output button:active, #output button:focus-visible {
-                    background: #555;
-                    cursor: pointer;
-                }
-
-                .input-line {
-                    display: flex;
-                    align-items: center;
-                    margin-top: 0.5rem;
-                }
-                .prompt {
-                    margin-right: 0.5rem;
-                    color: #569cd6;
-                }
-                #input {
-                    flex-grow: 1;
-                    background: none;
-                    border: none;
-                    color: inherit;
-                    font-family: inherit;
-                    font-size: 1em;
-                    outline: none;
-                }
-                .log-echo { color: #a0a0a0; }
-                .log-info { color: #4fc1ff; }
-                .log-error { color: #f48771; }
-                .log-success { color: #4ec9b0; }
-            </style>
-            <div id="output"></div>
-            <div class="input-line">
-                <span class="prompt"><span id="prompt"></span>&gt</span>
-                <input type="text" id="input" autocomplete="off" />
-            </div>
-        `;
-
-        this._output = /** @type {HTMLDivElement} */ (root.querySelector("#output"));
-        this._input = /** @type {HTMLInputElement} */ (root.querySelector("#input"));
-        this._prompt = /** @type {HTMLSpanElement} */ (root.querySelector("#prompt"));
         /** Command registry lives in services/commands.mjs; this element is
          *  the output sink + execution context for commands. */
         this.registry = new CommandRegistry();
     }
 
-    connectedCallback() {
-        this._input.addEventListener("keydown", (e) => this._onKeyDown(e));
+    static styles = [`
+        :host {
+            display: flex;
+            flex-direction: column;
+            font-family: 'Consolas', 'Monaco', monospace;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 5px;
+            /* Fill the split-panel slot; let the panel control sizing.
+               min-height:0 is required so the host can shrink below
+               content height inside a flex column. */
+            height: 100%;
+            min-height: 0;
+            box-sizing: border-box;
+        }
+        #output {
+            flex-grow: 1;
+            /* min-height:0 lets the scroll area shrink and scroll
+               instead of expanding to fit all the log lines. */
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        #output::-webkit-scrollbar { width: 8px; }
+        #output::-webkit-scrollbar-track { background: #2d2d2d; border-radius: 10px; }
+        #output::-webkit-scrollbar-thumb { background: #555; border-radius: 10px; }
+        #output::-webkit-scrollbar-thumb:hover { background: #777; }
+        #output button {
+            all: unset;
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        #output button:hover { background: #555; cursor: pointer; }
+        #output button:active, #output button:focus-visible { background: #555; cursor: pointer; }
+        .input-line {
+            display: flex;
+            align-items: center;
+            margin-top: 0.5rem;
+        }
+        .prompt { margin-right: 0.5rem; color: #569cd6; }
+        #input {
+            flex-grow: 1;
+            background: none;
+            border: none;
+            color: inherit;
+            font-family: inherit;
+            font-size: 1em;
+            outline: none;
+        }
+        .log-echo { color: #a0a0a0; }
+        .log-info { color: #4fc1ff; }
+        .log-error { color: #f48771; }
+        .log-success { color: #4ec9b0; }
+    `];
+
+    render() {
+        return litHtml`
+            <div id="output"></div>
+            <div class="input-line">
+                <span class="prompt"><span id="prompt">${this.prompt}</span>&gt</span>
+                <input
+                    type="text"
+                    id="input"
+                    autocomplete="off"
+                    ?disabled=${this._disabled}
+                    placeholder=${this._placeholder}
+                    @keydown=${(e) => this._onKeyDown(e)}
+                />
+            </div>
+        `;
+    }
+
+    firstUpdated() {
         this.addEventListener("click", (e) => {
             if (window.getSelection()?.toString() !== "") return;
 
@@ -134,7 +133,7 @@ export class WebTerminal extends HTMLElement {
             );
 
             if (!clickedFocusable) {
-                this._input.focus();
+                this._inputEl()?.focus();
             }
         });
 
@@ -151,22 +150,28 @@ export class WebTerminal extends HTMLElement {
     }
 
     disconnectedCallback() {
+        super.disconnectedCallback();
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
     }
 
+    /** @returns {HTMLInputElement} */
+    _inputEl() {
+        return /** @type {HTMLInputElement} */ (this.renderRoot.querySelector("#input"));
+    }
+
     /** Lock the terminal out until a workspace folder is selected. */
     _disable() {
-        this._input.disabled = true;
-        this._input.placeholder = "Open a folder to use the terminal…";
+        this._disabled = true;
+        this._placeholder = "Open a folder to use the terminal…";
         this.prompt = "";
         this.info("No folder open — use the folder button in the sidebar to open one.");
     }
 
     /** Unlock the terminal once a workspace folder is available. */
     _enable() {
-        this._input.disabled = false;
-        this._input.placeholder = "";
+        this._disabled = false;
+        this._placeholder = "";
         // Wipe the "no folder open" hint now that a folder is loaded.
         this.clear();
         if (workspace.fs) {
@@ -192,20 +197,21 @@ export class WebTerminal extends HTMLElement {
             line.textContent = String(content);
         }
 
-        this._output.appendChild(line);
-        this._output.scrollTop = this._output.scrollHeight;
+        const output = /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#output"));
+        output.appendChild(line);
+        output.scrollTop = output.scrollHeight;
         return line;
     }
 
     /**
      * Log trusted, pre-built HTML. Only use this for markup the app itself
      * generated — never interpolate user input or file contents into it.
-     * @param {string} html
+     * @param {string} markup
      * @param {Record<string, string>} [attributes]
      * @returns {HTMLDivElement}
      */
-    html(html, attributes = {}) {
-        return this.log(/** @type {any} */ (document.createRange().createContextualFragment(html)), attributes);
+    html(markup, attributes = {}) {
+        return this.log(/** @type {any} */ (document.createRange().createContextualFragment(markup)), attributes);
     }
 
     /**
@@ -237,17 +243,8 @@ export class WebTerminal extends HTMLElement {
 
     /** Clear all terminal output */
     clear() {
-        this._output.innerHTML = "";
-    }
-
-    /** @returns {string} */
-    get prompt() {
-        return this._prompt.textContent ?? "";
-    }
-
-    /** @param {string} text */
-    set prompt(text) {
-        this._prompt.textContent = text;
+        const output = /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#output"));
+        output.innerHTML = "";
     }
 
     /**
@@ -293,16 +290,17 @@ export class WebTerminal extends HTMLElement {
      * @param {KeyboardEvent} event
      */
     _onKeyDown(event) {
+        const input = this._inputEl();
         switch (event.key) {
             case "Enter":
                 event.preventDefault();
-                const text = this._input.value.trim();
+                const text = input.value.trim();
                 if (text) {
                     this._history.unshift(text);
                     this._historyIndex = -1;
                     this._persistHistory();
                     this.log(`${this.prompt}> ${text}`, { class: "log-echo" });
-                    this._input.value = "";
+                    input.value = "";
                     this.processCommand(text);
                 }
                 break;
@@ -310,17 +308,17 @@ export class WebTerminal extends HTMLElement {
                 event.preventDefault();
                 if (this._historyIndex < this._history.length - 1) {
                     this._historyIndex++;
-                    this._input.value = this._history[this._historyIndex];
+                    input.value = this._history[this._historyIndex];
                 }
                 break;
             case "ArrowDown":
                 event.preventDefault();
                 if (this._historyIndex > 0) {
                     this._historyIndex--;
-                    this._input.value = this._history[this._historyIndex];
+                    input.value = this._history[this._historyIndex];
                 } else {
                     this._historyIndex = -1;
-                    this._input.value = "";
+                    input.value = "";
                 }
                 break;
         }

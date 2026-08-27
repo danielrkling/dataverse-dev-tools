@@ -1,7 +1,8 @@
+import { LitElement, html } from "lit";
 import { FileTree, prepareFileTreeInput } from "@pierre/trees";
 import "@pierre/trees/web-components"; // registers <file-tree-container> + styles
-// The Web Awesome autoloader (index.html) only watches the light DOM — it
-// can't see inside this shadow root, so components used here are imported
+// The Web Awesome autoloader is NOT used: it only watches the light DOM and
+// cannot see inside shadow roots, so components used here are imported
 // explicitly to guarantee registration.
 import "https://ka-f.webawesome.com/webawesome@3.12.0/components/button/button.js";
 import "https://ka-f.webawesome.com/webawesome@3.12.0/components/icon/icon.js";
@@ -13,16 +14,22 @@ import { scanPaths } from "../utils/scan-paths.mjs";
 
 /**
  * Sidebar file tree, backed by @pierre/trees (loaded from the CDN import map).
+ * LitElement with shadow DOM: the header/recents/loading shell is templated;
+ * the @pierre/trees tree itself is mounted imperatively into #mount.
  *
  * This element is a thin adapter between our services and the library:
  * - "workspace:open"  -> scan workspace.fs and resetPaths()
  * - "fs:changed"      -> incremental tree.add() / tree.remove()
  * - selection/rename/context menu -> fs mutations + bus "editor:open"
  */
-export class FileTreePane extends HTMLElement {
+export class FileTreePane extends LitElement {
+    static properties = {
+        _title: { state: true },
+    };
+
     constructor() {
         super();
-        this.attachShadow({ mode: "open" });
+        this._title = "No folder open";
         /** @type {FileTree | null} */
         this._tree = null;
         /** @type {Set<string>} known directory paths */
@@ -39,165 +46,150 @@ export class FileTreePane extends HTMLElement {
         this._onKeyDown = null;
         /** @type {HTMLElement | null} floating empty-space context menu */
         this._emptyMenu = null;
+    }
 
-        const root = /** @type {ShadowRoot} */ (this.shadowRoot);
-        root.innerHTML = `
-            <style>
-                :host {
-                    display: flex;
-                    flex-direction: column;
-                    background-color: #1e1e1e;
-                    color: #d4d4d4;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                    font-size: 13px;
-                    min-width: 0;
-                    overflow: hidden;
-                }
-                header {
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    padding: 0.5rem 0.75rem;
-                    border-bottom: 1px solid #333;
-                    flex-shrink: 0;
-                }
-                #title {
-                    font-weight: bold;
-                    color: #569cd6;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                .actions {
-                    display: inline-flex;
-                    align-items: center;
-                    gap: 2px;
-                }
-                .actions .icon-btn {
-                    --wa-button-size: 26px;
-                    font-size: 14px;
-                }
-                /* Render WA buttons as subtle, transparent toolbar icons */
-                .actions .icon-btn::part(button) {
-                    all: unset;
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    width: var(--wa-button-size, 26px);
-                    height: var(--wa-button-size, 26px);
-                    cursor: pointer;
-                    color: #a0a0a0;
-                    border-radius: 3px;
-                }
-                .actions .icon-btn:hover::part(button) {
-                    background: #3a3a3a;
-                    color: #fff;
-                }
-                #mount {
-                    flex: 1;
-                    min-height: 0;
-                }
-                #empty {
-                    padding: 1rem;
-                    color: #808080;
-                }
-                /* Recent-folders list rows rendered as full-width WA buttons */
-                .recent-item {
-                    width: 100%;
-                    --wa-button-font-size: 12px;
-                }
-                .recent-item::part(button) {
-                    all: unset;
-                    display: flex;
-                    align-items: center;
-                    gap: 6px;
-                    width: 100%;
-                    box-sizing: border-box;
-                    padding: 6px 10px;
-                    cursor: pointer;
-                    color: #d4d4d4;
-                    font-size: 12px;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    border-radius: 3px;
-                }
-                .recent-item:hover::part(button) {
-                    background: #094771;
-                }
-                /* Remove button in the recents list: compact square, centered x */
-                .remove-item {
-                    flex: 0 0 auto;
-                    width: 28px;
-                    opacity: 0.6;
-                }
-                .remove-item:hover {
-                    opacity: 1;
-                }
-                .recent-item.remove-item::part(button) {
-                    width: auto;
-                    justify-content: center;
-                    padding: 6px 0;
-                }
-                /* Loading overlay shown while the workspace is being scanned */
-                #loading {
-                    display: none;
-                    flex: 1;
-                    min-height: 0;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 0.5rem;
-                    color: #808080;
-                    flex-direction: column;
-                }
-                #loading.visible {
-                    display: flex;
-                }
-                #loading wa-spinner {
-                    font-size: 1.75rem;
-                    color: #569cd6;
-                }
-            </style>
+    static styles = [`
+        :host {
+            display: flex;
+            flex-direction: column;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            min-width: 0;
+            overflow: hidden;
+        }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid #333;
+            flex-shrink: 0;
+        }
+        #title {
+            font-weight: bold;
+            color: #569cd6;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+        }
+        .actions .icon-btn {
+            --wa-button-size: 26px;
+            font-size: 14px;
+        }
+        /* Render WA buttons as subtle, transparent toolbar icons */
+        .actions .icon-btn::part(button) {
+            all: unset;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: var(--wa-button-size, 26px);
+            height: var(--wa-button-size, 26px);
+            cursor: pointer;
+            color: #a0a0a0;
+            border-radius: 3px;
+        }
+        .actions .icon-btn:hover::part(button) {
+            background: #3a3a3a;
+            color: #fff;
+        }
+        #mount {
+            flex: 1;
+            min-height: 0;
+        }
+        #empty {
+            padding: 1rem;
+            color: #808080;
+        }
+        /* Recent-folders list rows rendered as full-width WA buttons */
+        .recent-item {
+            width: 100%;
+            --wa-button-font-size: 12px;
+        }
+        .recent-item::part(button) {
+            all: unset;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 6px 10px;
+            cursor: pointer;
+            color: #d4d4d4;
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            border-radius: 3px;
+        }
+        .recent-item:hover::part(button) {
+            background: #094771;
+        }
+        /* Remove button in the recents list: compact square, centered x */
+        .remove-item {
+            flex: 0 0 auto;
+            width: 28px;
+            opacity: 0.6;
+        }
+        .remove-item:hover {
+            opacity: 1;
+        }
+        .recent-item.remove-item::part(button) {
+            width: auto;
+            justify-content: center;
+            padding: 6px 0;
+        }
+        /* Loading overlay shown while the workspace is being scanned */
+        #loading {
+            display: none;
+            flex: 1;
+            min-height: 0;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            color: #808080;
+            flex-direction: column;
+        }
+        #loading.visible {
+            display: flex;
+        }
+        #loading wa-spinner {
+            font-size: 1.75rem;
+            color: #569cd6;
+        }
+    `];
+
+    render() {
+        return html`
             <header>
-                <span id="title">No folder open</span>
+                <span id="title">${this._title}</span>
                 <span class="actions">
-                    <wa-button class="icon-btn" id="new-file" aria-label="New File"><wa-icon name="file"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="new-folder" aria-label="New Folder"><wa-icon name="folder-plus"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="refresh" aria-label="Refresh"><wa-icon name="rotate-right"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="open-folder" aria-label="Open Folder"><wa-icon name="folder-open"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="new-file" aria-label="New File" @click=${() => this._createEntry("file")}><wa-icon name="file"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="new-folder" aria-label="New Folder" @click=${() => this._createEntry("directory")}><wa-icon name="folder-plus"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="refresh" aria-label="Refresh" @click=${() => this.rebuild()}><wa-icon name="rotate-right"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="open-folder" aria-label="Open Folder" @click=${() => this.openFolderPicker()}><wa-icon name="folder-open"></wa-icon></wa-button>
                 </span>
             </header>
             <div id="empty">Click the folder button above to open a folder.</div>
             <div id="loading"><wa-spinner></wa-spinner><span>Loading files…</span></div>
             <div id="mount"></div>
         `;
-
-        this._title = /** @type {HTMLSpanElement} */ (root.querySelector("#title"));
-        this._empty = /** @type {HTMLDivElement} */ (root.querySelector("#empty"));
-        this._mount = /** @type {HTMLDivElement} */ (root.querySelector("#mount"));
-        this._loading = /** @type {HTMLDivElement} */ (root.querySelector("#loading"));
-
-        root.querySelector("#new-file")?.addEventListener("click", () => this._createEntry("file"));
-        root.querySelector("#new-folder")?.addEventListener("click", () => this._createEntry("directory"));
-        root.querySelector("#refresh")?.addEventListener("click", () => this.rebuild());
-        root.querySelector("#open-folder")?.addEventListener("click", () => {
-            this.openFolderPicker();
-        });
     }
 
-    connectedCallback() {
-        this._unsubs.push(
-            bus.on("workspace:open", () => this.rebuild()),
-            bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),
-        );
-
+    firstUpdated() {
         // Context menu on empty tree space (below the rows / between them).
         // Rows are buttons with data-item-path — but they live inside
         // <file-tree-container>'s own shadow root, so e.target is retargeted
         // to the container host by the time this listener runs. Inspect the
         // composed path instead, otherwise every row right-click would ALSO
         // trigger the root menu.
-        this._mount.addEventListener("contextmenu", (e) => {
+        this._mountEl.addEventListener("contextmenu", (e) => {
             const hitRow = e
                 .composedPath()
                 .some((el) => el instanceof HTMLElement && el.matches?.("button[data-item-path]"));
@@ -207,6 +199,14 @@ export class FileTreePane extends HTMLElement {
             e.stopPropagation();
             this._showEmptySpaceMenu(e.clientX, e.clientY);
         });
+    }
+
+    connectedCallback() {
+        super.connectedCallback();
+        this._unsubs.push(
+            bus.on("workspace:open", () => this.rebuild()),
+            bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),
+        );
 
         // Keyboard shortcuts acting on the tree selection.
         this._onKeyDown = (/** @type {KeyboardEvent} */ e) => {
@@ -236,12 +236,24 @@ export class FileTreePane extends HTMLElement {
     }
 
     disconnectedCallback() {
+        super.disconnectedCallback();
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
         this.removeEventListener("keydown", /** @type {any} */ (this._onKeyDown));
         this._tree?.cleanUp();
         this._tree = null;
     }
+
+    // --- Element refs (renderRoot queries; available after first render) ---
+
+    /** @returns {HTMLSpanElement} */
+    get _titleEl() { return /** @type {HTMLSpanElement} */ (this.renderRoot.querySelector("#title")); }
+    /** @returns {HTMLDivElement} */
+    get _emptyEl() { return /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#empty")); }
+    /** @returns {HTMLDivElement} */
+    get _mountEl() { return /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#mount")); }
+    /** @returns {HTMLDivElement} */
+    get _loadingEl() { return /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#loading")); }
 
     /**
      * Populate the empty sidebar with recent folders + picker buttons.
@@ -250,8 +262,8 @@ export class FileTreePane extends HTMLElement {
     async showRecentFolders() {
         const recents = await listHandles();
 
-        /** @type {HTMLElement} */ (this._empty).innerHTML = "";
-        this._empty.style.display = "";
+        /** @type {HTMLElement} */ (this._emptyEl).innerHTML = "";
+        this._emptyEl.style.display = "";
 
         const list = document.createElement("div");
         Object.assign(list.style, { display: "flex", flexDirection: "column", gap: "2px" });
@@ -339,7 +351,7 @@ export class FileTreePane extends HTMLElement {
             }
         });
 
-        this._empty.appendChild(list);
+        this._emptyEl.appendChild(list);
     }
 
     /**
@@ -363,11 +375,11 @@ export class FileTreePane extends HTMLElement {
         // "workspace:open" event): only the latest scan may touch the tree.
         const generation = ++this._rebuildGeneration;
 
-        this._title.textContent = fs.rootName;
-        this._empty.style.display = "none";
+        this._title = fs.rootName; // reactive: rendered by Lit
+        this._emptyEl.style.display = "none";
         // Show the spinner while we walk the filesystem (may take a moment on
         // large workspaces). Hidden again once the tree is rendered below.
-        this._loading.classList.add("visible");
+        this._loadingEl.classList.add("visible");
 
         const { paths, dirs } = await scanPaths(fs);
         if (generation !== this._rebuildGeneration) return; // superseded
@@ -380,7 +392,7 @@ export class FileTreePane extends HTMLElement {
             this._tree.resetPaths({ preparedInput: this._preparedInput });
         } else {
             // First render: clear any placeholder, then mount the tree.
-            this._mount.innerHTML = "";
+            this._mountEl.innerHTML = "";
             this._tree = new FileTree({
                 id: "workspace-tree",
                 preparedInput: this._preparedInput,
@@ -410,11 +422,11 @@ export class FileTreePane extends HTMLElement {
                     },
                 },
             });
-            this._tree.render({ containerWrapper: this._mount });
+            this._tree.render({ containerWrapper: this._mountEl });
         }
 
         // Files are loaded — drop the spinner.
-        this._loading.classList.remove("visible");
+        this._loadingEl.classList.remove("visible");
     }
 
     /**
@@ -642,16 +654,16 @@ export class FileTreePane extends HTMLElement {
         };
 
         document.body.appendChild(menu);
-        this._emptyMenu = menu;
+        this._emptyElMenu = menu;
     }
 
     /** Remove the floating empty-space menu, if open. */
     _closeEmptyMenu() {
-        if (!this._emptyMenu) return;
+        if (!this._emptyElMenu) return;
         // @ts-ignore custom cleanup hook
-        this._emptyMenu._dismiss?.();
-        this._emptyMenu.remove();
-        this._emptyMenu = null;
+        this._emptyElMenu._dismiss?.();
+        this._emptyElMenu.remove();
+        this._emptyElMenu = null;
     }
 
     /**
