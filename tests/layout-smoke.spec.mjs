@@ -8,13 +8,13 @@ test("web awesome split panel + font awesome icons render", async ({ page }) => 
         .poll(() => page.evaluate(() => !!customElements.get("wa-split-panel")), { timeout: 15000 })
         .toBe(true);
 
-    const splitPanels = page.locator("ide-app wa-split-panel");
+    const splitPanels = page.locator(".ide-layout wa-split-panel");
     await expect(splitPanels.first()).toBeVisible();
 
     // Three slotted panes exist.
-    await expect(page.locator('ide-app [slot="sidebar"]')).toHaveCount(1);
-    await expect(page.locator('ide-app [slot="editor"]')).toHaveCount(1);
-    await expect(page.locator('ide-app [slot="terminal"]')).toHaveCount(1);
+    await expect(page.locator("#pane-sidebar")).toHaveCount(1);
+    await expect(page.locator("#pane-editor")).toHaveCount(1);
+    await expect(page.locator("#pane-terminal")).toHaveCount(1);
 
     // File-tree action buttons should be Web Awesome buttons with Font Awesome SVG icons.
     const sidebar = page.locator("file-tree");
@@ -74,7 +74,7 @@ test("terminal output scrolls inside its pane instead of overflowing", async ({ 
 
     const host = page.locator("web-terminal");
     const output = page.locator("web-terminal #output");
-    const paneTerminal = page.locator("ide-app #pane-terminal");
+    const paneTerminal = page.locator("#pane-terminal");
 
     // The terminal host must not exceed its split-panel pane height.
     const hostH = await host.evaluate((el) => el.getBoundingClientRect().height);
