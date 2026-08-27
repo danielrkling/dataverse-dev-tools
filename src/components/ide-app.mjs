@@ -25,7 +25,7 @@ export class IdeApp extends HTMLElement {
 
         /** Saved (non-collapsed) positions for restore, in percent. */
         this._sidebarRestore = 18; // roughly 250px on a typical wide screen
-        this._terminalRestore = 60;
+        this._terminalRestore = 75; // editor gets the remaining 25% on load
 
         const root = /** @type {ShadowRoot} */ (this.shadowRoot);
         root.innerHTML = `
@@ -77,7 +77,7 @@ export class IdeApp extends HTMLElement {
             </style>
             <wa-split-panel id="root" primary="start" position-in-pixels="250" snap="0px" snap-threshold="100">
                 <div class="pane" id="pane-sidebar" slot="start"><slot name="sidebar"></slot></div>
-                <wa-split-panel slot="end" orientation="vertical" id="inner" primary="start" snap="0% 100%" snap-threshold="100" position="75">
+                <wa-split-panel slot="end" orientation="vertical" id="inner" primary="start" snap="0% 100%" snap-threshold="100" position="25">
                     <div class="pane" id="pane-editor" slot="start"><slot name="editor"></slot></div>
                     <div class="pane" id="pane-terminal" slot="end"><slot name="terminal"></slot></div>
                 </wa-split-panel>
