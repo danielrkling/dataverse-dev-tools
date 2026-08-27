@@ -187,7 +187,10 @@ export class EditorPane extends HTMLElement {
         this._editor.setModel(model);
         const state = this._viewStates.get(path);
         if (state) this._editor.restoreViewState(state);
-        this._editor.focus();
+        // Deliberately NOT focusing the editor here: opening a file from the
+        // tree must keep focus in the sidebar so hotkeys (F2, Delete, Ctrl+B…)
+        // keep working immediately, like VS Code. Users click into the editor
+        // when they want to type.
 
         this._placeholderEl.style.display = "none";
         this._renderTabs();

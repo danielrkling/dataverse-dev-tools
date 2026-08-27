@@ -175,13 +175,19 @@ export class FileTreePane extends HTMLElement {
         );
 
         // Context menu on empty tree space (below the rows / between them).
-        // Rows are buttons with data-item-path; right-clicks on anything else
-        // inside the tree mount get the "root" menu.
+        // Rows are buttons with data-item-path — but they live inside
+        // <file-tree-container>'s own shadow root, so e.target is retargeted
+        // to the container host by the time this listener runs. Inspect the
+        // composed path instead, otherwise every row right-click would ALSO
+        // trigger the root menu.
         this._mount.addEventListener("contextmenu", (e) => {
-            const target = /** @type {HTMLElement} */ (e.target);
-            if (target.closest?.("button[data-item-path]")) return; // row menu handles it
+            const hitRow = e
+                .composedPath()
+                .some((el) => el instanceof HTMLElement && el.matches?.("button[data-item-path]"));
+            if (hitRow) return; // row menu handles it
             if (!workspace.fs) return;
             e.preventDefault();
+            e.stopPropagation();
             this._showEmptySpaceMenu(e.clientX, e.clientY);
         });
 
@@ -597,6 +603,8 @@ export class FileTreePane extends HTMLElement {
 
     /**
      * Move dragged paths into a drop target directory (built-in tree DnD).
+     * Uses tree.move() so the in-tree update happens without a rebuild —
+     * a resetPaths() rescan collapses all expanded folders, which is jarring.
      * @param {readonly string[]} draggedPaths
      * @param {{ directoryPath: string | null, kind: "directory" | "root" }} target
      */
@@ -613,14 +621,21 @@ export class FileTreePane extends HTMLElement {
             // Never drop a directory into itself or a descendant.
             if (destDir === path || destDir.startsWith(`${path}/`)) continue;
             try {
+                const stat = await fs.stat(`/${path}`);
                 await fs.rename(`/${path}`, `/${dest}`);
+                // Mirror the move inside the tree (dirs carry trailing slashes).
+                this._tree?.move(stat.isDirectory ? `${path}/` : path, stat.isDirectory ? `${dest}/` : dest);
+                // Remap our directory registry to the new prefix.
+                for (const dir of [...this._dirs]) {
+                    if (dir === path || dir.startsWith(`${path}/`)) {
+                        this._dirs.delete(dir);
+                        this._dirs.add(dest + dir.slice(path.length));
+                    }
+                }
             } catch (error) {
                 console.error(`Move ${path} -> ${dest} failed:`, error);
             }
         }
-        // Full rescan keeps the tree + dir registry consistent (expansion is
-        // preserved by resetPaths).
-        await this.rebuild();
     }
 
     /**
