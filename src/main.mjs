@@ -21,6 +21,8 @@ import gitlab from "./commands/gitlab.mjs";
 import "./components/terminal.mjs";
 import "./components/file-tree.mjs";
 import "./components/editor-pane.mjs";
+// wa-icon lives inside editor-pane's shadow DOM — autoloader can't see it.
+import "https://ka-f.webawesome.com/webawesome@3.12.0/components/icon/icon.js";
 
 // --- Global layout hotkeys (VS Code-style) -------------------------------
 // Ctrl+B  toggle sidebar   Ctrl+J  toggle/focus terminal

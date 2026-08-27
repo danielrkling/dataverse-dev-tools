@@ -21,8 +21,8 @@ test("web awesome split panel + font awesome icons render", async ({ page }) => 
     const newFolderBtn = sidebar.locator("#new-folder");
     await expect(newFolderBtn).toBeVisible({ timeout: 15000 });
     await expect(newFolderBtn).toHaveJSProperty("localName", "wa-button");
-    const svgCount = await newFolderBtn.locator("svg").count();
-    expect(svgCount).toBe(1);
+    const iconCount = await newFolderBtn.locator("wa-icon").count();
+    expect(iconCount).toBe(1);
 
     // The sidebar should show its recents list before a folder is opened.
     await expect(sidebar.locator(".recent-item").first()).toBeVisible({ timeout: 15000 });

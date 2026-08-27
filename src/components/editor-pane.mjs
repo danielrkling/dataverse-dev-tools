@@ -1,7 +1,6 @@
 import { bus } from "../services/bus.mjs";
 import { workspace } from "../services/workspace.mjs";
 import { editorState, ensureMonaco } from "../services/editor.mjs";
-import { faSvg } from "../utils/icons.mjs";
 
 /**
  * Center panel: Monaco editor with a tab strip.
@@ -318,7 +317,7 @@ export class EditorPane extends HTMLElement {
 
             const close = document.createElement("button");
             close.className = "close";
-            close.innerHTML = faSvg("xmark");
+            close.innerHTML = `<wa-icon name="xmark"></wa-icon>`;
             close.setAttribute("aria-label", `Close ${tab.path.split("/").at(-1) ?? tab.path}`);
             close.addEventListener("click", (e) => {
                 e.stopPropagation();

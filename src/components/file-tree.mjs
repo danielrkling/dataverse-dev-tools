@@ -1,12 +1,15 @@
 import { FileTree, prepareFileTreeInput } from "@pierre/trees";
 import "@pierre/trees/web-components"; // registers <file-tree-container> + styles
+// The Web Awesome autoloader (index.html) only watches the light DOM — it
+// can't see inside this shadow root, so components used here are imported
+// explicitly to guarantee registration.
 import "https://ka-f.webawesome.com/webawesome@3.12.0/components/button/button.js";
+import "https://ka-f.webawesome.com/webawesome@3.12.0/components/icon/icon.js";
 import "https://ka-f.webawesome.com/webawesome@3.12.0/components/spinner/spinner.js";
 import { bus } from "../services/bus.mjs";
 import { workspace, listHandles, deleteHandle } from "../services/workspace.mjs";
 import { WebFileSystem } from "../services/fs.mjs";
 import { scanPaths } from "../utils/scan-paths.mjs";
-import { faSvg } from "../utils/icons.mjs";
 
 /**
  * Sidebar file tree, backed by @pierre/trees (loaded from the CDN import map).
@@ -153,10 +156,10 @@ export class FileTreePane extends HTMLElement {
             <header>
                 <span id="title">No folder open</span>
                 <span class="actions">
-                    <wa-button class="icon-btn" id="new-file" aria-label="New File">${faSvg("file")}</wa-button>
-                    <wa-button class="icon-btn" id="new-folder" aria-label="New Folder">${faSvg("folderPlus")}</wa-button>
-                    <wa-button class="icon-btn" id="refresh" aria-label="Refresh">${faSvg("rotateRight")}</wa-button>
-                    <wa-button class="icon-btn" id="open-folder" aria-label="Open Folder">${faSvg("folderOpen")}</wa-button>
+                    <wa-button class="icon-btn" id="new-file" aria-label="New File"><wa-icon name="file"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="new-folder" aria-label="New Folder"><wa-icon name="folder-plus"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="refresh" aria-label="Refresh"><wa-icon name="rotate-right"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="open-folder" aria-label="Open Folder"><wa-icon name="folder-open"></wa-icon></wa-button>
                 </span>
             </header>
             <div id="empty">Click the folder button above to open a folder.</div>
@@ -275,7 +278,7 @@ export class FileTreePane extends HTMLElement {
             const openBtn = document.createElement("wa-button");
             openBtn.setAttribute("appearance", "plain");
             openBtn.setAttribute("variant", "neutral");
-            openBtn.innerHTML = `${faSvg("folderOpen")} ${esc(folder.id)}`;
+            openBtn.innerHTML = `<wa-icon name="folder-open"></wa-icon> ${esc(folder.id)}`;
             openBtn.classList.add("recent-item");
             openBtn.style.flex = "1";
             openBtn.style.minWidth = "0";
@@ -296,7 +299,7 @@ export class FileTreePane extends HTMLElement {
             removeBtn.classList.add("recent-item", "remove-item");
             removeBtn.setAttribute("aria-label", `Forget ${folder.id}`);
             removeBtn.title = `Forget ${folder.id}`;
-            removeBtn.innerHTML = faSvg("xmark");
+            removeBtn.innerHTML = '<wa-icon name="xmark"></wa-icon>';
             removeBtn.addEventListener("click", async (e) => {
                 e.stopPropagation();
                 await deleteHandle(folder.id);
@@ -313,8 +316,8 @@ export class FileTreePane extends HTMLElement {
             list.appendChild(hr);
         }
 
-        item(`${faSvg("folderOpen")}  Select New Folder…`, () => this.openFolderPicker());
-        item(`${faSvg("bolt")}  Use OPFS Workspace`, async () => {
+        item(`<wa-icon name="folder-open"></wa-icon>  Select New Folder…`, () => this.openFolderPicker());
+        item(`<wa-icon name="bolt"></wa-icon>  Use OPFS Workspace`, async () => {
             // Prompt for a project name so multiple OPFS projects can coexist
             // (each becomes its own directory under OPFS + its own recent).
             const raw = prompt("Project name:", "my-project");
