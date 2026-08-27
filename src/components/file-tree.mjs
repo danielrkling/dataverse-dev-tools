@@ -3,7 +3,7 @@ import "@pierre/trees/web-components"; // registers <file-tree-container> + styl
 import "https://ka-f.webawesome.com/webawesome@3.12.0/components/button/button.js";
 import "https://ka-f.webawesome.com/webawesome@3.12.0/components/spinner/spinner.js";
 import { bus } from "../services/bus.mjs";
-import { workspace, listHandles } from "../services/workspace.mjs";
+import { workspace, listHandles, deleteHandle } from "../services/workspace.mjs";
 import { WebFileSystem } from "../services/fs.mjs";
 import { scanPaths } from "../utils/scan-paths.mjs";
 import { faSvg } from "../utils/icons.mjs";
@@ -121,6 +121,15 @@ export class FileTreePane extends HTMLElement {
                 }
                 .recent-item:hover::part(button) {
                     background: #094771;
+                }
+                /* Remove button in the recents list: compact square, not a row */
+                .remove-item {
+                    flex: 0 0 auto;
+                    width: 28px;
+                    opacity: 0.6;
+                }
+                .remove-item:hover {
+                    opacity: 1;
                 }
                 /* Loading overlay shown while the workspace is being scanned */
                 #loading {
@@ -259,7 +268,19 @@ export class FileTreePane extends HTMLElement {
             );
 
         for (const folder of recents) {
-            item(`${faSvg("folderOpen")} ${esc(folder.id)}`, async () => {
+            // Row = open button + remove (x) button.
+            const row = document.createElement("div");
+            Object.assign(row.style, { display: "flex", alignItems: "stretch", gap: "2px" });
+
+            const openBtn = document.createElement("wa-button");
+            openBtn.setAttribute("appearance", "plain");
+            openBtn.setAttribute("variant", "neutral");
+            openBtn.innerHTML = `${faSvg("folderOpen")} ${esc(folder.id)}`;
+            openBtn.classList.add("recent-item");
+            openBtn.style.flex = "1";
+            openBtn.style.minWidth = "0";
+            openBtn.addEventListener("click", async () => {
+                list.remove();
                 try {
                     await workspace.openRecent(folder.id);
                 } catch (error) {
@@ -268,6 +289,22 @@ export class FileTreePane extends HTMLElement {
                     await workspace.openPicker();
                 }
             });
+
+            const removeBtn = document.createElement("wa-button");
+            removeBtn.setAttribute("appearance", "plain");
+            removeBtn.setAttribute("variant", "neutral");
+            removeBtn.classList.add("recent-item", "remove-item");
+            removeBtn.setAttribute("aria-label", `Forget ${folder.id}`);
+            removeBtn.title = `Forget ${folder.id}`;
+            removeBtn.innerHTML = faSvg("xmark");
+            removeBtn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                await deleteHandle(folder.id);
+                await this.showRecentFolders(); // re-render the list
+            });
+
+            row.append(openBtn, removeBtn);
+            list.appendChild(row);
         }
 
         if (recents.length > 0) {
@@ -278,8 +315,16 @@ export class FileTreePane extends HTMLElement {
 
         item(`${faSvg("folderOpen")}  Select New Folder…`, () => this.openFolderPicker());
         item(`${faSvg("bolt")}  Use OPFS Workspace`, async () => {
+            // Prompt for a project name so multiple OPFS projects can coexist
+            // (each becomes its own directory under OPFS + its own recent).
+            const raw = prompt("Project name:", "my-project");
+            if (!raw) {
+                this.showRecentFolders();
+                return;
+            }
+            const dirName = raw.trim().replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "my-project";
             try {
-                await workspace.open(await WebFileSystem.fromOPFS());
+                await workspace.open(await WebFileSystem.fromOPFS(dirName));
             } catch (error) {
                 console.error("OPFS open failed:", error);
                 this.showRecentFolders();
