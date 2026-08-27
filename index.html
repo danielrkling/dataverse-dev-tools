@@ -1,18 +1,67 @@
 <!doctype html>
 <html lang="en" data-theme="business">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Web IDE</title>
-    <style>
-      html,
-      body {
-        padding: 0;
-        margin: 0;
-        height: 100%;
-      }
-    </style>
-    <script type="importmap">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web IDE</title>
+  <style>
+    html,
+    body {
+      padding: 0;
+      margin: 0;
+      height: 100%;
+    }
+
+    body>.ide-layout,
+    body .pane {
+      overflow: hidden;
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .ide-layout {
+      display: block;
+      height: 100%;
+      --border: #222;
+      --accent: #094771;
+    }
+
+    .ide-layout wa-split-panel {
+      height: 100%;
+      background: #1e1e1e;
+      color-scheme: dark;
+      --divider-width: 4px;
+      --divider-hit-area: 10px;
+      /* Keep the sidebar a fixed-ish size on host resize. */
+      --min: 0px;
+      --max: 100%;
+    }
+
+    /* Accent the divider on hover/drag/focus */
+    .ide-layout wa-split-panel::part(divider) {
+      transition: background 0.12s;
+      background: var(--border);
+    }
+
+    .ide-layout wa-split-panel::part(divider):hover,
+    .ide-layout wa-split-panel::part(divider):active {
+      background: #333;
+    }
+
+    /* Panes are absolutely positioned to fill their pane. This keeps their
+         (potentially huge) content from feeding the split panel's grid track
+         sizing, so the track stays bounded and only an inner scroll area
+         (e.g. the terminal) scrolls. */
+    .pane>* {
+      position: absolute;
+      inset: 0;
+      min-width: 0;
+      min-height: 0;
+    }
+  </style>
+  <script type="importmap">
       {
         "imports": {
           "@pierre/trees": "https://esm.sh/@pierre/trees@1.0.0-beta.6",
@@ -27,86 +76,29 @@
         }
       }
     </script>
-    <script type="module">
-      window.addEventListener("keydown", async (e) => {
-        if (e.ctrlKey && e.key === "`") {
-          await import("//cdn.jsdelivr.net/npm/eruda");
-          eruda.init();
-        }
-      });
-    </script>
-    <script src="src/main.mjs" defer type="module"></script>
-  </head>
-  <body>
-    <style>
-      body > .ide-layout,
-      body .pane {
-        overflow: hidden;
-        position: relative;
-        min-width: 0;
-        min-height: 0;
+  <script type="module">
+    window.addEventListener("keydown", async (e) => {
+      if (e.ctrlKey && e.key === "`") {
+        await import("//cdn.jsdelivr.net/npm/eruda");
+        eruda.init();
       }
-      .ide-layout {
-        display: block;
-        height: 100%;
-        --border: #222;
-        --accent: #094771;
-      }
-      .ide-layout wa-split-panel {
-        height: 100%;
-        background: #1e1e1e;
-        color-scheme: dark;
-        --divider-width: 4px;
-        --divider-hit-area: 10px;
-        /* Keep the sidebar a fixed-ish size on host resize. */
-        --min: 0px;
-        --max: 100%;
-      }
-      /* Accent the divider on hover/drag/focus */
-      .ide-layout wa-split-panel::part(divider) {
-        transition: background 0.12s;
-        background: var(--border);
-      }
-      .ide-layout wa-split-panel::part(divider):hover,
-      .ide-layout wa-split-panel::part(divider):active {
-        background: #333;
-      }
-      /* Panes are absolutely positioned to fill their pane. This keeps their
-         (potentially huge) content from feeding the split panel's grid track
-         sizing, so the track stays bounded and only an inner scroll area
-         (e.g. the terminal) scrolls. */
-      .pane > * {
-        position: absolute;
-        inset: 0;
-        min-width: 0;
-        min-height: 0;
-      }
-    </style>
-    <div class="ide-layout">
-      <wa-split-panel id="root" primary="start" position-in-pixels="250" snap="0px" snap-threshold="100">
-        <div class="pane" id="pane-sidebar" slot="start"><file-tree></file-tree></div>
-        <wa-split-panel slot="end" orientation="vertical" id="inner" primary="start" snap="0% 100%" snap-threshold="10" position="25">
-          <div class="pane" id="pane-editor" slot="start"><editor-pane></editor-pane></div>
-          <div class="pane" id="pane-terminal" slot="end"><web-terminal></web-terminal></div>
-        </wa-split-panel>
-      </wa-split-panel>
-    </div>
-    <script type="module">
-      // Web Awesome split panels (loaded from CDN, like the rest of the
-      // runtime deps via the import map / URL imports).
-      import "https://ka-f.webawesome.com/webawesome@3.12.0/components/split-panel/split-panel.js";
+    });
+  </script>
+  <script type="module" src="https://ka-f.webawesome.com/webawesome@3.12.0/components/split-panel/split-panel.js">    </script>
+  <script src="src/main.mjs" defer type="module"></script>
+</head>
 
-      // The split panel clamps its `position` attribute to 0 during its async
-      // upgrade (no measured size yet — the attribute even gets rewritten to
-      // "0"), so the editor's initial 25% height must be applied via the
-      // property after the page has fully loaded.
-      window.addEventListener(
-          "load",
-          () => setTimeout(() => {
-              document.getElementById("inner").position = 25;
-          }),
-          { once: true },
-      );
-    </script>
-  </body>
+<body>
+  <div class="ide-layout">
+    <wa-split-panel id="root" primary="start" position-in-pixels="250" snap="0px" snap-threshold="100">
+      <div class="pane" id="pane-sidebar" slot="start"><file-tree></file-tree></div>
+      <wa-split-panel slot="end" orientation="vertical" id="inner" primary="start" snap="0% 100%" snap-threshold="10"
+        position-in-pixels="600">
+        <div class="pane" id="pane-editor" slot="start"><editor-pane></editor-pane></div>
+        <div class="pane" id="pane-terminal" slot="end"><web-terminal></web-terminal></div>
+      </wa-split-panel>
+    </wa-split-panel>
+  </div>
+</body>
+
 </html>
