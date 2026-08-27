@@ -14,7 +14,7 @@ import picomatch from "picomatch";
 import * as z from "zod";
 import { createCommand } from "../terminal.mjs";
 import { debounce } from "../utils/debounce.mjs";
-import { isValidWebResource, publishWebResources, uploadWebResource } from "../wr.mjs";
+import { isValidWebResource, publishWebResources, uploadWebResource } from "../services/dataverse.mjs";
 
 export const dataverseConfigSchema = z.object({
     prefix: z.string(),
