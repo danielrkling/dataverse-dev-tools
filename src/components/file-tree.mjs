@@ -125,7 +125,7 @@ export class FileTreePane extends HTMLElement {
                 .recent-item:hover::part(button) {
                     background: #094771;
                 }
-                /* Remove button in the recents list: compact square, not a row */
+                /* Remove button in the recents list: compact square, centered x */
                 .remove-item {
                     flex: 0 0 auto;
                     width: 28px;
@@ -133,6 +133,11 @@ export class FileTreePane extends HTMLElement {
                 }
                 .remove-item:hover {
                     opacity: 1;
+                }
+                .recent-item.remove-item::part(button) {
+                    width: auto;
+                    justify-content: center;
+                    padding: 6px 0;
                 }
                 /* Loading overlay shown while the workspace is being scanned */
                 #loading {
