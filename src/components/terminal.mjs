@@ -1,4 +1,4 @@
-import { LitElement, html as litHtml } from "lit";
+import { LitElement, html as litHtml, css } from "lit";
 import { WebFileSystem } from "../services/fs.mjs";
 import { workspace, } from "../services/workspace.mjs";
 import { bus } from "../services/bus.mjs";
@@ -44,7 +44,7 @@ export class WebTerminal extends LitElement {
         this.registry = new CommandRegistry();
     }
 
-    static styles = [`
+    static styles = [css`
         :host {
             display: flex;
             flex-direction: column;

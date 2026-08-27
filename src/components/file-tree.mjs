@@ -1,4 +1,4 @@
-import { LitElement, html } from "lit";
+import { LitElement, html, css } from "lit";
 import { FileTree, prepareFileTreeInput } from "@pierre/trees";
 import "@pierre/trees/web-components"; // registers <file-tree-container> + styles
 // The Web Awesome autoloader is NOT used: it only watches the light DOM and
@@ -48,7 +48,7 @@ export class FileTreePane extends LitElement {
         this._emptyMenu = null;
     }
 
-    static styles = [`
+    static styles = [css`
         :host {
             display: flex;
             flex-direction: column;
