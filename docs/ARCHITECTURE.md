@@ -7,7 +7,7 @@ user-picked directory).
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ <ide-app> (shadow DOM, Web Awesome split panels)           │
+│ layout: Web Awesome split panels, declared in index.html   │
 │  ┌────────────┬─────────────────────────┬────────────────┐ │
 │  │ <file-tree>│ <editor-pane> (Monaco)  │ <web-terminal> │ │
 │  └────────────┴─────────────────────────┴────────────────┘ │
@@ -42,11 +42,12 @@ src/
     bus.mjs                # tiny pub/sub used by everything above
     dataverse.mjs          # Dataverse WebResource REST API client (upload/publish)
   components/
-    ide-app.mjs            # shadow-DOM shell; Web Awesome wa-split-panel layout
     file-tree.mjs          # sidebar tree (thin adapter over @pierre/trees, CDN import map)
     editor-pane.mjs        # Monaco host + tab strip (light DOM — see note below)
     terminal.mjs           # <web-terminal>: UI element (output, line editing, history);
                            #   delegates command execution to services/commands.mjs
+  (layout lives in index.html: Web Awesome wa-split-panel markup + styles;
+   no shell element — panels are plain light DOM)
   terminal.mjs             # REMOVED from src/ root — now components/terminal.mjs
   services/
     ...
