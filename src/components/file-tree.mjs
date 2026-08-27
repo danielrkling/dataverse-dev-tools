@@ -32,6 +32,10 @@ export class FileTreePane extends HTMLElement {
         this._preparedInput = null;
         /** @type {{ path: string, isDir: boolean, cut: boolean } | null} */
         this._clipboard = null;
+        /** @type {((e: KeyboardEvent) => void) | null} */
+        this._onKeyDown = null;
+        /** @type {HTMLElement | null} floating empty-space context menu */
+        this._emptyMenu = null;
 
         const root = /** @type {ShadowRoot} */ (this.shadowRoot);
         root.innerHTML = `
@@ -170,6 +174,36 @@ export class FileTreePane extends HTMLElement {
             bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),
         );
 
+        // Context menu on empty tree space (below the rows / between them).
+        // Rows are buttons with data-item-path; right-clicks on anything else
+        // inside the tree mount get the "root" menu.
+        this._mount.addEventListener("contextmenu", (e) => {
+            const target = /** @type {HTMLElement} */ (e.target);
+            if (target.closest?.("button[data-item-path]")) return; // row menu handles it
+            if (!workspace.fs) return;
+            e.preventDefault();
+            this._showEmptySpaceMenu(e.clientX, e.clientY);
+        });
+
+        // Keyboard shortcuts acting on the tree selection.
+        this._onKeyDown = (/** @type {KeyboardEvent} */ e) => {
+            if (!workspace.fs || !this._tree) return;
+            if (e.key === "F2") {
+                const selected = this._tree.getSelectedPaths().at(-1);
+                if (selected) {
+                    e.preventDefault();
+                    this._tree.startRenaming(selected);
+                }
+            } else if (e.key === "Delete") {
+                const selected = this._tree.getSelectedPaths().at(-1)?.replace(/\/$/, "");
+                if (selected) {
+                    e.preventDefault();
+                    this._delete(selected, this._dirs.has(selected));
+                }
+            }
+        };
+        this.addEventListener("keydown", this._onKeyDown);
+
         // A workspace may already be open before this element connected.
         if (workspace.fs) {
             this.rebuild();
@@ -181,6 +215,7 @@ export class FileTreePane extends HTMLElement {
     disconnectedCallback() {
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
+        this.removeEventListener("keydown", /** @type {any} */ (this._onKeyDown));
         this._tree?.cleanUp();
         this._tree = null;
     }
@@ -303,6 +338,11 @@ export class FileTreePane extends HTMLElement {
                 renaming: {
                     onRename: ({ sourcePath, destinationPath }) => this._rename(sourcePath, destinationPath),
                 },
+                dragAndDrop: {
+                    canDrag: () => workspace.fs != null,
+                    canDrop: () => workspace.fs != null,
+                    onDropComplete: ({ draggedPaths, target }) => this._movePaths(draggedPaths, target),
+                },
                 composition: {
                     contextMenu: {
                         enabled: true,
@@ -403,16 +443,12 @@ export class FileTreePane extends HTMLElement {
     }
 
     /**
-     * Context menu rendered by @pierre/trees' composition API.
-     * @param {{ path: string, name: string, kind: "directory" | "file" }} item
-     * @param {{ close: (options?: { restoreFocus?: boolean }) => void }} context
+     * Build a styled menu element from entries ("-" = separator).
+     * @param {(string | { label: string, fn?: () => void })[]} entries
+     * @param {() => void} onClose called after any entry action
      * @returns {HTMLElement}
      */
-    _renderContextMenu(item, context) {
-        // Directory rows carry a trailing slash in this library.
-        const path = item.path.replace(/\/$/, "");
-        const isDir = item.kind === "directory";
-
+    _buildMenu(entries, onClose) {
         const menu = document.createElement("div");
         Object.assign(menu.style, {
             display: "flex",
@@ -425,6 +461,47 @@ export class FileTreePane extends HTMLElement {
             fontFamily: "inherit",
             fontSize: "13px",
         });
+
+        for (const entry of entries) {
+            if (entry === "-") {
+                const hr = document.createElement("div");
+                Object.assign(hr.style, { height: "1px", background: "#444", margin: "0.25rem 0" });
+                menu.appendChild(hr);
+                continue;
+            }
+            const { label, fn } = /** @type {{ label: string, fn?: () => void }} */ (entry);
+            const btn = document.createElement("button");
+            btn.textContent = label;
+            Object.assign(btn.style, {
+                all: "unset",
+                display: "block",
+                padding: "4px 12px",
+                cursor: fn ? "pointer" : "default",
+                color: fn ? "#d4d4d4" : "#666",
+            });
+            if (!fn) continue;
+            btn.addEventListener("mouseenter", () => (btn.style.background = "#094771"));
+            btn.addEventListener("mouseleave", () => (btn.style.background = ""));
+            btn.addEventListener("click", () => {
+                fn();
+                onClose();
+            });
+            menu.appendChild(btn);
+        }
+
+        return menu;
+    }
+
+    /**
+     * Context menu rendered by @pierre/trees' composition API.
+     * @param {{ path: string, name: string, kind: "directory" | "file" }} item
+     * @param {{ close: (options?: { restoreFocus?: boolean }) => void }} context
+     * @returns {HTMLElement}
+     */
+    _renderContextMenu(item, context) {
+        // Directory rows carry a trailing slash in this library.
+        const path = item.path.replace(/\/$/, "");
+        const isDir = item.kind === "directory";
 
         /** @type {(string | { label: string, fn?: () => void })[]} */
         const entries = [];
@@ -463,34 +540,87 @@ export class FileTreePane extends HTMLElement {
             },
         );
 
-        for (const entry of entries) {
-            if (entry === "-") {
-                const hr = document.createElement("div");
-                Object.assign(hr.style, { height: "1px", background: "#444", margin: "0.25rem 0" });
-                menu.appendChild(hr);
-                continue;
-            }
-            const { label, fn } = /** @type {{ label: string, fn?: () => void }} */ (entry);
-            const btn = document.createElement("button");
-            btn.textContent = label;
-            Object.assign(btn.style, {
-                all: "unset",
-                display: "block",
-                padding: "4px 12px",
-                cursor: fn ? "pointer" : "default",
-                color: fn ? "#d4d4d4" : "#666",
-            });
-            if (!fn) continue;
-            btn.addEventListener("mouseenter", () => (btn.style.background = "#094771"));
-            btn.addEventListener("mouseleave", () => (btn.style.background = ""));
-            btn.addEventListener("click", () => {
-                fn();
-                context.close();
-            });
-            menu.appendChild(btn);
-        }
+        return this._buildMenu(entries, () => context.close());
+    }
 
-        return menu;
+    /**
+     * Floating context menu for right-clicks on empty tree space.
+     * @param {number} x viewport x
+     * @param {number} y viewport y
+     */
+    _showEmptySpaceMenu(x, y) {
+        this._closeEmptyMenu();
+
+        /** @type {(string | { label: string, fn?: () => void })[]} */
+        const entries = [
+            { label: "New File…", fn: () => this._createEntryIn("file", "") },
+            { label: "New Folder…", fn: () => this._createEntryIn("directory", "") },
+            "-",
+        ];
+        if (this._clipboard) {
+            entries.push({ label: "Paste into root", fn: () => this._paste("") });
+        }
+        entries.push(
+            { label: "Refresh", fn: () => this.rebuild() },
+        );
+
+        const menu = this._buildMenu(entries, () => this._closeEmptyMenu());
+        Object.assign(menu.style, { position: "fixed", zIndex: "10000", boxShadow: "0 4px 16px rgba(0,0,0,.5)" });
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
+
+        const dismiss = (/** @type {Event} */ e) => {
+            if (menu.contains(/** @type {Node} */ (e.target))) return;
+            this._closeEmptyMenu();
+        };
+        menu.addEventListener("click", (e) => e.stopPropagation());
+        document.addEventListener("pointerdown", dismiss, true);
+        window.addEventListener("blur", dismiss);
+        // @ts-ignore custom cleanup hook
+        menu._dismiss = () => {
+            document.removeEventListener("pointerdown", dismiss, true);
+            window.removeEventListener("blur", dismiss);
+        };
+
+        document.body.appendChild(menu);
+        this._emptyMenu = menu;
+    }
+
+    /** Remove the floating empty-space menu, if open. */
+    _closeEmptyMenu() {
+        if (!this._emptyMenu) return;
+        // @ts-ignore custom cleanup hook
+        this._emptyMenu._dismiss?.();
+        this._emptyMenu.remove();
+        this._emptyMenu = null;
+    }
+
+    /**
+     * Move dragged paths into a drop target directory (built-in tree DnD).
+     * @param {readonly string[]} draggedPaths
+     * @param {{ directoryPath: string | null, kind: "directory" | "root" }} target
+     */
+    async _movePaths(draggedPaths, target) {
+        const fs = workspace.fs?.root;
+        if (!fs) return;
+        const destDir = target.kind === "directory" ? /** @type {string} */ (target.directoryPath)?.replace(/\/$/, "") ?? "" : "";
+
+        for (const rawPath of draggedPaths) {
+            const path = rawPath.replace(/\/$/, "");
+            const name = path.split("/").at(-1) ?? path;
+            const dest = destDir ? `${destDir}/${name}` : name;
+            if (dest === path) continue;
+            // Never drop a directory into itself or a descendant.
+            if (destDir === path || destDir.startsWith(`${path}/`)) continue;
+            try {
+                await fs.rename(`/${path}`, `/${dest}`);
+            } catch (error) {
+                console.error(`Move ${path} -> ${dest} failed:`, error);
+            }
+        }
+        // Full rescan keeps the tree + dir registry consistent (expansion is
+        // preserved by resetPaths).
+        await this.rebuild();
     }
 
     /**
