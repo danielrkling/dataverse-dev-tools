@@ -35,14 +35,20 @@ export class WebTerminal extends HTMLElement {
                     color: #d4d4d4;
                     padding: 1rem;
                     border-radius: 5px;
-                    min-height: 200px;
-                    max-height: 100vh;
-                    height:100%;
+                    /* Fill the split-panel slot; let the panel control sizing.
+                       min-height:0 is required so the host can shrink below
+                       content height inside a flex column. */
+                    height: 100%;
+                    min-height: 0;
                     box-sizing: border-box;
                 }
                 #output {
                     flex-grow: 1;
+                    /* min-height:0 lets the scroll area shrink and scroll
+                       instead of expanding to fit all the log lines. */
+                    min-height: 0;
                     overflow-y: auto;
+                    overflow-x: hidden;
                     white-space: pre-wrap;
                     word-break: break-all;
                 }

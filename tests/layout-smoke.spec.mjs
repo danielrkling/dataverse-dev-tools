@@ -58,3 +58,43 @@ test("refresh keeps the tree rendered and clears the terminal hint", async ({ pa
     await expect(container).toHaveCount(1);
 });
 
+test("terminal output scrolls inside its pane instead of overflowing", async ({ page }) => {
+    await page.goto("/");
+
+    const opfsBtn = page.locator("file-tree .recent-item", { hasText: "Use OPFS Workspace" });
+    await expect(opfsBtn).toBeVisible({ timeout: 15000 });
+    await opfsBtn.click();
+    await expect(page.locator("web-terminal #input")).toBeEnabled({ timeout: 15000 });
+
+    // Dump many lines into the terminal output.
+    await page.evaluate(() => {
+        const term = document.querySelector("web-terminal");
+        for (let i = 0; i < 500; i++) term.log(`line ${i} `.padEnd(120, "x"));
+    });
+
+    const host = page.locator("web-terminal");
+    const output = page.locator("web-terminal #output");
+    const paneTerminal = page.locator("ide-app #pane-terminal");
+
+    // The terminal host must not exceed its split-panel pane height.
+    const hostH = await host.evaluate((el) => el.getBoundingClientRect().height);
+    const paneH = await paneTerminal.evaluate((el) => el.getBoundingClientRect().height);
+    expect(hostH).toBeLessThanOrEqual(paneH + 1);
+
+    // The whole page must NOT become scrollable — only the terminal output.
+    const pageScrollH = await page.evaluate(() => document.documentElement.scrollHeight);
+    const winH = await page.evaluate(() => window.innerHeight);
+    expect(pageScrollH).toBeLessThanOrEqual(winH + 1);
+
+    // The output itself should be scrollable (content taller than viewport).
+    const scrollable = await output.evaluate((el) => el.scrollHeight > el.clientHeight);
+    expect(scrollable).toBe(true);
+
+    // And it should actually scroll: reset to top, then scroll to the bottom.
+    await output.evaluate((el) => (el.scrollTop = 0));
+    await expect(output).toHaveJSProperty("scrollTop", 0);
+    await output.evaluate((el) => (el.scrollTop = el.scrollHeight));
+    const after = await output.evaluate((el) => el.scrollTop);
+    expect(after).toBeGreaterThan(0);
+});
+

@@ -6,7 +6,7 @@ const MONACO_VERSION = "0.52.2";
 const MONACO_BASE = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs`;
 
 /** Max number of background models hydrated for project-wide IntelliSense. */
-const HYDRATION_CAP = 200;
+const HYDRATION_CAP = 1000;
 
 /** @type {Promise<typeof import("monaco-editor")> | null} */
 let loading = null;
@@ -123,8 +123,15 @@ async function applyTsConfig(readFile) {
     const monaco = /** @type {typeof import("monaco-editor")} */ (/** @type {any} */ (window).monaco);
     const ts = monaco.languages.typescript;
 
+    // IMPORTANT: start from the currently-applied options. Calling
+    // setCompilerOptions REPLACES the whole object, so rebuilding from just
+    // the user's tsconfig would drop baseUrl/paths/allowNonTsExtensions —
+    // i.e. everything that lets bare specifiers resolve against our
+    // materialized node_modules models.
     /** @type {Record<string, any>} */
-    const options = {};
+    const options = {
+        ...ts.typescriptDefaults.getCompilerOptions(),
+    };
     const target = pickEnum(ts.ScriptTarget, user.target);
     if (target !== undefined) options.target = target;
     const moduleKind = pickEnum(ts.ModuleKind, user.module);
@@ -152,18 +159,24 @@ async function applyTsConfig(readFile) {
  * @param {string} path
  */
 export function languageForPath(path) {
-    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    let ext = path.split(".").pop()?.toLowerCase() ?? "";
+    // Drop a leading "d." so declaration files (.d.ts/.d.mts/.d.cts) map to the
+    // same language as their runtime counterparts — the TS worker only resolves
+    // types from typescript/javascript models, so plaintext .d.mts/.d.cts would
+    // be ignored.
+
+    if (ext.startsWith("d.")) ext = ext.slice(2);
     switch (ext) {
         case "js":
         case "mjs":
         case "cjs":
-            return "javascript";
-        case "ts":
-            return "typescript";
-        case "tsx":
-            return "typescript";
         case "jsx":
             return "javascript";
+        case "ts":
+        case "mts":
+        case "cts":
+        case "tsx":
+            return "typescript";
         case "json":
             return "json";
         case "css":
@@ -237,68 +250,7 @@ class EditorStateImpl {
         model.onDidChangeContent(() => {
             this.dirty.add(path);
         });
-        // Lazily pull in type models for any npm packages this file imports.
-        void this._hydrateImportsFor(path).catch((e) => console.warn("import hydration failed:", e));
         return model;
-    }
-
-    /**
-     * Scan a source file's import specifiers and lazily load type models for
-     * any bare npm packages it imports.
-     * @param {string} path clean root-relative path
-     */
-    async _hydrateImportsFor(path) {
-        if (path.startsWith("node_modules/")) return;
-        const model = this.models.get(path);
-        if (!model || model.isDisposed()) return;
-
-        for (const spec of extractImportSpecifiers(model.getValue())) {
-            const pkg = packageNameFromSpecifier(spec);
-            if (pkg) await this._ensurePackageTypes(pkg);
-        }
-    }
-
-    /**
-     * Load a single npm package's type entry into the registry (no-op if
-     * already loaded or not installed).
-     * @param {string} name package name, e.g. "zod" or "@scope/pkg"
-     */
-    async _ensurePackageTypes(name) {
-        const fs = workspace.fs?.root;
-        if (!fs) return;
-        const dir = `node_modules/${name}`;
-
-        // Already loaded?
-        for (const key of this.models.keys()) {
-            if (key.startsWith(`${dir}/`)) return;
-        }
-
-        /** @type {any} */
-        let pkg;
-        try {
-            pkg = JSON.parse(/** @type {string} */ (await fs.readFile(`/${dir}/package.json`, "utf8")));
-        } catch {
-            return; // not installed / unreadable
-        }
-
-        /** @type {string[]} candidate type/entry files */
-        const candidates = [];
-        const typesField = pkg.types ?? pkg.typings;
-        if (typesField) candidates.push(joinPosix(dir, typesField));
-        if (pkg.main) {
-            candidates.push(joinPosix(dir, pkg.main).replace(/\.js$/, ".d.ts"));
-            candidates.push(joinPosix(dir, pkg.main));
-        }
-        candidates.push(
-            joinPosix(dir, "index.d.ts"),
-            joinPosix(dir, "index.js"),
-            `${dir}/package.json`, // last resort: at least exports metadata
-        );
-
-        for (const candidate of candidates) {
-            if (!/\.(d\.ts|js|mjs|cjs|json)$/.test(candidate)) continue;
-            if (await this._tryCreateModelFromDisk(candidate)) break;
-        }
     }
 
     /**
@@ -312,7 +264,7 @@ class EditorStateImpl {
             if (!fs) return false;
             const content = await fs.readFile(`/${path}`, "utf8");
             if (typeof content !== "string") return false;
-            if (!this.models.has(path)) this._createModel(path, content);
+            if (!this.models.has(path)) this._createModel(path, /** @type {string} */ (content));
             return true;
         } catch {
             return false; // vanished mid-scan or binary
@@ -329,8 +281,15 @@ class EditorStateImpl {
     }
 
     /**
-     * Background-hydrate models for source files so the TS worker can resolve
-     * imports across the project. Batched to keep the UI responsive.
+     * Create a Monaco model for every code/declaration file in the workspace
+     * (plus every package.json) so the TS worker can resolve imports and
+     * types across the whole project — including anything under node_modules.
+     *
+     * We deliberately do NOT special-case package `exports` maps: the worker
+     * resolves `import "valibot"` from whatever models exist, so materializing
+     * every `.d.ts`/`.ts`/`.js`/etc. file is enough. Project source is loaded
+     * first; node_modules files follow, all behind a budget + per-file yields
+     * so a large tree can't freeze the editor.
      * @param {import("./fs.mjs").WebFileSystem} fs
      */
     async hydrateProject(fs) {
@@ -341,18 +300,34 @@ class EditorStateImpl {
             // Apply the project's own tsconfig.json, if present.
             const rfs = fs.root;
             await applyTsConfig((p) => rfs.readFile(p, "utf8"));
-            const { paths } = await scanPaths(fs);
-            const sourceFiles = paths.filter((p) => /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(p));
-            let hydrated = 0;
 
-            for (const path of sourceFiles) {
-                if (hydrated >= HYDRATION_CAP) break;
+            const { paths } = await scanPaths(fs);
+            // Prioritize what TS actually needs for type resolution:
+            // package.json (exports/main maps) first, then .d.ts/.d.mts/.d.cts
+            // declaration files, then runtime sources. Project source always
+            // comes before node_modules so the budget can't starve it.
+            const rank = (p) =>
+                p.endsWith("package.json") ? 0
+                : /\.(d\.ts|d\.mts|d\.cts)$/.test(p) ? 1
+                : /\.min\.(js|mjs|cjs)$/.test(p) ? 3
+                : 2;
+            const project = paths.filter((p) => !p.startsWith("node_modules/"));
+            const deps = paths
+                .filter((p) => p.startsWith("node_modules/"))
+                .sort((a, b) => rank(a) - rank(b));
+
+            let loaded = 0;
+            for (const path of [...project.sort((a, b) => rank(a) - rank(b)), ...deps]) {
+                if (loaded >= HYDRATION_CAP) break;
                 if (this.models.has(path)) continue;
+                if (!shouldHydrateModel(path)) continue;
+                // Minified dist files contribute nothing to type info.
+                if (/\.min\.(js|mjs|cjs)$/.test(path)) continue;
                 try {
-                    const content = await fs.root.readFile(`/${path}`, "utf8");
-                    if (!this.models.has(path)) {
-                        this._createModel(path, /** @type {string} */ (content));
-                        hydrated++;
+                    const content = await rfs.readFile(`/${path}`, "utf8");
+                    if (typeof content === "string" && !this.models.has(path)) {
+                        this._createModel(path, content);
+                        loaded++;
                     }
                 } catch {
                     // File vanished mid-scan — skip.
@@ -364,6 +339,17 @@ class EditorStateImpl {
             this._hydrating = false;
         }
     }
+}
+
+/**
+ * Whether a workspace file should become a Monaco model for IntelliSense.
+ * We materialize every code/declaration file plus package.json (so the TS
+ * worker can read dependency "exports" maps). Non-code assets are skipped.
+ * @param {string} path clean root-relative path
+ */
+export function shouldHydrateModel(path) {
+    if (path.endsWith("package.json")) return true;
+    return /\.(ts|tsx|js|jsx|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(path);
 }
 
 export const editorState = new EditorStateImpl();

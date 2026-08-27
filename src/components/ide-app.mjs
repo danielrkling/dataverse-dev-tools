@@ -33,7 +33,7 @@ export class IdeApp extends HTMLElement {
                 :host {
                     display: block;
                     height: 100%;
-                    --border: #333;
+                    --border: #222;
                     --accent: #094771;
                 }
                 wa-split-panel {
@@ -52,9 +52,8 @@ export class IdeApp extends HTMLElement {
                     background: var(--border);
                 }
                 wa-split-panel::part(divider):hover,
-                wa-split-panel::part(divider):active,
-                wa-split-panel:focus-within::part(divider) {
-                    background: var(--accent);
+                wa-split-panel::part(divider):active {
+                    background: #333;
                 }
 
                 .pane {
@@ -65,15 +64,20 @@ export class IdeApp extends HTMLElement {
                     display: flex;
                     flex-direction: column;
                 }
+                /* Panels are absolutely positioned to fill the pane. This keeps
+                   their (potentially huge) content from feeding the split
+                   panel's grid track sizing, so the track stays bounded and
+                   only an inner scroll area (e.g. the terminal) scrolls. */
                 .pane > ::slotted(*) {
-                    flex: 1;
+                    position: absolute;
+                    inset: 0;
                     min-width: 0;
                     min-height: 0;
                 }
             </style>
             <wa-split-panel id="root" primary="start" position-in-pixels="250" snap="0px" snap-threshold="100">
                 <div class="pane" id="pane-sidebar" slot="start"><slot name="sidebar"></slot></div>
-                <wa-split-panel slot="end" orientation="vertical" id="inner" primary="start" snap="0% 100%" snap-threshold="100">
+                <wa-split-panel slot="end" orientation="vertical" id="inner" primary="start" snap="0% 100%" snap-threshold="100" position="75">
                     <div class="pane" id="pane-editor" slot="start"><slot name="editor"></slot></div>
                     <div class="pane" id="pane-terminal" slot="end"><slot name="terminal"></slot></div>
                 </wa-split-panel>
