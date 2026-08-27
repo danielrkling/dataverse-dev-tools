@@ -36,6 +36,8 @@ test("refresh keeps the tree rendered and clears the terminal hint", async ({ pa
     await page.goto("/");
 
     // Open the OPFS workspace via the sidebar's "Use OPFS Workspace" button.
+    // The OPFS flow prompts for a project name — auto-accept in tests.
+    await page.evaluate(() => { window.prompt = () => "test-project"; });
     const opfsBtn = page.locator("file-tree .recent-item", { hasText: "Use OPFS Workspace" });
     await expect(opfsBtn).toBeVisible({ timeout: 15000 });
     await opfsBtn.click();
@@ -61,6 +63,8 @@ test("refresh keeps the tree rendered and clears the terminal hint", async ({ pa
 test("terminal output scrolls inside its pane instead of overflowing", async ({ page }) => {
     await page.goto("/");
 
+    // The OPFS flow prompts for a project name — auto-accept in tests.
+    await page.evaluate(() => { window.prompt = () => "test-project"; });
     const opfsBtn = page.locator("file-tree .recent-item", { hasText: "Use OPFS Workspace" });
     await expect(opfsBtn).toBeVisible({ timeout: 15000 });
     await opfsBtn.click();
