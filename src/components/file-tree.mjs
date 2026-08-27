@@ -1,4 +1,4 @@
-import { LitElement, html, css } from "lit";
+import { LitElement, html, css, render as litRender } from "lit";
 import { FileTree, prepareFileTreeInput } from "@pierre/trees";
 import "@pierre/trees/web-components"; // registers <file-tree-container> + styles
 // The Web Awesome autoloader is NOT used: it only watches the light DOM and
@@ -25,11 +25,27 @@ import { scanPaths } from "../utils/scan-paths.mjs";
 export class FileTreePane extends LitElement {
     static properties = {
         _title: { state: true },
+        /** @type {{ id: string }[]} recent folders, shown pre-workspace */
+        _recents: { state: true },
     };
+
+    /**
+     * Light DOM: the Web Awesome stylesheet (utility classes like wa-stack/
+     * wa-flank and native-element styling) lives in document.head and cannot
+     * reach inside a shadow root — so this element renders in light DOM and
+     * hoists its compiled styles there once.
+     */
+    createRenderRoot() {
+        return this;
+    }
+
+    /** @type {boolean} guard so the style hoist runs once per page */
+    static _stylesHoisted = false;
 
     constructor() {
         super();
         this._title = "No folder open";
+        this._recents = [];
         /** @type {FileTree | null} */
         this._tree = null;
         /** @type {Set<string>} known directory paths */
@@ -45,11 +61,13 @@ export class FileTreePane extends LitElement {
         /** @type {((e: KeyboardEvent) => void) | null} */
         this._onKeyDown = null;
         /** @type {HTMLElement | null} floating empty-space context menu */
-        this._emptyMenu = null;
+        this._emptyElMenu = null;
+        /** @type {boolean} true while a drag-move is being applied to the fs */
+        this._moving = false;
     }
 
     static styles = [css`
-        :host {
+        file-tree {
             display: flex;
             flex-direction: column;
             background-color: #1e1e1e;
@@ -59,94 +77,39 @@ export class FileTreePane extends LitElement {
             min-width: 0;
             overflow: hidden;
         }
-        header {
+        file-tree header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0.5rem 0.75rem;
+            padding: 0.25rem 0.5rem;
             border-bottom: 1px solid #333;
             flex-shrink: 0;
         }
-        #title {
+        /* Condense the toolbar icon buttons: WA buttons derive their box from
+           form-control custom properties, so shrink those on the hosts. */
+        file-tree .wa-cluster wa-button {
+            --wa-form-control-height: 22px;
+            --wa-form-control-padding-inline: 4px;
+            font-size: 12px;
+        }
+        file-tree #title {
             font-weight: bold;
             color: #569cd6;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .actions {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-        }
-        .actions .icon-btn {
-            --wa-button-size: 26px;
-            font-size: 14px;
-        }
-        /* Render WA buttons as subtle, transparent toolbar icons */
-        .actions .icon-btn::part(button) {
-            all: unset;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: var(--wa-button-size, 26px);
-            height: var(--wa-button-size, 26px);
-            cursor: pointer;
-            color: #a0a0a0;
-            border-radius: 3px;
-        }
-        .actions .icon-btn:hover::part(button) {
-            background: #3a3a3a;
-            color: #fff;
-        }
-        #mount {
+        file-tree #mount {
             flex: 1;
             min-height: 0;
         }
-        #empty {
+        file-tree #empty {
             padding: 1rem;
             color: #808080;
         }
-        /* Recent-folders list rows rendered as full-width WA buttons */
-        .recent-item {
-            width: 100%;
-            --wa-button-font-size: 12px;
-        }
-        .recent-item::part(button) {
-            all: unset;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            width: 100%;
-            box-sizing: border-box;
-            padding: 6px 10px;
-            cursor: pointer;
-            color: #d4d4d4;
-            font-size: 12px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            border-radius: 3px;
-        }
-        .recent-item:hover::part(button) {
-            background: #094771;
-        }
-        /* Remove button in the recents list: compact square, centered x */
-        .remove-item {
-            flex: 0 0 auto;
-            width: 28px;
-            opacity: 0.6;
-        }
-        .remove-item:hover {
-            opacity: 1;
-        }
-        .recent-item.remove-item::part(button) {
-            width: auto;
-            justify-content: center;
-            padding: 6px 0;
-        }
+
         /* Loading overlay shown while the workspace is being scanned */
-        #loading {
+        file-tree #loading {
             display: none;
             flex: 1;
             min-height: 0;
@@ -156,10 +119,10 @@ export class FileTreePane extends LitElement {
             color: #808080;
             flex-direction: column;
         }
-        #loading.visible {
+        file-tree #loading.visible {
             display: flex;
         }
-        #loading wa-spinner {
+        file-tree #loading wa-spinner {
             font-size: 1.75rem;
             color: #569cd6;
         }
@@ -169,14 +132,58 @@ export class FileTreePane extends LitElement {
         return html`
             <header>
                 <span id="title">${this._title}</span>
-                <span class="actions">
-                    <wa-button class="icon-btn" id="new-file" aria-label="New File" @click=${() => this._createEntry("file")}><wa-icon name="file"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="new-folder" aria-label="New Folder" @click=${() => this._createEntry("directory")}><wa-icon name="folder-plus"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="refresh" aria-label="Refresh" @click=${() => this.rebuild()}><wa-icon name="rotate-right"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="open-folder" aria-label="Open Folder" @click=${() => this.openFolderPicker()}><wa-icon name="folder-open"></wa-icon></wa-button>
+                <span class="wa-cluster wa-gap-3xs">
+                    <wa-button class="icon-btn" id="new-file" appearance="plain" variant="neutral" size="s" aria-label="New File" @click=${() => this._createEntry("file")}><wa-icon name="file"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="new-folder" appearance="plain" variant="neutral" size="s" aria-label="New Folder" @click=${() => this._createEntry("directory")}><wa-icon name="folder-plus"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="refresh" appearance="plain" variant="neutral" size="s" aria-label="Refresh" @click=${() => this.rebuild()}><wa-icon name="rotate-right"></wa-icon></wa-button>
+                    <wa-button class="icon-btn" id="open-folder" appearance="plain" variant="neutral" size="s" aria-label="Open Folder" @click=${() => this.openFolderPicker()}><wa-icon name="folder-open"></wa-icon></wa-button>
                 </span>
             </header>
-            <div id="empty">Click the folder button above to open a folder.</div>
+            <div id="empty">
+                ${this._recents.length > 0
+                    ? html`
+                        <div class="wa-stack wa-gap-3xs" style="margin-bottom: 1rem;">
+                            ${this._recents.map((folder) => html`
+                                <div class="wa-flank:end wa-gap-3xs">
+                                    <wa-button
+                                        size="s"
+                                        class="recent-item"
+                                        appearance="filled"
+                                        variant="neutral"
+                                        style="min-width: 0;"
+                                        @click=${() => this._openRecent(folder.id)}
+                                    ><wa-icon slot="start" name="folder-open"></wa-icon> ${folder.id}</wa-button>
+                                    <wa-button
+                                        class="recent-item remove-item"
+                                        size="s"
+                                        appearance="plain"
+                                        variant="danger"
+                                        aria-label="Forget ${folder.id}"
+                                        title="Forget ${folder.id}"
+                                        @click=${(e) => this._forgetRecent(folder.id, e)}
+                                    ><wa-icon name="xmark"></wa-icon></wa-button>
+                                </div>
+                            `)}
+                            <hr style="border: none; border-top: 1px solid #333;" />
+                        </div>
+                    `
+                    : ""}
+                Click the folder button above, or choose an option below.
+                <div class="wa-stack wa-gap-2xs" style="margin-top: 0.75rem;">
+                    <wa-button
+                        class="empty-action"
+                        appearance="accent"
+                        variant="brand"
+                        @click=${() => this.openFolderPicker()}
+                    ><wa-icon name="folder-open" slot="start"></wa-icon> Select New Folder…</wa-button>
+                    <wa-button
+                        class="empty-action"
+                        appearance="outlined"
+                        variant="brand"
+                        @click=${() => this._openOPFS()}
+                    ><wa-icon name="bolt" slot="start"></wa-icon> Use OPFS Workspace</wa-button>
+                </div>
+            </div>
             <div id="loading"><wa-spinner></wa-spinner><span>Loading files…</span></div>
             <div id="mount"></div>
         `;
@@ -203,6 +210,12 @@ export class FileTreePane extends LitElement {
 
     connectedCallback() {
         super.connectedCallback();
+        if (!FileTreePane._stylesHoisted) {
+            const style = document.createElement("style");
+            style.textContent = /** @type {any[]} */ (FileTreePane.styles).map((s) => s.cssText).join("\n");
+            document.head.appendChild(style);
+            FileTreePane._stylesHoisted = true;
+        }
         this._unsubs.push(
             bus.on("workspace:open", () => this.rebuild()),
             bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),
@@ -256,102 +269,53 @@ export class FileTreePane extends LitElement {
     get _loadingEl() { return /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#loading")); }
 
     /**
-     * Populate the empty sidebar with recent folders + picker buttons.
-     * Everything disappears once an entry is chosen.
+     * Load recent folders from storage; rendered by the Lit template.
      */
     async showRecentFolders() {
-        const recents = await listHandles();
-
-        /** @type {HTMLElement} */ (this._emptyEl).innerHTML = "";
+        this._recents = await listHandles();
         this._emptyEl.style.display = "";
+    }
 
-        const list = document.createElement("div");
-        Object.assign(list.style, { display: "flex", flexDirection: "column", gap: "2px" });
-
-        const item = (/** @type {string} */ html, /** @type {() => Promise<void> | void} */ fn) => {
-            const btn = document.createElement("wa-button");
-            btn.setAttribute("appearance", "plain");
-            btn.setAttribute("variant", "neutral");
-            // App-controlled markup (icons + escaped labels) — see callers.
-            btn.innerHTML = html;
-            btn.classList.add("recent-item");
-            btn.addEventListener("click", async () => {
-                list.remove();
-                await fn();
-            });
-            list.appendChild(btn);
-        };
-
-        const esc = (/** @type {string} */ s) =>
-            s.replace(/[&<>"']/g, (c) =>
-                ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-            );
-
-        for (const folder of recents) {
-            // Row = open button + remove (x) button.
-            const row = document.createElement("div");
-            Object.assign(row.style, { display: "flex", alignItems: "stretch", gap: "2px" });
-
-            const openBtn = document.createElement("wa-button");
-            openBtn.setAttribute("appearance", "plain");
-            openBtn.setAttribute("variant", "neutral");
-            openBtn.innerHTML = `<wa-icon name="folder-open"></wa-icon> ${esc(folder.id)}`;
-            openBtn.classList.add("recent-item");
-            openBtn.style.flex = "1";
-            openBtn.style.minWidth = "0";
-            openBtn.addEventListener("click", async () => {
-                list.remove();
-                try {
-                    await workspace.openRecent(folder.id);
-                } catch (error) {
-                    console.error(error);
-                    // Handle stale/unavailable — fall back to the picker.
-                    await workspace.openPicker();
-                }
-            });
-
-            const removeBtn = document.createElement("wa-button");
-            removeBtn.setAttribute("appearance", "plain");
-            removeBtn.setAttribute("variant", "neutral");
-            removeBtn.classList.add("recent-item", "remove-item");
-            removeBtn.setAttribute("aria-label", `Forget ${folder.id}`);
-            removeBtn.title = `Forget ${folder.id}`;
-            removeBtn.innerHTML = '<wa-icon name="xmark"></wa-icon>';
-            removeBtn.addEventListener("click", async (e) => {
-                e.stopPropagation();
-                await deleteHandle(folder.id);
-                await this.showRecentFolders(); // re-render the list
-            });
-
-            row.append(openBtn, removeBtn);
-            list.appendChild(row);
+    /**
+     * Open a recent folder by id.
+     * @param {string} id
+     */
+    async _openRecent(id) {
+        try {
+            await workspace.openRecent(id);
+        } catch (error) {
+            console.error(error);
+            // Handle stale/unavailable — fall back to the picker.
+            await workspace.openPicker();
         }
+    }
 
-        if (recents.length > 0) {
-            const hr = document.createElement("div");
-            Object.assign(hr.style, { height: "1px", background: "#333", margin: "0.5rem 0.75rem" });
-            list.appendChild(hr);
+    /**
+     * Open a named OPFS workspace so multiple projects can coexist (each
+     * becomes its own directory under OPFS + its own recent).
+     */
+    async _openOPFS() {
+        // Prompt for a project name so multiple OPFS projects can coexist.
+        const raw = prompt("Project name:", "my-project");
+        if (!raw) return;
+        const dirName = raw.trim().replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "my-project";
+        try {
+            await workspace.open(await WebFileSystem.fromOPFS(dirName));
+        } catch (error) {
+            console.error("OPFS open failed:", error);
+            this.showRecentFolders();
         }
+    }
 
-        item(`<wa-icon name="folder-open"></wa-icon>  Select New Folder…`, () => this.openFolderPicker());
-        item(`<wa-icon name="bolt"></wa-icon>  Use OPFS Workspace`, async () => {
-            // Prompt for a project name so multiple OPFS projects can coexist
-            // (each becomes its own directory under OPFS + its own recent).
-            const raw = prompt("Project name:", "my-project");
-            if (!raw) {
-                this.showRecentFolders();
-                return;
-            }
-            const dirName = raw.trim().replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "my-project";
-            try {
-                await workspace.open(await WebFileSystem.fromOPFS(dirName));
-            } catch (error) {
-                console.error("OPFS open failed:", error);
-                this.showRecentFolders();
-            }
-        });
-
-        this._emptyEl.appendChild(list);
+    /**
+     * Forget a recent folder (removes the stored handle, keeps files on disk).
+     * @param {string} id
+     * @param {Event} e
+     */
+    async _forgetRecent(id, e) {
+        e.stopPropagation();
+        await deleteHandle(id);
+        this._recents = this._recents.filter((f) => f.id !== id);
     }
 
     /**
@@ -434,6 +398,9 @@ export class FileTreePane extends LitElement {
      * @param {readonly string[]} selectedPaths
      */
     _onSelectionChange(selectedPaths) {
+        // Skip selection changes while a drag move is in flight — the tree
+        // re-emits destinations before the filesystem rename has happened.
+        if (this._moving) return;
         for (const rawPath of selectedPaths) {
             const path = rawPath.replace(/\/$/, "");
             if (!this._dirs.has(path)) {
@@ -514,7 +481,8 @@ export class FileTreePane extends LitElement {
     }
 
     /**
-     * Build a styled menu element from entries ("-" = separator).
+     * Build a styled menu element from entries ("-" = separator), using a
+     * Lit template rendered into the container.
      * @param {(string | { label: string, fn?: () => void })[]} entries
      * @param {() => void} onClose called after any entry action
      * @returns {HTMLElement}
@@ -533,33 +501,19 @@ export class FileTreePane extends LitElement {
             fontSize: "13px",
         });
 
-        for (const entry of entries) {
-            if (entry === "-") {
-                const hr = document.createElement("div");
-                Object.assign(hr.style, { height: "1px", background: "#444", margin: "0.25rem 0" });
-                menu.appendChild(hr);
-                continue;
-            }
-            const { label, fn } = /** @type {{ label: string, fn?: () => void }} */ (entry);
-            const btn = document.createElement("button");
-            btn.textContent = label;
-            Object.assign(btn.style, {
-                all: "unset",
-                display: "block",
-                padding: "4px 12px",
-                cursor: fn ? "pointer" : "default",
-                color: fn ? "#d4d4d4" : "#666",
-            });
-            if (!fn) continue;
-            btn.addEventListener("mouseenter", () => (btn.style.background = "#094771"));
-            btn.addEventListener("mouseleave", () => (btn.style.background = ""));
-            btn.addEventListener("click", () => {
-                fn();
-                onClose();
-            });
-            menu.appendChild(btn);
-        }
-
+        const menuTemplate = html`
+            ${entries.map((entry) =>
+                entry === "-"
+                    ? html`<div style="height: 1px; background: #444; margin: 0.25rem 0;"></div>`
+                    : html`<button
+                        style="all: unset; display: block; padding: 4px 12px; cursor: pointer; color: #d4d4d4;"
+                        @mouseenter=${(e) => (e.target.style.background = "#094771")}
+                        @mouseleave=${(e) => (e.target.style.background = "")}
+                        @click=${() => { /** @type {any} */ (entry).fn?.(); onClose(); }}
+                    >${/** @type {any} */ (entry).label}</button>`,
+            )}
+        `;
+        litRender(menuTemplate, menu);
         return menu;
     }
 
@@ -678,18 +632,42 @@ export class FileTreePane extends LitElement {
         if (!fs) return;
         const destDir = target.kind === "directory" ? /** @type {string} */ (target.directoryPath)?.replace(/\/$/, "") ?? "" : "";
 
-        for (const rawPath of draggedPaths) {
-            const path = rawPath.replace(/\/$/, "");
+        // Suppress editor:open during the move: the tree updates its own
+        // store (and re-emits selection for the destinations) BEFORE
+        // onDropComplete runs, so the file doesn't exist on disk yet.
+        this._moving = true;
+        try {
+            await this._applyMove(draggedPaths, destDir, fs);
+        } finally {
+            this._moving = false;
+        }
+    }
+
+    /**
+     * @param {readonly string[]} draggedPaths
+     * @param {string} destDir
+     * @param {NonNullable<typeof workspace.fs>["root"]} fs
+     */
+    async _applyMove(draggedPaths, destDir, fs) {
+        // The tree reports every selected path, including descendants of
+        // other selected paths (e.g. a folder AND a file inside it). The
+        // folder move relocates its children — processing the stale child
+        // paths afterwards would fail with "source does not exist". So only
+        // move the top-most entries; descendants ride along.
+        const clean = draggedPaths.map((p) => p.replace(/\/$/, ""));
+        const tops = clean.filter((p) => !clean.some((o) => o !== p && p.startsWith(`${o}/`)));
+
+        for (const path of tops) {
             const name = path.split("/").at(-1) ?? path;
             const dest = destDir ? `${destDir}/${name}` : name;
             if (dest === path) continue;
             // Never drop a directory into itself or a descendant.
             if (destDir === path || destDir.startsWith(`${path}/`)) continue;
             try {
-                const stat = await fs.stat(`/${path}`);
                 await fs.rename(`/${path}`, `/${dest}`);
-                // Mirror the move inside the tree (dirs carry trailing slashes).
-                this._tree?.move(stat.isDirectory ? `${path}/` : path, stat.isDirectory ? `${dest}/` : dest);
+                // NOTE: the tree has ALREADY moved this entry in its own
+                // store (completeDrag runs before onDropComplete) — do NOT
+                // call tree.move() again here.
                 // Remap our directory registry to the new prefix.
                 for (const dir of [...this._dirs]) {
                     if (dir === path || dir.startsWith(`${path}/`)) {
@@ -699,6 +677,21 @@ export class FileTreePane extends LitElement {
                 }
             } catch (error) {
                 console.error(`Move ${path} -> ${dest} failed:`, error);
+            }
+        }
+
+        // The tree moved each selected descendant independently to
+        // destDir/<name>, but on the filesystem they actually live under
+        // their moved ancestor. Reconcile the store so paths match disk.
+        for (const p of clean) {
+            if (tops.includes(p)) continue;
+            const ancestor = tops.find((t) => p.startsWith(`${t}/`));
+            if (!ancestor) continue;
+            const name = p.split("/").at(-1) ?? p;
+            const treeDest = destDir ? `${destDir}/${name}` : name;
+            const actualDest = (destDir ? `${destDir}/` : "") + p.slice(ancestor.length + 1);
+            if (treeDest !== actualDest && this._tree?.getItem(treeDest) != null) {
+                this._tree.move(treeDest, actualDest);
             }
         }
     }

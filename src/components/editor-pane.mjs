@@ -1,4 +1,4 @@
-import { LitElement, html } from "lit";
+import { LitElement, html, css } from "lit";
 import { bus } from "../services/bus.mjs";
 import { workspace } from "../services/workspace.mjs";
 import { editorState, ensureMonaco } from "../services/editor.mjs";
@@ -23,6 +23,74 @@ export class EditorPane extends LitElement {
         _tick: { type: Number, state: true },
     };
 
+    /**
+     * Light-DOM styling: renderRoot is `this`, which cannot adopt
+     * stylesheets — so the compiled css is hoisted into document.head once
+     * (head styles DO apply to light-DOM content, which is exactly why this
+     * element is light DOM in the first place).
+     */
+    static styles = [css`
+        editor-pane {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        #tabs {
+            display: flex;
+            overflow-x: auto;
+            background: #181818;
+            border-bottom: 1px solid #333;
+            flex-shrink: 0;
+        }
+        #tabs::-webkit-scrollbar { height: 6px; }
+        .tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            cursor: pointer;
+            white-space: nowrap;
+            font-size: 12px;
+            color: #a0a0a0;
+            border-right: 1px solid #333;
+            user-select: none;
+        }
+        .tab:hover { background: #232323; }
+        .tab.active {
+            background: #1e1e1e;
+            color: #fff;
+            box-shadow: inset 0 2px 0 #569cd6;
+        }
+        .tab .close {
+            all: unset;
+            cursor: pointer;
+            padding: 0 3px;
+            border-radius: 3px;
+            line-height: 1;
+            display: inline-flex;
+        }
+        .tab .close:hover { background: #444; }
+        .tab.dirty .name::after { content: " ●"; color: #e2c08d; }
+        #container {
+            flex: 1;
+            min-height: 0;
+        }
+        #placeholder {
+            flex: 1;
+            display: grid;
+            place-items: center;
+            color: #606060;
+        }
+    `];
+
+    /** @type {boolean} guard so the style hoist runs once per page */
+    static _stylesHoisted = false;
+
     constructor() {
         super();
         this._tick = 0;
@@ -43,65 +111,6 @@ export class EditorPane extends LitElement {
 
     render() {
         return html`
-            <style>
-                /* Light DOM: real selectors, not :host */
-                editor-pane {
-                    display: flex;
-                    flex-direction: column;
-                    min-width: 0;
-                    min-height: 0;
-                    overflow: hidden;
-                    background: #1e1e1e;
-                    color: #d4d4d4;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                }
-                #tabs {
-                    display: flex;
-                    overflow-x: auto;
-                    background: #181818;
-                    border-bottom: 1px solid #333;
-                    flex-shrink: 0;
-                }
-                #tabs::-webkit-scrollbar { height: 6px; }
-                .tab {
-                    display: inline-flex;
-                    align-items: center;
-                    gap: 6px;
-                    padding: 6px 10px;
-                    cursor: pointer;
-                    white-space: nowrap;
-                    font-size: 12px;
-                    color: #a0a0a0;
-                    border-right: 1px solid #333;
-                    user-select: none;
-                }
-                .tab:hover { background: #232323; }
-                .tab.active {
-                    background: #1e1e1e;
-                    color: #fff;
-                    box-shadow: inset 0 2px 0 #569cd6;
-                }
-                .tab .close {
-                    all: unset;
-                    cursor: pointer;
-                    padding: 0 3px;
-                    border-radius: 3px;
-                    line-height: 1;
-                    display: inline-flex;
-                }
-                .tab .close:hover { background: #444; }
-                .tab.dirty .name::after { content: " ●"; color: #e2c08d; }
-                #container {
-                    flex: 1;
-                    min-height: 0;
-                }
-                #placeholder {
-                    flex: 1;
-                    display: grid;
-                    place-items: center;
-                    color: #606060;
-                }
-            </style>
             <div id="tabs">
                 ${editorState.tabs.map(
                     (tab) => html`
@@ -130,6 +139,12 @@ export class EditorPane extends LitElement {
 
     async connectedCallback() {
         super.connectedCallback();
+        if (!EditorPane._stylesHoisted) {
+            const style = document.createElement("style");
+            style.textContent = /** @type {any[]} */ (EditorPane.styles).map((s) => s.cssText).join("\n");
+            document.head.appendChild(style);
+            EditorPane._stylesHoisted = true;
+        }
         this._unsubs.push(
             bus.on("editor:open", (e) => this.openFile(e.detail.path)),
             bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),

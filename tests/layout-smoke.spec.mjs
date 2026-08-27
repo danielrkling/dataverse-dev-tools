@@ -8,7 +8,7 @@ test("web awesome split panel + font awesome icons render", async ({ page }) => 
         .poll(() => page.evaluate(() => !!customElements.get("wa-split-panel")), { timeout: 15000 })
         .toBe(true);
 
-    const splitPanels = page.locator(".ide-layout wa-split-panel");
+    const splitPanels = page.locator("body wa-split-panel");
     await expect(splitPanels.first()).toBeVisible();
 
     // Three slotted panes exist.
@@ -24,8 +24,8 @@ test("web awesome split panel + font awesome icons render", async ({ page }) => 
     const iconCount = await newFolderBtn.locator("wa-icon").count();
     expect(iconCount).toBe(1);
 
-    // The sidebar should show its recents list before a folder is opened.
-    await expect(sidebar.locator(".recent-item").first()).toBeVisible({ timeout: 15000 });
+    // The sidebar should show its action list before a folder is opened.
+    await expect(sidebar.locator(".empty-action").first()).toBeVisible({ timeout: 15000 });
 
     // The terminal should start disabled until a folder is selected.
     const input = page.locator("web-terminal #input");
@@ -38,7 +38,7 @@ test("refresh keeps the tree rendered and clears the terminal hint", async ({ pa
     // Open the OPFS workspace via the sidebar's "Use OPFS Workspace" button.
     // The OPFS flow prompts for a project name — auto-accept in tests.
     await page.evaluate(() => { window.prompt = () => "test-project"; });
-    const opfsBtn = page.locator("file-tree .recent-item", { hasText: "Use OPFS Workspace" });
+    const opfsBtn = page.locator("file-tree .empty-action", { hasText: "Use OPFS Workspace" });
     await expect(opfsBtn).toBeVisible({ timeout: 15000 });
     await opfsBtn.click();
 
@@ -65,7 +65,7 @@ test("terminal output scrolls inside its pane instead of overflowing", async ({ 
 
     // The OPFS flow prompts for a project name — auto-accept in tests.
     await page.evaluate(() => { window.prompt = () => "test-project"; });
-    const opfsBtn = page.locator("file-tree .recent-item", { hasText: "Use OPFS Workspace" });
+    const opfsBtn = page.locator("file-tree .empty-action", { hasText: "Use OPFS Workspace" });
     await expect(opfsBtn).toBeVisible({ timeout: 15000 });
     await opfsBtn.click();
     await expect(page.locator("web-terminal #input")).toBeEnabled({ timeout: 15000 });

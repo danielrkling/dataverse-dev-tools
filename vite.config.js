@@ -1,11 +1,18 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  resolve: {
+    alias: [
+      // Route all "lit" imports through the CDN-backed shim (src/vendor/lit.mjs)
+      // instead of the npm package — see that file for why.
+      { find: /^lit$/, replacement: "/src/vendor/lit.mjs" },
+    ],
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
-      external: ['isomorphic-git'],
+      external: ['isomorphic-git', /^https:/],
     },
   },
   server: {
@@ -14,9 +21,5 @@ export default defineConfig({
   },
   optimizeDeps: {
     exclude: ['isomorphic-git'],
-    // Pre-bundle lit so every component shares ONE copy — duplicated Lit
-    // instances break adoptedStyleSheets ("Failed to convert value to
-    // CSSStyleSheet") and render nothing.
-    include: ['lit'],
   },
 });

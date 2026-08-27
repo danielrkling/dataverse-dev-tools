@@ -1,10 +1,21 @@
 <!doctype html>
-<html lang="en" data-theme="business">
+<html lang="en" class="wa-dark">
 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Web IDE</title>
+  <!-- Required: default theme + autoloader -->
+  <link rel="stylesheet" href="https://ka-f.webawesome.com/webawesome@3.12.0/styles/themes/default.css" />
+  <script type="module" src="https://ka-f.webawesome.com/webawesome@3.12.0/webawesome.loader.js"></script>
+
+  <!-- Recommended: utility classes ("CSS Utilities") -->
+  <link rel="stylesheet" href="https://ka-f.webawesome.com/webawesome@3.12.0/styles/utilities.css" />
+
+  <!-- Optional: CSS reset ("Native Styles") -->
+  <link rel="stylesheet" href="https://ka-f.webawesome.com/webawesome@3.12.0/styles/native.css" />
+
+
   <style>
     html,
     body {
@@ -13,22 +24,11 @@
       height: 100%;
     }
 
-    body>.ide-layout,
-    body .pane {
+    body>div {
       overflow: hidden;
-      position: relative;
-      min-width: 0;
-      min-height: 0;
     }
 
-    .ide-layout {
-      display: block;
-      height: 100%;
-      --border: #222;
-      --accent: #094771;
-    }
-
-    .ide-layout wa-split-panel {
+    wa-split-panel {
       height: 100%;
       background: #1e1e1e;
       color-scheme: dark;
@@ -40,21 +40,33 @@
     }
 
     /* Accent the divider on hover/drag/focus */
-    .ide-layout wa-split-panel::part(divider) {
+    wa-split-panel::part(divider) {
       transition: background 0.12s;
-      background: var(--border);
+      background: #222;
     }
 
-    .ide-layout wa-split-panel::part(divider):hover,
-    .ide-layout wa-split-panel::part(divider):active {
+    wa-split-panel::part(divider):hover,
+    wa-split-panel::part(divider):active {
       background: #333;
     }
 
-    /* Panes are absolutely positioned to fill their pane. This keeps their
-         (potentially huge) content from feeding the split panel's grid track
-         sizing, so the track stays bounded and only an inner scroll area
-         (e.g. the terminal) scrolls. */
-    .pane>* {
+    /* Slotted panes fill their grid cell; their component children are
+       absolutely positioned to fill the pane. This keeps the (potentially
+       huge) content from feeding the split panel's grid track sizing, so the
+       track stays bounded and only an inner scroll area (e.g. the terminal
+       output) scrolls. */
+    #pane-sidebar,
+    #pane-editor,
+    #pane-terminal {
+      position: relative;
+      overflow: hidden;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    #pane-sidebar>*,
+    #pane-editor>*,
+    #pane-terminal>* {
       position: absolute;
       inset: 0;
       min-width: 0;
@@ -86,18 +98,19 @@
     });
   </script>
   <!-- Web Awesome split panel (explicit imports; wa-icon is imported in main.mjs) -->
-  <script type="module" src="https://ka-f.webawesome.com/webawesome@3.12.0/components/split-panel/split-panel.js"></script>
+
   <script src="src/main.mjs" defer type="module"></script>
 </head>
 
 <body>
-  <div class="ide-layout">
-    <wa-split-panel id="root" primary="start" position-in-pixels="250" snap="0px" snap-threshold="100">
-      <div class="pane" id="pane-sidebar" slot="start"><file-tree></file-tree></div>
-      <wa-split-panel slot="end" orientation="vertical" id="inner" primary="start" snap="0% 100%" snap-threshold="10"
+  <div style="width: 100vw; height: 100vh; box-sizing: border-box; overflow: hidden;">
+    <wa-split-panel style="height: 100vh; width: 100vw;" id="root" primary="start" position-in-pixels="250" snap="0px"
+      snap-threshold="100">
+      <div style="display: flex;" id="pane-sidebar" slot="start"><file-tree></file-tree></div>
+      <wa-split-panel slot="end" orientation="vertical" id="inner" snap="0% 100%" snap-threshold="10"
         position-in-pixels="600">
-        <div class="pane" id="pane-editor" slot="start"><editor-pane></editor-pane></div>
-        <div class="pane" id="pane-terminal" slot="end"><web-terminal></web-terminal></div>
+        <div style="display: flex; width: 100%;" id="pane-editor" slot="start"><editor-pane></editor-pane></div>
+        <div style="display: flex; width: 100%;" id="pane-terminal" slot="end"><web-terminal></web-terminal></div>
       </wa-split-panel>
     </wa-split-panel>
   </div>

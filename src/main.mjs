@@ -53,7 +53,7 @@ import "https://ka-f.webawesome.com/webawesome@3.12.0/components/icon/icon.js";
             } else {
                 innerPanel.position = terminalRestore ?? 75;
                 // Focus the terminal input after the panel re-expands.
-                setTimeout(() => document.querySelector("web-terminal")?.shadowRoot?.querySelector("#input")?.focus());
+                setTimeout(() => document.querySelector("web-terminal #input")?.focus());
             }
         }
     });

@@ -21,6 +21,17 @@ export class WebTerminal extends LitElement {
         _placeholder: { state: true },
     };
 
+    /**
+     * Light DOM: the Web Awesome stylesheet lives in document.head and cannot
+     * reach inside a shadow root — same reasoning as editor-pane.
+     */
+    createRenderRoot() {
+        return this;
+    }
+
+    /** @type {boolean} guard so the style hoist runs once per page */
+    static _stylesHoisted = false;
+
     constructor() {
         super();
         this.prompt = "";
@@ -34,6 +45,8 @@ export class WebTerminal extends LitElement {
         this._historyIndex = -1;
         /** @type {(() => void)[]} */
         this._unsubs = [];
+        /** @type {{ content: string | HTMLElement, attributes: Record<string, string> }[]} log lines emitted before first render */
+        this._pendingLogs = [];
         // Fallback filesystem (OPFS) until a real workspace folder is opened.
         this._opfsFs = null;
         WebFileSystem.fromOPFS().then((fs) => {
@@ -45,7 +58,7 @@ export class WebTerminal extends LitElement {
     }
 
     static styles = [css`
-        :host {
+        web-terminal {
             display: flex;
             flex-direction: column;
             font-family: 'Consolas', 'Monaco', monospace;
@@ -60,7 +73,7 @@ export class WebTerminal extends LitElement {
             min-height: 0;
             box-sizing: border-box;
         }
-        #output {
+        web-terminal #output {
             flex-grow: 1;
             /* min-height:0 lets the scroll area shrink and scroll
                instead of expanding to fit all the log lines. */
@@ -70,26 +83,36 @@ export class WebTerminal extends LitElement {
             white-space: pre-wrap;
             word-break: break-all;
         }
-        #output::-webkit-scrollbar { width: 8px; }
-        #output::-webkit-scrollbar-track { background: #2d2d2d; border-radius: 10px; }
-        #output::-webkit-scrollbar-thumb { background: #555; border-radius: 10px; }
-        #output::-webkit-scrollbar-thumb:hover { background: #777; }
-        #output button {
+        web-terminal #output::-webkit-scrollbar { width: 8px; }
+        web-terminal #output::-webkit-scrollbar-track { background: #2d2d2d; border-radius: 10px; }
+        web-terminal #output::-webkit-scrollbar-thumb { background: #555; border-radius: 10px; }
+        web-terminal #output::-webkit-scrollbar-thumb:hover { background: #777; }
+        web-terminal #output button {
             all: unset;
             display: block;
             width: 100%;
             box-sizing: border-box;
         }
-        #output button:hover { background: #555; cursor: pointer; }
-        #output button:active, #output button:focus-visible { background: #555; cursor: pointer; }
-        .input-line {
+        web-terminal #output button:hover { background: #555; cursor: pointer; }
+        web-terminal #output button:active, web-terminal #output button:focus-visible { background: #555; cursor: pointer; }
+        web-terminal .input-line {
             display: flex;
             align-items: center;
+            flex-wrap: nowrap;
             margin-top: 0.5rem;
         }
-        .prompt { margin-right: 0.5rem; color: #569cd6; }
-        #input {
+        /* The prompt stays on one line and never shrinks; the input takes
+           the remaining space (min-width:0 lets it shrink within the flex
+           row instead of pushing the line to wrap). */
+        web-terminal .prompt {
+            margin-right: 0.5rem;
+            color: #569cd6;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        web-terminal #input {
             flex-grow: 1;
+            min-width: 0;
             background: none;
             border: none;
             color: inherit;
@@ -97,15 +120,21 @@ export class WebTerminal extends LitElement {
             font-size: 1em;
             outline: none;
         }
-        .log-echo { color: #a0a0a0; }
-        .log-info { color: #4fc1ff; }
-        .log-error { color: #f48771; }
-        .log-success { color: #4ec9b0; }
+        web-terminal .log-echo { color: #a0a0a0; }
+        web-terminal [data-disabled-hint] { color: #4fc1ff; margin-bottom: 0.5rem; }
+        web-terminal .log-info { color: #4fc1ff; }
+        web-terminal .log-error { color: #f48771; }
+        web-terminal .log-success { color: #4ec9b0; }
     `];
 
     render() {
         return litHtml`
             <div id="output"></div>
+            ${this._disabled
+                ? litHtml`<div class="log-info" data-disabled-hint>
+                    No folder open — use the folder button in the sidebar to open one.
+                </div>`
+                : ""}
             <div class="input-line">
                 <span class="prompt"><span id="prompt">${this.prompt}</span>&gt</span>
                 <input
@@ -121,6 +150,16 @@ export class WebTerminal extends LitElement {
     }
 
     firstUpdated() {
+        if (!WebTerminal._stylesHoisted) {
+            const style = document.createElement("style");
+            style.textContent = /** @type {any[]} */ (WebTerminal.styles).map((s) => s.cssText).join("\n");
+            document.head.appendChild(style);
+            WebTerminal._stylesHoisted = true;
+        }
+        // Flush any log lines emitted before the first render created #output.
+        const pending = this._pendingLogs.splice(0);
+        for (const { content, attributes } of pending) this.log(content, attributes);
+
         this.addEventListener("click", (e) => {
             if (window.getSelection()?.toString() !== "") return;
 
@@ -165,7 +204,8 @@ export class WebTerminal extends LitElement {
         this._disabled = true;
         this._placeholder = "Open a folder to use the terminal…";
         this.prompt = "";
-        this.info("No folder open — use the folder button in the sidebar to open one.");
+        // The "no folder open" hint is rendered reactively in the template
+        // (data-disabled-hint) and disappears when _disabled flips back.
     }
 
     /** Unlock the terminal once a workspace folder is available. */
@@ -188,6 +228,13 @@ export class WebTerminal extends LitElement {
      * @returns {HTMLDivElement}
      */
     log(content, attributes = {}) {
+        const output = /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#output"));
+        // Commands may log during registration, before the first Lit render
+        // has created #output — queue those lines and flush on firstUpdated.
+        if (!output) {
+            this._pendingLogs.push({ content, attributes });
+            return /** @type {HTMLDivElement} */ (null);
+        }
         const line = document.createElement("div");
         Object.entries(attributes).forEach(([name, value]) => line.setAttribute(name, value));
 
@@ -197,7 +244,6 @@ export class WebTerminal extends LitElement {
             line.textContent = String(content);
         }
 
-        const output = /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#output"));
         output.appendChild(line);
         output.scrollTop = output.scrollHeight;
         return line;
