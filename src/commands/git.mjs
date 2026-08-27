@@ -1,5 +1,5 @@
 import { command, or, object, optional, argument, string, option, integer, constant, map, message } from '@optique/core';
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 
 /** @returns {Promise<any>} */
 async function getGit() {

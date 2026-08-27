@@ -8,7 +8,7 @@ let rootObserver = null;
 /**
  * The terminal the current workspace was opened with. Only used to keep
  * dispatching legacy compat events during migration.
- * @type {import("../terminal.mjs").WebTerminal | null}
+ * @type {import("../components/terminal.mjs").WebTerminal | null}
  */
 let activeTerminal = null;
 
@@ -28,7 +28,7 @@ export const workspace = {
     /**
      * Open a directory handle as the active workspace.
      * @param {WebFileSystem} fs
-     * @param {import("../terminal.mjs").WebTerminal} [terminal] legacy target for compat events
+     * @param {import("../components/terminal.mjs").WebTerminal} [terminal] legacy target for compat events
      * @returns {Promise<boolean>} whether the workspace was opened successfully
      */
     async open(fs, terminal) {
@@ -59,7 +59,7 @@ export const workspace = {
 
     /**
      * Prompt the user to pick a folder and open it as the active workspace.
-     * @param {import("../terminal.mjs").WebTerminal} [terminal]
+     * @param {import("../components/terminal.mjs").WebTerminal} [terminal]
      * @returns {Promise<boolean>}
      */
     async openPicker(terminal) {
@@ -74,7 +74,7 @@ export const workspace = {
     /**
      * Open a recently used folder by its stored id.
      * @param {string} id
-     * @param {import("../terminal.mjs").WebTerminal} [terminal]
+     * @param {import("../components/terminal.mjs").WebTerminal} [terminal]
      * @throws if no recent folder with that id exists
      */
     async openRecent(id, terminal) {

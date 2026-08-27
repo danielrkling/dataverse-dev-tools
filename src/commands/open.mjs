@@ -1,5 +1,5 @@
 import { argument, message, object, optional, string } from "@optique/core";
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { workspace } from "../services/workspace.mjs";
 
 export const openCommand = createCommand({

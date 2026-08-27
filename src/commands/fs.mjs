@@ -1,4 +1,4 @@
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import {
   object,
   optional,

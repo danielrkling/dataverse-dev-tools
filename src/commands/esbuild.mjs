@@ -14,7 +14,7 @@ import {
     flag,
     withDefault,
 } from "@optique/core";
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 import { dropUndefined } from "../utils/json.mjs";

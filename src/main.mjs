@@ -18,13 +18,13 @@ import tailwind from "./commands/tailwind.mjs";
 import { uploadCommand, previewCommand, cacheCommand } from "./commands/dataverse.mjs";
 import git from "./commands/git.mjs";
 import gitlab from "./commands/gitlab.mjs";
-import { WebTerminal } from "./terminal.mjs";
+import "./components/terminal.mjs";
 import "./components/ide-app.mjs";
 import "./components/file-tree.mjs";
 import "./components/editor-pane.mjs";
 
-/** @type {WebTerminal} */
-export const terminal = /** @type {WebTerminal} */ (document.querySelector("web-terminal"));
+/** @type {import("./components/terminal.mjs").WebTerminal} */
+export const terminal = /** @type {import("./components/terminal.mjs").WebTerminal} */ (document.querySelector("web-terminal"));
 
 terminal.registerCommand(help);
 terminal.registerCommand(clear);

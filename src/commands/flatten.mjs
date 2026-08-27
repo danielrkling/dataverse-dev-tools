@@ -1,4 +1,4 @@
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { extname } from "../utils/path.mjs";
 import { object, optional, argument, string, option, message } from "@optique/core";
 

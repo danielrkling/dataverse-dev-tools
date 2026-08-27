@@ -1,4 +1,4 @@
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { dirname } from "../utils/path.mjs";
 import { object, optional, argument, string, message, or, command, constant, option } from "@optique/core";
@@ -256,7 +256,7 @@ const installing = new Set();
 
 /**
  * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {import('../terminal.mjs').WebTerminal} term
+ * @param {import('../components/terminal.mjs').WebTerminal} term
  * @param {string} name
  * @param {string} version
  * @param {boolean} tsOnly
@@ -334,7 +334,7 @@ async function installOne(fs, term, name, version, tsOnly, force = false) {
 /**
  * Install all dependencies from a package.json object.
  * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {import('../terminal.mjs').WebTerminal} term
+ * @param {import('../components/terminal.mjs').WebTerminal} term
  * @param {Record<string, any>} pkg
  * @param {boolean} tsOnly
  */

@@ -2,7 +2,7 @@ import { WebFileSystem } from "../services/fs.mjs";
 import { dirname, join, EXTENSIONS } from "../utils/path.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { object, optional, option, string, passThrough, message } from "@optique/core";
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 
 // ---- esbuild-wasm (lazy loaded) ----
 const ESBUILD_CDN = "https://unpkg.com/esbuild-wasm@0.28.1/esm/browser.min.js";

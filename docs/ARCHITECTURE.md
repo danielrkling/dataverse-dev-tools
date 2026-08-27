@@ -45,8 +45,14 @@ src/
     ide-app.mjs            # shadow-DOM shell; Web Awesome wa-split-panel layout
     file-tree.mjs          # sidebar tree (thin adapter over @pierre/trees, CDN import map)
     editor-pane.mjs        # Monaco host + tab strip (light DOM — see note below)
-  terminal.mjs             # <web-terminal>: command registry, line editing (uses @optique/core)
+    terminal.mjs           # <web-terminal>: UI element (output, line editing, history);
+                           #   delegates command execution to services/commands.mjs
+  terminal.mjs             # REMOVED from src/ root — now components/terminal.mjs
+  services/
+    ...
+    commands.mjs           # terminal command registry: argv parsing (&&/&), exec, createCommand()
   commands/                # terminal commands; each is (args, terminal) => Promise
+                           #   built with createCommand() from services/commands.mjs
     builtin.mjs            # help/clear/echo
     fs.mjs                 # ls/cat/cd/mv/rm/pwd/stat/mkdir
     esbuild.mjs            # bundle via esbuild-wasm (loaded from CDN at runtime)

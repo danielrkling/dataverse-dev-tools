@@ -1,9 +1,8 @@
-import { command, message, or, parse, runParser } from "@optique/core";
-import parseArgs from "string-argv";
-import { WebFileSystem } from "./services/fs.mjs";
-import { workspace, } from "./services/workspace.mjs";
-import { bus } from "./services/bus.mjs";
-import { saveCommandHistory, loadCommandHistory, clearCommandHistory } from "./utils/history.mjs";
+import { WebFileSystem } from "../services/fs.mjs";
+import { workspace, } from "../services/workspace.mjs";
+import { bus } from "../services/bus.mjs";
+import { CommandRegistry } from "../services/commands.mjs";
+import { saveCommandHistory, loadCommandHistory, clearCommandHistory } from "../utils/history.mjs";
 
 
 export class WebTerminal extends HTMLElement {
@@ -116,6 +115,9 @@ export class WebTerminal extends HTMLElement {
         this._output = /** @type {HTMLDivElement} */ (root.querySelector("#output"));
         this._input = /** @type {HTMLInputElement} */ (root.querySelector("#input"));
         this._prompt = /** @type {HTMLSpanElement} */ (root.querySelector("#prompt"));
+        /** Command registry lives in services/commands.mjs; this element is
+         *  the output sink + execution context for commands. */
+        this.registry = new CommandRegistry();
     }
 
     connectedCallback() {
@@ -324,144 +326,25 @@ export class WebTerminal extends HTMLElement {
         }
     }
 
-    /** @type {Map<string, TerminalCommand<any>>} */
-    commands = new Map();
+    /** @type {Map<string, import("../services/commands.mjs").TerminalCommand<any>>} Registry view (delegated). */
+    get commands() {
+        return this.registry.commands;
+    }
 
     /**
      * @template {import("@optique/core").Parser<any>} TParser
-     * @param {TerminalCommand<TParser>} cmd
+     * @param {import("./commands.mjs").TerminalCommand<TParser>} cmd
      */
     registerCommand(cmd) {
-        this.commands.set(cmd.name, cmd);
-        if (cmd.aliases) {
-            for (const alias of cmd.aliases) {
-                this.commands.set(alias, cmd);
-            }
-        }
-        cmd.init?.(this);
+        this.registry.registerCommand(cmd, this);
     }
 
     /**
      * @param {string} text
      */
     async processCommand(text) {
-        const args = parseArgs(text);
-        const groups = splitCommands(args);
-
-        if (groups.length === 1 && groups[0].length === 1) {
-            const [name, ...cmdArgs] = groups[0][0];
-            await this._execCommand(name, cmdArgs);
-        } else {
-            for (const parallelCmds of groups) {
-                await Promise.all(
-                    parallelCmds.map(cmd => this.processCommand(cmd.join(" "))),
-                );
-            }
-        }
-    }
-
-    /**
-     * @param {string} name
-     * @param {string[]} cmdArgs
-     */
-    async _execCommand(name, cmdArgs) {
-        const command = this.commands.get(name);
-
-        if (!command) {
-            this.log(`Command not found: ${name}`, { class: "log-error" });
-            return;
-        }
-
-        try {
-            if (command.transformArgs) {
-                cmdArgs = command.transformArgs(cmdArgs);
-            }
-
-            /** @type {import("@optique/core/program").Program<any,any>} */
-            const program = ({
-                parser: command.parser,
-                metadata: { name: command.name, brief: command.brief, description: command.description },
-            });
-
-            const result = runParser(program, cmdArgs, {
-                help: {
-                    option: true,
-                    onShow: () => false,
-                },
-                stdout: (v) => this.info(v),
-                stderr: (v) => this.error(v),
-            });
-
-            if (result) {
-                const executeResult = await command.execute(result, this);
-                if (executeResult) this.log(executeResult);
-            }
-        } catch (error) {
-            this.log(error.message, { class: "log-error" });
-            console.error(`Error executing command '${name}':`, error);
-        }
+        await this.registry.processCommand(text, this);
     }
 }
 
 customElements.define("web-terminal", WebTerminal);
-
-/**
- * @template {import("@optique/core").Parser<any>} TParser
- * @typedef {object} TerminalCommand
- * @property {string} name
- * @property {[string, ...string[]]} [aliases]
- * @property {import("@optique/core").Message} description
- * @property {import("@optique/core").Message} [usage]
- * @property {import("@optique/core").Message} [brief]
- * @property {TParser} parser
- * @property {(args: import("@optique/core").InferValue<TParser>, terminal: WebTerminal) => any | Promise<any>} execute
- * @property {(terminal: WebTerminal) => void} [init]
- * @property {(args: string[]) => string[]} [transformArgs]
- */
-
-/**
- * Split an argv array into serial groups (`&&`) and parallel commands (`&`).
- * @param {string[]} argv
- * @returns {string[][][]} serial groups of parallel commands
- */
-function splitCommands(argv) {
-    const serialGroups = [];
-    let currentParallel = [];
-    let currentCmd = [];
-
-    for (const token of argv) {
-        if (token === "&&") {
-            if (currentCmd.length > 0) {
-                currentParallel.push(currentCmd);
-                currentCmd = [];
-            }
-            if (currentParallel.length > 0) {
-                serialGroups.push(currentParallel);
-                currentParallel = [];
-            }
-        } else if (token === "&") {
-            if (currentCmd.length > 0) {
-                currentParallel.push(currentCmd);
-                currentCmd = [];
-            }
-        } else {
-            currentCmd.push(token);
-        }
-    }
-    if (currentCmd.length > 0) {
-        currentParallel.push(currentCmd);
-    }
-    if (currentParallel.length > 0) {
-        serialGroups.push(currentParallel);
-    }
-
-    return serialGroups;
-}
-
-/**
- * @template {import("@optique/core").Parser<any>} TParser
- * @param {TerminalCommand<TParser>} command
- */
-export function createCommand(command) {
-    return command;
-}

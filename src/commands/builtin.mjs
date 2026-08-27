@@ -1,4 +1,4 @@
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { object, optional, argument, string, message, formatDocPage, formatMessage, multiple } from "@optique/core";
 
 export const help = createCommand({

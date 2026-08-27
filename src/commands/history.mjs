@@ -1,4 +1,4 @@
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { clearCommandHistory } from "../utils/history.mjs";
 import { object, message, option, integer, string, optional } from "@optique/core";
 

@@ -1,6 +1,6 @@
 import { dirname, join } from "../utils/path.mjs";
 import * as z from "zod";
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { object, optional, argument, choice, message, option, string, multiple, map } from "@optique/core";
 import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
@@ -253,7 +253,7 @@ function createCompilerCache(config, fs) {
 /**
  * @param {{ content?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
  * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {import('../terminal.mjs').WebTerminal} term
+ * @param {import('../components/terminal.mjs').WebTerminal} term
  * @returns {Promise<{outfile: string, bytes: number, classes: number}>}
  */
 async function runBuild(config, fs, term) {

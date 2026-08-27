@@ -12,7 +12,7 @@ import {
 } from "@optique/core";
 import picomatch from "picomatch";
 import * as z from "zod";
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
 import { debounce } from "../utils/debounce.mjs";
 import { isValidWebResource, publishWebResources, uploadWebResource } from "../services/dataverse.mjs";
 
