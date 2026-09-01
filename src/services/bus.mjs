@@ -52,6 +52,8 @@ class EventBus extends EventTarget {
  *     "editor:open": { path: string },
  *     "dataverse:uploaded": { files: [string, string][] },
  *     "dataverse:published": { files: [string, string][] },
+ *     "npm:install": { name?: string },
+ *     "npm:uninstall": { names: string[] },
  * }} EventDetail
  */
 

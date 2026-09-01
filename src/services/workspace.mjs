@@ -94,6 +94,10 @@ async function createObserver() {
         rootObserver = null;
     }
     if (!workspace.fs) return;
+    // FileSystemObserver is Chromium-only and experimental — on browsers
+    // without it the app simply doesn't get fs:changed events (the npm
+    // command's explicit re-hydration hooks still cover installs).
+    if (!("FileSystemObserver" in self)) return;
 
     const observer = new FileSystemObserver((records) => {
         for (const record of records) {

@@ -157,7 +157,10 @@ function filterFiles(files, tsOnly) {
     if (!tsOnly) return files;
     return files.filter((f) => {
         if (f.path === "package.json") return true;
-        return /\.(?:ts|tsx|mts|cts|d\.ts)$/i.test(f.path);
+        // NOTE: .d.mts/.d.cts must be kept — some packages (valibot) ship
+        // ONLY .d.mts/.d.cts declarations (no .d.ts sibling), so dropping
+        // them leaves the package with zero types.
+        return /\.(?:ts|tsx|mts|cts|d\.ts|d\.mts|d\.cts)$/i.test(f.path);
     });
 }
 
@@ -296,6 +299,13 @@ async function installOne(fs, term, name, version, tsOnly, force = false) {
     const tarBuffer = await decompressGzip(await res.arrayBuffer());
     const files = extractTar(tarBuffer);
     const filtered = filterFiles(files, tsOnly);
+    if (tsOnly) {
+        const keptDecls = filtered.filter((f) => /\.(d\.ts|d\.mts|d\.cts)$/i.test(f.path)).length;
+        term.log(
+            `    [ts-only] kept ${filtered.length}/${files.length} files (${keptDecls} declaration file(s))` +
+                (keptDecls === 0 ? ` — WARNING: ${name} has ${keptDecls === 0 && pkg.types ? `a "types" field (${pkg.types}) that did not match the filter` : "no matching declaration files"}; its types will not resolve` : ""),
+        );
+    }
 
     // Group files by directory so we only mkdir each dir once.
     /** @type {Map<string, { path: string, data: Uint8Array }[]>} */
@@ -662,6 +672,7 @@ export const npmCommand = createCommand({
                         const target = dev ? "devDependencies" : "dependencies";
                         term.success(`Added ${name}@${resolved} to ${target}`);
                     }
+                    bus.emit("npm:install", { name });
                 } catch (e) {
                     return `npm install failed: ${e.message}`;
                 }
@@ -674,6 +685,7 @@ export const npmCommand = createCommand({
             }
 
             await installAll(fs, term, pkg, tsOnly);
+            bus.emit("npm:install", {});
             return "";
         }
 
@@ -693,6 +705,7 @@ export const npmCommand = createCommand({
                 } else {
                     term.info(`Removed ${name} from node_modules (was not in package.json)`);
                 }
+                bus.emit("npm:uninstall", { names: [name] });
             } catch (e) {
                 return `npm uninstall failed for ${name}: ${e.message}`;
             }
@@ -716,6 +729,7 @@ export const npmCommand = createCommand({
                 return "No package.json found.";
             }
             await installAll(fs, term, pkg, parsed.tsOnly ?? false);
+            bus.emit("npm:install", {});
             return "";
         }
 
@@ -764,6 +778,7 @@ export const npmCommand = createCommand({
                 metaCache.delete(name);
             });
             term.success(`Pruned ${stale.length} package${stale.length === 1 ? "" : "s"}`);
+            bus.emit("npm:uninstall", { names: stale });
             return "";
         }
 
@@ -1123,6 +1138,7 @@ export const npmCommand = createCommand({
                 // 5. Update package.json to reflect the newly resolved version
                 await updatePackageJson(fs, name, resolved, false);
                 term.success(`Updated ${name} to @${resolved}`);
+                bus.emit("npm:install", { name });
             };
 
             // Scenario A: Updating a specific package (e.g., "npm update lodash")
@@ -1170,6 +1186,7 @@ export const npmCommand = createCommand({
                     term.error(`Failed to update ${depName}: ${e.message}`);
                 }
             });
+            bus.emit("npm:install", {});
             return "";
         }
     },

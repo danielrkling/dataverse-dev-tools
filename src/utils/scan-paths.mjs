@@ -31,26 +31,24 @@ export async function scanPaths(fs, options = {}) {
      * @param {string} dirPath
      */
     async function walk(dirPath) {
-        let names;
+        let entries;
         try {
-            names = await fs.readdir(dirPath || "/");
+            // readdir {types} returns [name, "file"|"directory"] in one call —
+            // no stat() per entry (a stat round-trip per file made big
+            // node_modules scans take minutes over the FS Access API).
+            entries = await fs.readdir(dirPath || "/", { types: true });
         } catch {
             return;
         }
-        names.sort(); // codepoint order — matches @pierre/trees' comparator
+        entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)); // codepoint order — matches @pierre/trees' comparator
 
-        for (const name of names) {
+        for (const [name, kind] of entries) {
             if (ignore.includes(name)) continue;
             const path = dirPath ? `${dirPath}/${name}` : name;
             if (seen.has(path)) continue;
 
-            // Resolve from the workspace root, not the terminal cwd.
-            let isDirectory;
-            try {
-                isDirectory = (await fs.stat(`/${path}`)).isDirectory;
-            } catch {
-                continue; // unreadable/racing entry — leave it out entirely
-            }
+            const isDirectory = kind === "directory";
+            if (kind !== "file" && !isDirectory) continue; // unreadable/racing entry
 
             seen.add(path);
 

@@ -1,7 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { bus } from "../services/bus.mjs";
 import { workspace } from "../services/workspace.mjs";
-import { editorState, ensureMonaco, EDITOR_THEME } from "../services/editor.mjs";
+import { editorState, ensureMonaco } from "../services/editor.mjs";
 
 /**
  * Center panel: Monaco editor with a tab strip (LitElement).
@@ -13,15 +13,20 @@ import { editorState, ensureMonaco, EDITOR_THEME } from "../services/editor.mjs"
  * mount is the only way its styles apply. Keep ALL Monaco-owned DOM inside
  * the light-DOM mount (context menus land there too).
  *
- * LAZY BOOT: the editor (and the whole modern-monaco payload) is created on
- * the first file open via _ensureEditor(), not on element connect.
+ * LAZY BOOT: the editor (AMD monaco from the CDN) is created on the first
+ * file open via _ensureEditor(), not on element connect. Project hydration
+ * (background models for IntelliSense) also starts only after that.
  *
  * Listens only to the bus + services:
  * - "editor:open"    -> open file in a tab
  * - "workspace:open" -> reset tabs (editorState.reset handles models)
  * - "fs:changed"     -> reload non-dirty models from disk
- * Ctrl+S saves the active buffer through workspace.fs.
+ * Ctrl+S saves the active buffer through workspace.fs; buffers also autosave
+ * (debounced) shortly after the user stops typing.
  */
+/** Autosave debounce: ms of idle after the last keystroke before saving. */
+const AUTOSAVE_DELAY_MS = 1500;
+
 export class EditorPane extends LitElement {
     static properties = {
         /** bumped whenever tab/dirty/active state changes, to re-render tabs */
@@ -96,6 +101,10 @@ export class EditorPane extends LitElement {
         this._editor = null;
         /** @type {Map<string, import("monaco-editor").editor.ICodeEditorViewState>} path -> saved view state */
         this._viewStates = new Map();
+        /** @type {Map<string, ReturnType<typeof setTimeout>>} path -> pending autosave timer */
+        this._autosaveTimers = new Map();
+        /** @type {Map<string, number>} path -> ms timestamp of our own last write (echo suppression) */
+        this._selfSavedAt = new Map();
         /** @type {(() => void)[]} */
         this._unsubs = [];
 
@@ -159,7 +168,7 @@ export class EditorPane extends LitElement {
 
         this._editor = monaco.editor.create(this._mount, {
             automaticLayout: true,
-            theme: EDITOR_THEME,
+            theme: "vs-dark",
             fontSize: 13,
             fontFamily: "'Consolas', 'Monaco', monospace",
             minimap: { enabled: false },
@@ -167,7 +176,15 @@ export class EditorPane extends LitElement {
             tabSize: 2,
         });
 
-        // Track dirtiness per keystroke and refresh the tab UI.
+        // Hydrate project models in the background for cross-file IntelliSense
+        // (incl. node_modules .d.ts so package types resolve). Deferred until
+        // the first file is actually opened — nothing heavy before that.
+        if (workspace.fs) {
+            editorState.hydrateProject(workspace.fs).catch((e) => console.error("Hydration failed:", e));
+        }
+
+        // Track dirtiness per keystroke and refresh the tab UI. Each change
+        // also (re)schedules a debounced autosave for that path.
         this._editor.onDidChangeModelContent(() => {
             const model = this._editor?.getModel();
             if (!model) return;
@@ -175,6 +192,7 @@ export class EditorPane extends LitElement {
             if (!editorState.dirty.has(path)) {
                 editorState.dirty.add(path);
             }
+            this._scheduleAutosave(path);
             this._invalidate();
         });
     }
@@ -190,6 +208,11 @@ export class EditorPane extends LitElement {
 
     disconnectedCallback() {
         super.disconnectedCallback();
+        // Flush any pending autosave timers so buffered edits aren't lost.
+        for (const path of [...this._autosaveTimers.keys()]) {
+            this._clearAutosaveTimer(path);
+            this.savePath(path).catch(() => {});
+        }
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
         this._editor?.dispose();
@@ -277,16 +300,57 @@ export class EditorPane extends LitElement {
         }
     }
 
-    /** Save the active buffer to disk (root-relative path). */
-    async saveActive() {
+    /** Save a specific buffer to disk (root-relative path). */
+    async savePath(path) {
         const fs = workspace.fs?.root;
-        const path = editorState.activePath;
-        const model = this._editor?.getModel();
-        if (!fs || !path || !model) return;
+        if (!fs || !path || !editorState.dirty.has(path)) return;
+        const model = editorState.models.get(path);
+        if (!model || model.isDisposed()) {
+            editorState.dirty.delete(path);
+            return;
+        }
 
+        // Mark our own write so the fs:changed echo can be recognized and
+        // skipped (prevents any save → observer event → reload → save loop).
+        this._selfSavedAt.set(path, Date.now());
         await fs.writeFile(`/${path}`, model.getValue());
         editorState.dirty.delete(path);
         this._invalidate();
+    }
+
+    /** Save the active buffer to disk (root-relative path). */
+    async saveActive() {
+        const path = editorState.activePath;
+        if (!path) return;
+        this._clearAutosaveTimer(path);
+        await this.savePath(path);
+    }
+
+    /**
+     * Autosave: schedule a debounced save for a dirty path (fires after the
+     * user stops typing).
+     * @param {string} path
+     */
+    _scheduleAutosave(path) {
+        this._clearAutosaveTimer(path);
+        this._autosaveTimers.set(
+            path,
+            setTimeout(() => {
+                this._autosaveTimers.delete(path);
+                this.savePath(path);
+            }, AUTOSAVE_DELAY_MS),
+        );
+    }
+
+    /**
+     * @param {string} path
+     */
+    _clearAutosaveTimer(path) {
+        const t = this._autosaveTimers.get(path);
+        if (t !== undefined) {
+            clearTimeout(t);
+            this._autosaveTimers.delete(path);
+        }
     }
 
     /**
@@ -297,6 +361,16 @@ export class EditorPane extends LitElement {
     async _onFsChanged({ path, type }) {
         const model = editorState.models.get(path);
         if (!model || model.isDisposed()) return;
+
+        // Ignore the echo of our own save (autosave/Ctrl+S): the observer
+        // fires "modified" shortly after writeFile. Without this we'd point-
+        // lessly re-read the file; with identical-content reloads it could
+        // even ping-pong save → event → edit → save.
+        const savedAt = this._selfSavedAt.get(path);
+        if (savedAt !== undefined) {
+            if (Date.now() - savedAt < 500) return;
+            this._selfSavedAt.delete(path);
+        }
 
         if (type === "deleted") {
             // Dispose the model so the TS worker drops it from the project.

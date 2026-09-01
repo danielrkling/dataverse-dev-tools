@@ -4,7 +4,7 @@ import "@pierre/trees/web-components"; // registers <file-tree-container> + styl
 import { bus } from "../services/bus.mjs";
 import { workspace, listHandles, deleteHandle } from "../services/workspace.mjs";
 import { WebFileSystem } from "../services/fs.mjs";
-import { scanPaths } from "../utils/scan-paths.mjs";
+import { SCAN_IGNORED, scanPaths } from "../utils/scan-paths.mjs";
 
 /**
  * Sidebar file tree, backed by @pierre/trees (loaded from the CDN import map).
@@ -293,6 +293,9 @@ export class FileTreePane extends LitElement {
             e.stopPropagation();
             this._showEmptySpaceMenu(e.clientX, e.clientY);
         });
+
+        // Lazy node_modules loading was removed (see rebuild()); no
+        // expansion observer needed anymore.
     }
 
     connectedCallback() {
@@ -421,14 +424,20 @@ export class FileTreePane extends LitElement {
         const generation = ++this._rebuildGeneration;
 
         this._title = fs.rootName; // reactive: rendered by Lit
-        this._emptyEl.style.display = "none";
-        // Show the spinner while we walk the filesystem (may take a moment on
+        this._emptyEl.style.display = "none";        // Show the spinner while we walk the filesystem (may take a moment on
         // large workspaces). Hidden again once the tree is rendered below.
         this._loadingEl.classList.add("visible");
 
-        const { paths, dirs } = await scanPaths(fs);
+        // node_modules is scanned fully now. (Lazy per-directory loading was
+        // removed: expanded node_modules folders rendered empty because the
+        // tree's projection did not refresh after the deferred add — a full
+        // scan shows every file correctly and is fast with the readdir
+        // {types} bulk walk. If opening very large workspaces ever gets slow
+        // again, note the spinner stays visible until the walk finishes.)
+        const { paths, dirs } = await scanPaths(fs, { ignore: [...SCAN_IGNORED] });
         if (generation !== this._rebuildGeneration) return; // superseded
         this._dirs = dirs;
+
         this._preparedInput = prepareFileTreeInput(sanitizePaths(paths), {});
 
         if (this._tree) {

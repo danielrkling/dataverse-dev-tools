@@ -304,7 +304,7 @@ export class WebFileSystem {
      * @returns {Promise<string[]>} An array of names of the entries in the directory.
      * @throws {Error} If the path is not a directory or does not exist.
      */
-    async readdir(path = ".") {
+    async readdir(path = ".", options = /** @type {any} */ ({})) {
         const absPath = this._resolvePath(path);
         const dirHandle = await this._getHandle(absPath);
 
@@ -312,8 +312,17 @@ export class WebFileSystem {
             throw new WebFSError(`Not a directory: ${absPath}`, "ENOTDIR");
         }
 
-        const files = [];
         const dirHandle_ = /** @type {FileSystemDirectoryHandle} */ (dirHandle);
+        // {types:true} returns [name, kind][] straight from the handles —
+        // avoids a stat() round-trip per entry in bulk scans.
+        if (options.types) {
+            const entries = [];
+            for await (const entry of dirHandle_.values()) {
+                entries.push([entry.name, entry.kind]);
+            }
+            return entries;
+        }
+        const files = [];
         for await (const entry of dirHandle_.values()) {
             files.push(entry.name);
         }
