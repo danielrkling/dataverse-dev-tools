@@ -15,6 +15,7 @@ import * as z from "zod";
 import { createCommand } from "../services/commands.mjs";
 import { debounce } from "../utils/debounce.mjs";
 import { isValidWebResource, publishWebResources, uploadWebResource } from "../services/dataverse.mjs";
+import {bus} from "../services/bus.mjs"
 
 export const dataverseConfigSchema = z.object({
     prefix: z.string(),
@@ -24,8 +25,27 @@ export const dataverseConfigSchema = z.object({
     refresh: z.string().optional(),
 });
 
-const uploadParser = object({
-    prefix: optional(
+/**
+ * Read and validate a dataverse config file.
+ * @param {any} term
+ * @param {string} path
+ * @returns {Promise<import("zod").infer<typeof dataverseConfigSchema>>}
+ */
+async function readConfig(term, path) {
+    let raw;
+    try {
+        raw = JSON.parse(await term.fs.readFile(path, { encoding: "utf-8" }));
+    } catch (/** @type {any} */ e) {
+        throw new Error(`Error reading ${path}:\n${e instanceof Error ? e.message : e}`);
+    }
+    const result = dataverseConfigSchema.safeParse(raw);
+    if (!result.success) {
+        throw new Error(`Error parsing ${path}:\n${z.prettifyError(result.error)}`);
+    }
+    return result.data;
+}
+
+const uploadParser = object({    prefix: optional(
         option("-p", "--prefix", string({ metavar: "PREFIX" }), {
             description: message`Prefix for WebResource. Must contain an underscore`,
         }),
@@ -72,22 +92,13 @@ export const uploadCommand = createCommand({
         let { files, prefix, solution } = parsed;
 
         if (!(files && prefix && solution)) {
-            const configFile = await term.fs
-                .readFile(parsed.config, { encoding: "utf-8" })
-                .then(JSON.parse)
-                .then(dataverseConfigSchema.parse)
-                .catch((e) => {
-                    throw new Error(
-                        `Error reading ${parsed.config}:\n${e instanceof z.ZodError ? z.prettifyError(e) : e}`,
-                    );
-                });
-
+            const configFile = await readConfig(term, parsed.config);
             files ??= configFile.files ?? [];
             prefix ??= configFile.prefix;
             solution ??= configFile.solution;
         }
 
-        const isMatch = picomatch(files.map((v) => v));
+        const isMatch = picomatch(files ?? []);
         const entries = await term.fs.getFilesFromDirectory("", isMatch);
 
         uploadFiles(entries);
@@ -100,11 +111,11 @@ export const uploadCommand = createCommand({
                 const content = await term.fs.readFile(changedPath, { encoding: "utf8" });
                 debounce(300,`upload${changedPath}`,()=>uploadFiles([[changedPath, content]]));
             };
-            term.addEventListener("fs:modified", handler);
+            const unsub = bus.on("fs:changed", handler)
             const stopBtn = document.createElement("button");
             stopBtn.textContent = "⏹ stop watching";
             stopBtn.addEventListener("click", () => {
-                term.removeEventListener("fs:modified", handler);
+                unsub()
                 stopBtn.remove();
             });
             term.log(stopBtn);
@@ -134,25 +145,14 @@ export const uploadCommand = createCommand({
             );
             status.style.color = "#4fc1ff";
             status.innerText = "Uploaded:".padEnd(12);
-            term.dispatchEvent(
-                new CustomEvent("dataverse:uploaded", {
-                    detail: {
-                        files,
-                    },
-                }),
-            );
+            bus.emit("dataverse:uploaded", { files })
             if (parsed.publish) {
                 status.innerText = "Publishing";
                 await publishWebResources(wrs);
                 status.style.color = "#4ec9b0";
                 status.innerText = "Published:".padEnd(12);
-                term.dispatchEvent(
-                    new CustomEvent("dataverse:published", {
-                        detail: {
-                            files,
-                        },
-                    }),
-                );
+                bus.emit("dataverse:published", { files })
+
             }
         }
     },
@@ -183,45 +183,26 @@ export const previewCommand = createCommand({
         let { preview } = parsed;
 
         if (!preview) {
-            const configFile = await term.fs
-                .readFile(parsed.config, { encoding: "utf-8" })
-                .then(JSON.parse)
-                .then(dataverseConfigSchema.parse)
-                .catch((e) => {
-                    throw new Error(
-                        `Error reading ${parsed.config}:\n${e instanceof z.ZodError ? z.prettifyError(e) : e}`,
-                    );
-                });
-
-            preview ??= configFile.preview;
-        } 
+            preview = (await readConfig(term, parsed.config)).preview;
+        }
 
         if (!preview) return "Could not determine preview path.";
         const url = `${location.origin}/WebResources/${preview}`;
         const win = window.open(url);
+        if (!win) return `Blocked popup — could not open ${url}`;
 
-        if (parsed.onPublish) {
-            const refresh = () => {
+        /** Reload the preview window whenever one of these events fires. */
+        const reloadOn = (/** @type {"dataverse:uploaded" | "dataverse:published"} */ eventName) => {
+            const unsub = bus.on(eventName, () => {
                 try {
-                    //@ts-expect-error
                     win.location.reload();
                 } catch {
-                    term.removeEventListener("dataverse:published", refresh);
+                    unsub();
                 }
-            };
-            term.addEventListener("dataverse:published", refresh);
-        }
-        if (parsed.onUpload) {
-            const refresh = () => {
-                try {
-                    //@ts-expect-error
-                    win.location.reload();
-                } catch {
-                    term.removeEventListener("dataverse:uploaded", refresh);
-                }
-            };
-            term.addEventListener("dataverse:uploaded", refresh);
-        }
+            });
+        };
+        if (parsed.onUpload) reloadOn("dataverse:uploaded");
+        if (parsed.onPublish) reloadOn("dataverse:published");
 
         return `Opening ${url}`;
     },

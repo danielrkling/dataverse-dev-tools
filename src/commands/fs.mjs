@@ -26,7 +26,7 @@ export const lsCommand = createCommand({
 
     const entries = await term.fs.readdir(path);
     const stats = await Promise.all(
-      entries.map(async (name) => {
+      entries.map(async (/** @type {string} */ name) => {
         const fullPath = path === "." ? name : `${path}/${name}`;
         try {
           const s = await term.fs.stat(fullPath);

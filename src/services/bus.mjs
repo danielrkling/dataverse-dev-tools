@@ -50,6 +50,8 @@ class EventBus extends EventTarget {
  *     "workspace:open": import("./fs.mjs").WebFileSystem,
  *     "fs:changed": { path: string, type: FsChangeType },
  *     "editor:open": { path: string },
+ *     "dataverse:uploaded": { files: [string, string][] },
+ *     "dataverse:published": { files: [string, string][] },
  * }} EventDetail
  */
 

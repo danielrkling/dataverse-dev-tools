@@ -1,12 +1,6 @@
 import { LitElement, html, css, render as litRender } from "lit";
 import { FileTree, prepareFileTreeInput } from "@pierre/trees";
 import "@pierre/trees/web-components"; // registers <file-tree-container> + styles
-// The Web Awesome autoloader is NOT used: it only watches the light DOM and
-// cannot see inside shadow roots, so components used here are imported
-// explicitly to guarantee registration.
-import "https://ka-f.webawesome.com/webawesome@3.12.0/components/button/button.js";
-import "https://ka-f.webawesome.com/webawesome@3.12.0/components/icon/icon.js";
-import "https://ka-f.webawesome.com/webawesome@3.12.0/components/spinner/spinner.js";
 import { bus } from "../services/bus.mjs";
 import { workspace, listHandles, deleteHandle } from "../services/workspace.mjs";
 import { WebFileSystem } from "../services/fs.mjs";
@@ -16,6 +10,9 @@ import { scanPaths } from "../utils/scan-paths.mjs";
  * Sidebar file tree, backed by @pierre/trees (loaded from the CDN import map).
  * LitElement with shadow DOM: the header/recents/loading shell is templated;
  * the @pierre/trees tree itself is mounted imperatively into #mount.
+ * No Web Awesome inside the shadow root — the toolbar, buttons, and spinner
+ * are own-styled so everything is encapsulated (wa-split-panel stays in the
+ * light DOM layout layer, where it belongs).
  *
  * This element is a thin adapter between our services and the library:
  * - "workspace:open"  -> scan workspace.fs and resetPaths()
@@ -28,19 +25,6 @@ export class FileTreePane extends LitElement {
         /** @type {{ id: string }[]} recent folders, shown pre-workspace */
         _recents: { state: true },
     };
-
-    /**
-     * Light DOM: the Web Awesome stylesheet (utility classes like wa-stack/
-     * wa-flank and native-element styling) lives in document.head and cannot
-     * reach inside a shadow root — so this element renders in light DOM and
-     * hoists its compiled styles there once.
-     */
-    createRenderRoot() {
-        return this;
-    }
-
-    /** @type {boolean} guard so the style hoist runs once per page */
-    static _stylesHoisted = false;
 
     constructor() {
         super();
@@ -66,8 +50,8 @@ export class FileTreePane extends LitElement {
         this._moving = false;
     }
 
-    static styles = [css`
-        file-tree {
+    static styles = css`
+        :host {
             display: flex;
             flex-direction: column;
             background-color: #1e1e1e;
@@ -77,7 +61,7 @@ export class FileTreePane extends LitElement {
             min-width: 0;
             overflow: hidden;
         }
-        file-tree header {
+        :host header {
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -85,31 +69,119 @@ export class FileTreePane extends LitElement {
             border-bottom: 1px solid #333;
             flex-shrink: 0;
         }
-        /* Condense the toolbar icon buttons: WA buttons derive their box from
-           form-control custom properties, so shrink those on the hosts. */
-        file-tree .wa-cluster wa-button {
-            --wa-form-control-height: 22px;
-            --wa-form-control-padding-inline: 4px;
-            font-size: 12px;
-        }
-        file-tree #title {
+        #title {
             font-weight: bold;
             color: #569cd6;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        file-tree #mount {
+        #mount {
             flex: 1;
             min-height: 0;
         }
-        file-tree #empty {
+        #empty {
             padding: 1rem;
             color: #808080;
         }
 
+        /* --- Toolbar + generic icon button (replaces wa-button/wa-icon) --- */
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+        button {
+            font-family: inherit;
+            cursor: pointer;
+        }
+        .icon-btn {
+            all: unset;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            border-radius: 4px;
+            color: #a0a0a0;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        .icon-btn:hover {
+            background: #2d2d2d;
+            color: #fff;
+        }
+        .icon-btn svg {
+            width: 14px;
+            height: 14px;
+        }
+        .stack {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .flank {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .recent-item,
+        .empty-action {
+            all: unset;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            box-sizing: border-box;
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            max-width: 100%;
+        }
+        .recent-item > span,
+        .recent-item > svg {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .recent-item {
+            background: #2d2d2d;
+            color: #d4d4d4;
+        }
+        .recent-item:hover {
+            background: #3d3d3d;
+        }
+        .recent-item.remove-item {
+            padding: 2px 6px;
+            background: transparent;
+            color: #f48771;
+        }
+        .recent-item.remove-item:hover {
+            background: #3d2d2d;
+        }
+        .recent-item.remove-item svg {
+            width: 10px;
+            height: 10px;
+        }
+        .empty-action {
+            border: 1px solid #333;
+            background: transparent;
+            color: #d4d4d4;
+        }
+        .empty-action:hover {
+            border-color: #569cd6;
+            color: #fff;
+        }
+        .empty-action svg {
+            width: 12px;
+            height: 12px;
+        }
+        .empty-action hr {
+            border: none;
+            border-top: 1px solid #333;
+        }
+
         /* Loading overlay shown while the workspace is being scanned */
-        file-tree #loading {
+        #loading {
             display: none;
             flex: 1;
             min-height: 0;
@@ -119,72 +191,87 @@ export class FileTreePane extends LitElement {
             color: #808080;
             flex-direction: column;
         }
-        file-tree #loading.visible {
+        #loading.visible {
             display: flex;
         }
-        file-tree #loading wa-spinner {
-            font-size: 1.75rem;
-            color: #569cd6;
+        .spinner {
+            width: 1.75rem;
+            height: 1.75rem;
+            border: 2px solid #3d3d3d;
+            border-top-color: #569cd6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
         }
-    `];
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    `;
+
+    /** Minimal inline SVG icons (stroke = currentColor) — replaces wa-icon.
+     *  Static Lit templates (no unsafe directive needed): the browser's HTML
+     *  parser assigns the SVG namespace because the markup sits inside <svg>. */
+    static icons = {
+        file: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`,
+        "folder-plus": html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 11v6"/><path d="M9 14h6"/></svg>`,
+        refresh: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>`,
+        "folder-open": html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l1.45-4.34A2 2 0 0 1 9.35 8H21a1 1 0 0 1 .9 1.44l-3.1 5.56a2 2 0 0 1-1.75 1H4a2 2 0 0 1-1.9-2.6L4 5a2 2 0 0 1 2-2h4l2 3h7"/></svg>`,
+        xmark: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
+        bolt: html`<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 11-14h-7z"/></svg>`,
+    };
+
+    /**
+     * Inline icon as a Lit template.
+     * @param {keyof typeof FileTreePane.icons} name
+     */
+    icon(name) {
+        return FileTreePane.icons[name];
+    }
 
     render() {
         return html`
             <header>
                 <span id="title">${this._title}</span>
-                <span class="wa-cluster wa-gap-3xs">
-                    <wa-button class="icon-btn" id="new-file" appearance="plain" variant="neutral" size="s" aria-label="New File" @click=${() => this._createEntry("file")}><wa-icon name="file"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="new-folder" appearance="plain" variant="neutral" size="s" aria-label="New Folder" @click=${() => this._createEntry("directory")}><wa-icon name="folder-plus"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="refresh" appearance="plain" variant="neutral" size="s" aria-label="Refresh" @click=${() => this.rebuild()}><wa-icon name="rotate-right"></wa-icon></wa-button>
-                    <wa-button class="icon-btn" id="open-folder" appearance="plain" variant="neutral" size="s" aria-label="Open Folder" @click=${() => this.openFolderPicker()}><wa-icon name="folder-open"></wa-icon></wa-button>
+                <span class="toolbar">
+                    <button class="icon-btn" id="new-file" aria-label="New File" title="New File" @click=${() => this._createEntry("file")}>${this.icon("file")}</button>
+                    <button class="icon-btn" id="new-folder" aria-label="New Folder" title="New Folder" @click=${() => this._createEntry("directory")}>${this.icon("folder-plus")}</button>
+                    <button class="icon-btn" id="refresh" aria-label="Refresh" title="Refresh" @click=${() => this.rebuild()}>${this.icon("refresh")}</button>
+                    <button class="icon-btn" id="open-folder" aria-label="Open Folder" title="Open Folder" @click=${() => this.openFolderPicker()}>${this.icon("folder-open")}</button>
                 </span>
             </header>
             <div id="empty">
                 ${this._recents.length > 0
                     ? html`
-                        <div class="wa-stack wa-gap-3xs" style="margin-bottom: 1rem;">
+                        <div class="stack" style="margin-bottom: 1rem;">
                             ${this._recents.map((folder) => html`
-                                <div class="wa-flank:end wa-gap-3xs">
-                                    <wa-button
-                                        size="s"
+                                <div class="flank">
+                                    <button
                                         class="recent-item"
-                                        appearance="filled"
-                                        variant="neutral"
-                                        style="min-width: 0;"
                                         @click=${() => this._openRecent(folder.id)}
-                                    ><wa-icon slot="start" name="folder-open"></wa-icon> ${folder.id}</wa-button>
-                                    <wa-button
+                                    ><span>${folder.id}</span></button>
+                                    <button
                                         class="recent-item remove-item"
-                                        size="s"
-                                        appearance="plain"
-                                        variant="danger"
                                         aria-label="Forget ${folder.id}"
                                         title="Forget ${folder.id}"
                                         @click=${(e) => this._forgetRecent(folder.id, e)}
-                                    ><wa-icon name="xmark"></wa-icon></wa-button>
+                                    >${this.icon("xmark")}</button>
                                 </div>
                             `)}
-                            <hr style="border: none; border-top: 1px solid #333;" />
+                            <hr />
                         </div>
                     `
                     : ""}
-                Click the folder button above, or choose an option below.
-                <div class="wa-stack wa-gap-2xs" style="margin-top: 0.75rem;">
-                    <wa-button
+                <div class="stack" style="margin-top: 0.75rem;">
+                    <button
                         class="empty-action"
-                        appearance="accent"
-                        variant="brand"
                         @click=${() => this.openFolderPicker()}
-                    ><wa-icon name="folder-open" slot="start"></wa-icon> Select New Folder…</wa-button>
-                    <wa-button
+                    >${this.icon("folder-open")} Select New Folder…</button>
+                    <button
                         class="empty-action"
-                        appearance="outlined"
-                        variant="brand"
                         @click=${() => this._openOPFS()}
-                    ><wa-icon name="bolt" slot="start"></wa-icon> Use OPFS Workspace</wa-button>
+                    >${this.icon("bolt")} Use OPFS Workspace</button>
                 </div>
             </div>
-            <div id="loading"><wa-spinner></wa-spinner><span>Loading files…</span></div>
+            <div id="loading"><span class="spinner"></span><span>Loading files…</span></div>
             <div id="mount"></div>
         `;
     }
@@ -210,12 +297,6 @@ export class FileTreePane extends LitElement {
 
     connectedCallback() {
         super.connectedCallback();
-        if (!FileTreePane._stylesHoisted) {
-            const style = document.createElement("style");
-            style.textContent = /** @type {any[]} */ (FileTreePane.styles).map((s) => s.cssText).join("\n");
-            document.head.appendChild(style);
-            FileTreePane._stylesHoisted = true;
-        }
         this._unsubs.push(
             bus.on("workspace:open", () => this.rebuild()),
             bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),

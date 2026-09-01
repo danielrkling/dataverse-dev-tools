@@ -3,14 +3,16 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host",
+    "dev": "web-dev-server -c web-dev-server.config.mjs",
     "build": "vite build",
     "test": "playwright test",
-    "test:ui": "playwright test --ui"
+    "test:ui": "playwright test --ui",
+    "dev:static": "web-dev-server -c web-dev-server.config.mjs"
   },
   "devDependencies": {
     "@pierre/trees": "^1.0.0-beta.6",
     "@playwright/test": "^1.61.1",
+    "@web/dev-server": "^1.0.0",
     "monaco-editor": "^0.52.2",
     "typescript": "^5.7.2",
     "vite": "^5.0.0",

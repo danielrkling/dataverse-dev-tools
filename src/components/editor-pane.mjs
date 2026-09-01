@@ -1,15 +1,20 @@
 import { LitElement, html, css } from "lit";
 import { bus } from "../services/bus.mjs";
 import { workspace } from "../services/workspace.mjs";
-import { editorState, ensureMonaco } from "../services/editor.mjs";
+import { editorState, ensureMonaco, EDITOR_THEME } from "../services/editor.mjs";
 
 /**
  * Center panel: Monaco editor with a tab strip (LitElement).
  *
- * NOTE: deliberately rendered in LIGHT DOM (createRenderRoot → this). Monaco
- * injects its stylesheet into document.head, which cannot reach inside a
- * shadow root, so a shadow-DOM host renders the editor unstyled/broken. The
- * <style> block therefore lives in the template like classic custom elements.
+ * HYBRID rendering: the tab strip and placeholder live in the shadow root
+ (real encapsulation), but Monaco's mount point is a plain light-DOM child
+ * slotted into the shadow tree. Monaco injects its stylesheet into
+ * document.head, which cannot reach inside a shadow root — a light-DOM
+ * mount is the only way its styles apply. Keep ALL Monaco-owned DOM inside
+ * the light-DOM mount (context menus land there too).
+ *
+ * LAZY BOOT: the editor (and the whole modern-monaco payload) is created on
+ * the first file open via _ensureEditor(), not on element connect.
  *
  * Listens only to the bus + services:
  * - "editor:open"    -> open file in a tab
@@ -23,14 +28,8 @@ export class EditorPane extends LitElement {
         _tick: { type: Number, state: true },
     };
 
-    /**
-     * Light-DOM styling: renderRoot is `this`, which cannot adopt
-     * stylesheets — so the compiled css is hoisted into document.head once
-     * (head styles DO apply to light-DOM content, which is exactly why this
-     * element is light DOM in the first place).
-     */
-    static styles = [css`
-        editor-pane {
+    static styles = css`
+        :host {
             display: flex;
             flex-direction: column;
             min-width: 0;
@@ -76,7 +75,9 @@ export class EditorPane extends LitElement {
         }
         .tab .close:hover { background: #444; }
         .tab.dirty .name::after { content: " ●"; color: #e2c08d; }
-        #container {
+        /* The Monaco mount lives in the light DOM (Monaco's styles come from
+           document.head) and is slotted into the shadow tree here. */
+        ::slotted(.editor-mount) {
             flex: 1;
             min-height: 0;
         }
@@ -86,10 +87,7 @@ export class EditorPane extends LitElement {
             place-items: center;
             color: #606060;
         }
-    `];
-
-    /** @type {boolean} guard so the style hoist runs once per page */
-    static _stylesHoisted = false;
+    `;
 
     constructor() {
         super();
@@ -100,13 +98,11 @@ export class EditorPane extends LitElement {
         this._viewStates = new Map();
         /** @type {(() => void)[]} */
         this._unsubs = [];
-        /** @type {((e: KeyboardEvent) => void) | null} */
-        this._onKeyDown = null;
-    }
 
-    /** Light DOM: Monaco's head-injected styles must reach the editor. */
-    createRenderRoot() {
-        return this;
+        // Light-DOM mount: Monaco's head-injected styles only reach light DOM.
+        // Slotted into the shadow tree below the tab strip.
+        /** @type {HTMLDivElement} */
+        this._mount = Object.assign(document.createElement("div"), { className: "editor-mount" });
     }
 
     render() {
@@ -127,40 +123,47 @@ export class EditorPane extends LitElement {
                                 class="close"
                                 aria-label=${`Close ${tab.path.split("/").at(-1) ?? tab.path}`}
                                 @click=${(e) => { e.stopPropagation(); this._closeTab(tab.path); }}
-                            ><wa-icon name="xmark"></wa-icon></button>
+                            >✕</button>
                         </div>
                     `,
                 )}
             </div>
-            <div id="container"></div>
+            <slot></slot>
             <div id="placeholder">Open a file from the tree to start editing</div>
         `;
     }
 
     async connectedCallback() {
         super.connectedCallback();
-        if (!EditorPane._stylesHoisted) {
-            const style = document.createElement("style");
-            style.textContent = /** @type {any[]} */ (EditorPane.styles).map((s) => s.cssText).join("\n");
-            document.head.appendChild(style);
-            EditorPane._stylesHoisted = true;
-        }
         this._unsubs.push(
             bus.on("editor:open", (e) => this.openFile(e.detail.path)),
             bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),
             bus.on("workspace:open", () => this._reset()),
         );
 
+        // (Re-)attach the light-DOM Monaco mount below the tab strip.
+        if (this._mount.parentNode !== this) this.appendChild(this._mount);
+
+        // Monaco is NOT loaded here — it loads on the first file open.
+        document.addEventListener("keydown", (e) => this._onDocumentKeyDown(e));
+    }
+
+    /**
+     * Create the Monaco editor on first use — nothing Monaco-related is
+     * fetched or instantiated until a file is actually opened.
+     */
+    async _ensureEditor() {
+        if (this._editor) return;
         const monaco = await ensureMonaco();
         if (this._editor || !this.isConnected) return;
 
-        this._editor = monaco.editor.create(this.renderRoot.querySelector("#container"), {
+        this._editor = monaco.editor.create(this._mount, {
             automaticLayout: true,
-            theme: "vs-dark",
+            theme: EDITOR_THEME,
             fontSize: 13,
             fontFamily: "'Consolas', 'Monaco', monospace",
             minimap: { enabled: false },
-            scrollBeyondLastLine: false,
+            scrollBeyondLastLine: true,
             tabSize: 2,
         });
 
@@ -174,22 +177,21 @@ export class EditorPane extends LitElement {
             }
             this._invalidate();
         });
+    }
 
-        // Ctrl/Cmd+S saves the active buffer.
-        this._onKeyDown = (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-                e.preventDefault();
-                this.saveActive();
-            }
-        };
-        document.addEventListener("keydown", this._onKeyDown);
+    /** Global save shortcut (active once the editor exists). */
+    _onDocumentKeyDown(e) {
+        if (!this._editor) return;
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+            e.preventDefault();
+            this.saveActive();
+        }
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
-        if (this._onKeyDown) document.removeEventListener("keydown", this._onKeyDown);
         this._editor?.dispose();
         this._editor = null;
     }
@@ -205,6 +207,8 @@ export class EditorPane extends LitElement {
      */
     async openFile(path) {
         try {
+            // Lazily boot the editor on the very first file open.
+            await this._ensureEditor();
             const model = await editorState.getModel(path);
 
             if (!editorState.tabs.some((t) => t.path === path)) {
@@ -347,11 +351,6 @@ export class EditorPane extends LitElement {
         this._editor?.setModel(null);
         this.renderRoot.querySelector("#placeholder").style.display = "";
         this._invalidate();
-
-        // Hydrate project models in the background for cross-file IntelliSense.
-        if (workspace.fs) {
-            editorState.hydrateProject(workspace.fs);
-        }
     }
 }
 

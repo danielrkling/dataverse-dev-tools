@@ -1,0 +1,3 @@
+/* esm.sh - modern-monaco@0.4.2/lsp */
+var s={html:{import:()=>import("https://esm.sh/modern-monaco@0.4.2/es2022/dist/lsp/html/setup.mjs")},css:{aliases:["less","sass"],import:()=>import("https://esm.sh/modern-monaco@0.4.2/es2022/dist/lsp/css/setup.mjs")},json:{import:()=>import("https://esm.sh/modern-monaco@0.4.2/es2022/dist/lsp/json/setup.mjs")},typescript:{aliases:["javascript","jsx","tsx"],import:()=>import("./dist/lsp/typescript/setup.mjs")}};export{s as builtinLSPProviders};
+//# sourceMappingURL=lsp.mjs.map

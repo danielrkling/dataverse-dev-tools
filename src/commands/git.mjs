@@ -7,7 +7,7 @@ async function getGit() {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {any}
  */
 export function makeGitFs(fs) {
@@ -93,7 +93,7 @@ export function statusLabel([, head, workdir, stage]) {
  * containing a `.git` directory. Each top-level directory in the fs usually
  * corresponds to one project, so all per-repo state (author, remotes,
  * credentials) must be scoped to that root rather than the fs root.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<string>} absolute path of the repo root (falls back to cwd)
  */
 async function findRepoRoot(fs) {
@@ -106,7 +106,7 @@ async function findRepoRoot(fs) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<{name: string, email: string}>}
  */
 async function getAuthor(fs) {
@@ -142,7 +142,7 @@ async function getAuthor(fs) {
 const GLOBAL_CREDS_FILE = '/.gitcreds.json';
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<Record<string, {url: string}>>}
  */
 async function loadRemotes(fs) {
@@ -155,7 +155,7 @@ async function loadRemotes(fs) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {Record<string, {url: string}>} remotes
  */
 async function saveRemotes(fs, remotes) {
@@ -164,7 +164,7 @@ async function saveRemotes(fs, remotes) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<Record<string, string>>} host -> token
  */
 async function loadCreds(fs) {
@@ -181,7 +181,7 @@ async function loadCreds(fs) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {Record<string, string>} creds
  */
 async function saveCreds(fs, creds) {
@@ -213,7 +213,7 @@ function hostOf(urlOrHost) {
  * Builds an onAuth callback that resolves tokens from the stored credential
  * store by host. Works with GitLab PATs (username "oauth2") and GitHub PATs
  * (username as anything, password = token).
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string[]} urls candidate remote URLs, most specific first
  * @returns {Promise<(url: string) => { username: string, password: string } | undefined>}
  */
@@ -340,7 +340,7 @@ export function lineDiff(oldText, newText, context = 3) {
 // ---------------------------------------------------------------------------
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<{ git: any, gitFs: any }>}
  */
 async function gitCtx(fs) {
@@ -350,7 +350,7 @@ async function gitCtx(fs) {
 
 /**
  * Returns the resolved remote URL for push/fetch operations.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string | undefined} name
  */
 async function resolveRemote(fs, name) {
@@ -361,7 +361,7 @@ async function resolveRemote(fs, name) {
   return { name: key, ...remotes[key] };
 }
 
-/** @type {Record<string, (parsed: any, ctx: { fs: import('../fs.mjs').WebFileSystem, term?: any }) => Promise<string | undefined>>} */
+/** @type {Record<string, (parsed: any, ctx: { fs: import('../services/fs.mjs').WebFileSystem, term?: any }) => Promise<string | undefined>>} */
 const handlers = {
   async init(parsed, { fs }) {
     const { git, gitFs } = await gitCtx(fs);

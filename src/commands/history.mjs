@@ -32,7 +32,7 @@ export const historyCommand = createCommand({
 
     const limit = parsed.n || h.length;
     const entries = h.slice(0, Math.min(limit, h.length));
-    const lines = entries.map(/** @param {string} c */ (c, i) => `  ${i + 1}  ${c}`);
+    const lines = entries.map(/** @param {string} c @param {number} i */ (c, i) => `  ${i + 1}  ${c}`);
     term.log(`${key} command history (${entries.length}/${h.length} shown):\n${lines.join("\n")}`);
   },
 });

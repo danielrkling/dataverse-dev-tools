@@ -1,83 +1,149 @@
-import { scanPaths } from "../utils/scan-paths.mjs";
+import { init as initModernMonaco } from "modern-monaco";
+import { getMonacoWorkspace } from "./mm-fs.mjs";
 import { bus } from "./bus.mjs";
 import { workspace } from "./workspace.mjs";
 
-const MONACO_VERSION = "0.52.2";
-const MONACO_BASE = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs`;
+/**
+ * Monaco integration via modern-monaco (manual mode):
+ * - loads monaco-editor-core + Shiki tokenizer (no MonacoEnvironment/worker
+ *   setup, no AMD loader, no CSS loader)
+ * - built-in LSPs for HTML, CSS, JS/TS, JSON (import-map aware)
+ * - heavy work is deferred: nothing loads until the first file is opened
+ */
 
-/** Max number of background models hydrated for project-wide IntelliSense. */
-const HYDRATION_CAP = 1000;
+/** Theme used by the editor (must be a Shiki theme id). */
+export const EDITOR_THEME = "github-dark";
 
 /** @type {Promise<typeof import("monaco-editor")> | null} */
 let loading = null;
 
 /**
- * @param {string} src
- * @returns {Promise<void>}
- */
-function loadScript(src) {
-    return new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = src;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error(`Failed to load ${src}`));
-        document.head.appendChild(script);
-    });
-}
-
-/**
- * Load Monaco (CDN) once. Safe to call repeatedly.
- *
- * Uses the AMD loader from jsdelivr rather than the esm.sh ESM build: the
- * loader bootstraps the language workers (incl. the TS worker's foreign
- * module loading) correctly in a pure-CDN setup.
+ * Load Monaco once, via modern-monaco. Safe to call repeatedly.
  * @returns {Promise<typeof import("monaco-editor")>}
  */
 export async function ensureMonaco() {
     if (loading) return loading;
     loading = (async () => {
-        await loadScript(`${MONACO_BASE}/loader.js`);
-        const amdRequire = /** @type {any} */ (window).require;
-        amdRequire.config({ paths: { vs: MONACO_BASE } });
-        await new Promise((resolve, reject) => {
-            amdRequire(["vs/editor/editor.main"], resolve, reject);
+        // modern-monaco's LSP module is vendored locally (see
+        // src/vendor/modern-monaco/README) because esm.sh cannot currently
+        // build its typescript dependency ("typescript >= 6.0.0" resolves to
+        // TS 7, which esm.sh fails to compile). The override must be an
+        // ABSOLUTE url — core.mjs resolves import-map values against its own
+        // esm.sh base — so merge it into the page's existing import map
+        // (core.mjs only reads the FIRST importmap script, so a second one
+        // injected later would be ignored).
+        const mapEl = /** @type {HTMLScriptElement | null} */ (document.querySelector("script[type='importmap']"));
+        if (mapEl && !mapEl.textContent?.includes("modern-monaco/lsp")) {
+            try {
+                const map = JSON.parse(/** @type {string} */ (mapEl.textContent));
+                map.imports ??= {};
+                map.imports["modern-monaco/lsp"] = new URL("../vendor/modern-monaco/lsp.mjs", import.meta.url).href;
+                mapEl.textContent = JSON.stringify(map);
+            } catch {
+                // import map unreadable — fall back to esm.sh LSP (broken TS worker)
+            }
+        }
+
+        const compilerOptions = await readTsCompilerOptions();
+        const monaco = await initModernMonaco({
+            defaultTheme: EDITOR_THEME,
+            // Live view of the open project folder — the TS LSP walks this FS
+            // for cross-file resolution (no model hydration needed).
+            workspace: getMonacoWorkspace(),
+            lsp: {
+                typescript: {
+                    compilerOptions: {
+                        allowNonTsExtensions: true,
+                        allowJs: true,
+                        checkJs: false,
+                        esModuleInterop: true,
+                        skipLibCheck: true,
+                        ...compilerOptions,
+                    },
+                },
+            },
         });
-        configureTypeScript(/** @type {any} */ (window).monaco);
-        return /** @type {typeof import("monaco-editor")} */ (/** @type {any} */ (window).monaco);
+        monacoRef = /** @type {typeof import("monaco-editor")} */ (/** @type {any} */ (monaco));
+        return monacoRef;
     })();
     return loading;
 }
 
+/** @type {typeof import("monaco-editor") | null} */
+let monacoRef = null;
+
 /**
- * Configure the TypeScript language service for project-wide IntelliSense
- * across .ts/.js/.mjs files.
- * @param {typeof import("monaco-editor")} monaco
+ * The loaded Monaco namespace (only valid after ensureMonaco resolves).
+ * @returns {typeof import("monaco-editor")}
  */
-function configureTypeScript(monaco) {
-    const ts = monaco.languages.typescript;
-    ts.typescriptDefaults.setCompilerOptions({
-        target: ts.ScriptTarget.ESNext,
-        module: ts.ModuleKind.ESNext,
-        moduleResolution: ts.ModuleResolutionKind.NodeJs,
-        // Models live at /node_modules/<pkg>/... — let bare specifiers like
-        // "zod" resolve against the virtual node_modules tree.
-        baseUrl: "/",
-        paths: { "*": ["node_modules/*", "node_modules/@types/*"] },
-        allowNonTsExtensions: true,
-        allowJs: true,
-        checkJs: false,
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-    });
-    // The workspace IS the project; don't warn about missing tsconfig etc.
-    ts.typescriptDefaults.setDiagnosticsOptions({
-        noSemanticValidation: false,
-        noSyntaxValidation: false,
-        diagnosticCodesToIgnore: [2792, 2307],
-    });
-    // Eagerly load defaults so cross-file resolution works immediately.
-    ts.typescriptDefaults.setEagerModelSync(true);
+function monaco() {
+    if (!monacoRef) throw new Error("Monaco not loaded yet — call ensureMonaco() first");
+    return monacoRef;
+}
+
+// --- tsconfig.json -> compilerOptions -------------------------------------
+
+/**
+ * Translate a string enum member ("ESNext", "NodeJs", …) to its numeric
+ * value. ts.CompilerOptions wants numbers; tsconfig uses names.
+ * @param {Record<string, any>} table string -> number map
+ * @param {any} value
+ */
+function mapEnum(table, value) {
+    if (value == null) return undefined;
+    if (typeof value === "number") return value;
+    return table[String(value).toLowerCase()];
+}
+
+const TS_TARGETS = {
+    es3: 0, es5: 1, es6: 2, es2015: 2, es2016: 3, es2017: 4, es2018: 5,
+    es2019: 6, es2020: 7, es2021: 8, es2022: 9, esnext: 99,
+};
+const TS_MODULES = {
+    none: 0, commonjs: 1, amd: 2, umd: 3, system: 4, es2015: 5, es2020: 6,
+    es2022: 7, esnext: 99,
+};
+const TS_JSX = { none: 0, preserve: 1, "react": 2, "react-jsx": 4, "react-jsxdev": 5, "react-native": 3 };
+const TS_MODULE_RESOLUTION = {
+    classic: 1, node: 2, node10: 2, node16: 3, nodenext: 99, bundler: 100,
+};
+
+/**
+ * Read /tsconfig.json from the open workspace and translate its
+ * compilerOptions into ts.CompilerOptions (numeric enums).
+ * @returns {Promise<Record<string, any>>}
+ */
+async function readTsCompilerOptions() {
+    const fs = workspace.fs?.root;
+    if (!fs) return {};
+    /** @type {any} */
+    let config;
+    try {
+        config = parseJsonc(/** @type {string} */ (await fs.readFile("/tsconfig.json", "utf8")));
+    } catch {
+        return {}; // no tsconfig — keep defaults
+    }
+    const user = config.compilerOptions ?? {};
+    /** @type {Record<string, any>} */
+    const options = {};
+    const target = mapEnum(TS_TARGETS, user.target);
+    if (target !== undefined) options.target = target;
+    const moduleKind = mapEnum(TS_MODULES, user.module);
+    if (moduleKind !== undefined) options.module = moduleKind;
+    const moduleRes = mapEnum(TS_MODULE_RESOLUTION, user.moduleResolution);
+    if (moduleRes !== undefined) options.moduleResolution = moduleRes;
+    const jsx = mapEnum(TS_JSX, user.jsx);
+    if (jsx !== undefined) options.jsx = jsx;
+    for (const key of [
+        "strict", "noImplicitAny", "strictNullChecks", "esModuleInterop",
+        "allowJs", "checkJs", "skipLibCheck", "allowSyntheticDefaultImports",
+        "resolveJsonModule", "experimentalDecorators",
+    ]) {
+        if (key in user) options[key] = !!user[key];
+    }
+    if (user.baseUrl) options.baseUrl = user.baseUrl;
+    if (user.paths) options.paths = user.paths;
+    return options;
 }
 
 /**
@@ -93,77 +159,13 @@ function parseJsonc(text) {
 }
 
 /**
- * Resolve a value against a Monaco TS enum (accepts string names like
- * "ESNext" / "NodeJs", case-insensitively).
- * @param {Record<string, any>} enumObj
- * @param {any} value
- */
-function pickEnum(enumObj, value) {
-    if (value == null) return undefined;
-    if (typeof value === "number") return value;
-    const key = Object.keys(enumObj).find((k) => k.toLowerCase() === String(value).toLowerCase());
-    return key !== undefined ? enumObj[key] : undefined;
-}
-
-/**
- * Read /tsconfig.json from the workspace and apply its compilerOptions.
- * Monaco never reads tsconfig on its own — we translate it.
- * @param {(p: string) => Promise<any>} readFile
- */
-async function applyTsConfig(readFile) {
-    /** @type {any} */
-    let config;
-    try {
-        config = parseJsonc(/** @type {string} */ (await readFile("/tsconfig.json")));
-    } catch {
-        return; // no tsconfig — keep defaults
-    }
-
-    const user = config.compilerOptions ?? {};
-    const monaco = /** @type {typeof import("monaco-editor")} */ (/** @type {any} */ (window).monaco);
-    const ts = monaco.languages.typescript;
-
-    // IMPORTANT: start from the currently-applied options. Calling
-    // setCompilerOptions REPLACES the whole object, so rebuilding from just
-    // the user's tsconfig would drop baseUrl/paths/allowNonTsExtensions —
-    // i.e. everything that lets bare specifiers resolve against our
-    // materialized node_modules models.
-    /** @type {Record<string, any>} */
-    const options = {
-        ...ts.typescriptDefaults.getCompilerOptions(),
-    };
-    const target = pickEnum(ts.ScriptTarget, user.target);
-    if (target !== undefined) options.target = target;
-    const moduleKind = pickEnum(ts.ModuleKind, user.module);
-    if (moduleKind !== undefined) options.module = moduleKind;
-    const moduleRes = pickEnum(ts.ModuleResolutionKind, user.moduleResolution);
-    if (moduleRes !== undefined) options.moduleResolution = moduleRes;
-    const jsx = pickEnum(ts.JsxEmit, user.jsx);
-    if (jsx !== undefined) options.jsx = jsx;
-
-    for (const key of [
-        "strict", "noImplicitAny", "strictNullChecks", "esModuleInterop",
-        "allowJs", "checkJs", "skipLibCheck", "allowSyntheticDefaultImports",
-        "resolveJsonModule", "experimentalDecorators",
-    ]) {
-        if (key in user) options[key] = !!user[key];
-    }
-    if (user.baseUrl) options.baseUrl = user.baseUrl;
-    if (user.paths) options.paths = user.paths;
-
-    ts.typescriptDefaults.setCompilerOptions(options);
-}
-
-/**
  * Monaco language id from a file path.
  * @param {string} path
  */
 export function languageForPath(path) {
     let ext = path.split(".").pop()?.toLowerCase() ?? "";
     // Drop a leading "d." so declaration files (.d.ts/.d.mts/.d.cts) map to the
-    // same language as their runtime counterparts — the TS worker only resolves
-    // types from typescript/javascript models, so plaintext .d.mts/.d.cts would
-    // be ignored.
+    // same language as their runtime counterparts.
 
     if (ext.startsWith("d.")) ext = ext.slice(2);
     switch (ext) {
@@ -204,8 +206,11 @@ export function languageForPath(path) {
 
 /**
  * The editor state service: owns the model registry (one ITextModel per
- * project file, open or not — this is what gives project-level IntelliSense)
- * and the tab/buffer list.
+ * opened file, created lazily on demand) and the tab/buffer list.
+ *
+ * NOTE: unlike the previous monaco-editor AMD setup, there is NO background
+ * project hydration — modern-monaco's TS LSP handles module resolution
+ * itself, so nothing is loaded until a file is actually opened.
  */
 class EditorStateImpl {
     constructor() {
@@ -217,8 +222,6 @@ class EditorStateImpl {
         this.activePath = null;
         /** @type {Set<string>} paths with unsaved changes */
         this.dirty = new Set();
-        /** @type {boolean} */
-        this._hydrating = false;
     }
 
     /**
@@ -233,7 +236,7 @@ class EditorStateImpl {
         const fs = workspace.fs;
         if (!fs) throw new Error(`No workspace open, cannot open ${path}`);
 
-        await ensureMonaco();
+        const m = await ensureMonaco();
         const content = await fs.root.readFile(`/${path}`, "utf8");
         return this._createModel(path, /** @type {string} */ (content));
     }
@@ -244,31 +247,13 @@ class EditorStateImpl {
      * @param {string} content
      */
     _createModel(path, content) {
-        const m = /** @type {typeof import("monaco-editor")} */ (/** @type {any} */ (window).monaco);
+        const m = monaco();
         const model = m.editor.createModel(content, languageForPath(path), m.Uri.file(`/${path}`));
         this.models.set(path, model);
         model.onDidChangeContent(() => {
             this.dirty.add(path);
         });
         return model;
-    }
-
-    /**
-     * Try to read a file from the workspace root and register its model.
-     * @param {string} path clean root-relative path
-     * @returns {Promise<boolean>} whether a model was created
-     */
-    async _tryCreateModelFromDisk(path) {
-        try {
-            const fs = workspace.fs?.root;
-            if (!fs) return false;
-            const content = await fs.readFile(`/${path}`, "utf8");
-            if (typeof content !== "string") return false;
-            if (!this.models.has(path)) this._createModel(path, /** @type {string} */ (content));
-            return true;
-        } catch {
-            return false; // vanished mid-scan or binary
-        }
     }
 
     /** Reset all editor state when a new workspace opens. */
@@ -279,97 +264,14 @@ class EditorStateImpl {
         for (const model of this.models.values()) model.dispose();
         this.models.clear();
     }
-
-    /**
-     * Create a Monaco model for every code/declaration file in the workspace
-     * (plus every package.json) so the TS worker can resolve imports and
-     * types across the whole project — including anything under node_modules.
-     *
-     * We deliberately do NOT special-case package `exports` maps: the worker
-     * resolves `import "valibot"` from whatever models exist, so materializing
-     * every `.d.ts`/`.ts`/`.js`/etc. file is enough. Project source is loaded
-     * first; node_modules files follow, all behind a budget + per-file yields
-     * so a large tree can't freeze the editor.
-     * @param {import("./fs.mjs").WebFileSystem} fs
-     */
-    async hydrateProject(fs) {
-        if (this._hydrating || !fs) return;
-        this._hydrating = true;
-        try {
-            await ensureMonaco();
-            // Apply the project's own tsconfig.json, if present.
-            const rfs = fs.root;
-            await applyTsConfig((p) => rfs.readFile(p, "utf8"));
-
-            const { paths } = await scanPaths(fs);
-            // Prioritize what TS actually needs for type resolution:
-            // package.json (exports/main maps) first, then .d.ts/.d.mts/.d.cts
-            // declaration files, then runtime sources. Project source always
-            // comes before node_modules so the budget can't starve it.
-            const rank = (p) =>
-                p.endsWith("package.json") ? 0
-                : /\.(d\.ts|d\.mts|d\.cts)$/.test(p) ? 1
-                : /\.min\.(js|mjs|cjs)$/.test(p) ? 3
-                : 2;
-            const project = paths.filter((p) => !p.startsWith("node_modules/"));
-            const deps = paths
-                .filter((p) => p.startsWith("node_modules/"))
-                .sort((a, b) => rank(a) - rank(b));
-
-            let loaded = 0;
-            for (const path of [...project.sort((a, b) => rank(a) - rank(b)), ...deps]) {
-                if (loaded >= HYDRATION_CAP) break;
-                if (this.models.has(path)) continue;
-                if (!shouldHydrateModel(path)) continue;
-                // Minified dist files contribute nothing to type info.
-                if (/\.min\.(js|mjs|cjs)$/.test(path)) continue;
-                try {
-                    const content = await rfs.readFile(`/${path}`, "utf8");
-                    if (typeof content === "string" && !this.models.has(path)) {
-                        this._createModel(path, content);
-                        loaded++;
-                    }
-                } catch {
-                    // File vanished mid-scan — skip.
-                }
-                // Yield to the event loop every file to avoid blocking.
-                await new Promise((r) => setTimeout(r, 0));
-            }
-        } finally {
-            this._hydrating = false;
-        }
-    }
-}
-
-/**
- * Whether a workspace file should become a Monaco model for IntelliSense.
- * We materialize every code/declaration file plus package.json (so the TS
- * worker can read dependency "exports" maps). Non-code assets are skipped.
- * @param {string} path clean root-relative path
- */
-export function shouldHydrateModel(path) {
-    if (path.endsWith("package.json")) return true;
-    return /\.(ts|tsx|js|jsx|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(path);
 }
 
 export const editorState = new EditorStateImpl();
 
-// Reset editor state whenever a new workspace opens; hydrate after the tree
-// has had a chance to render first.
+// Reset editor state whenever a new workspace opens.
 bus.on("workspace:open", () => {
     editorState.reset();
 });
-
-/**
- * Join a base directory and a relative entry, POSIX style.
- * @param {string} dir
- * @param {string} rel
- */
-function joinPosix(dir, rel) {
-    if (rel.startsWith("./")) rel = rel.slice(2);
-    if (rel.startsWith("/")) return rel.slice(1);
-    return `${dir}/${rel}`;
-}
 
 /**
  * Extract module specifiers from import/export/require statements.

@@ -4,6 +4,7 @@ import { createCommand } from "../services/commands.mjs";
 import { object, optional, argument, choice, message, option, string, multiple, map } from "@optique/core";
 import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
+import {bus} from "../services/bus.mjs"
 
 // import * as oxide from "https://esm.sh/@tailwindcss/oxide-wasm32-wasi"
 
@@ -64,7 +65,7 @@ async function ensureWasmLoaded() {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {(id: string, base: string) => Promise<{path: string, base: string, content: string}>}
  */
 function createLoadStylesheet(fs) {
@@ -111,7 +112,7 @@ function createLoadStylesheet(fs) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {(id: string, base: string) => Promise<{path: string, base: string, module: any}>}
  */
 function createLoadModule(fs) {
@@ -186,7 +187,7 @@ function buildCSSInput(config) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string[]} globs
  * @returns {Promise<string[]>}
  */
@@ -221,7 +222,7 @@ async function extractClasses(fs, globs) {
 
 /**
  * @param {{ content?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {{ getOrCreateCompiler(): Promise<any>, invalidateCache(): void }}
  */
 function createCompilerCache(config, fs) {
@@ -252,7 +253,7 @@ function createCompilerCache(config, fs) {
 
 /**
  * @param {{ content?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {import('../components/terminal.mjs').WebTerminal} term
  * @returns {Promise<{outfile: string, bytes: number, classes: number}>}
  */
@@ -380,11 +381,11 @@ export default createCommand({
                 }
             };
 
-            term.addEventListener("fs:modified", handler);
+            const unsub = bus.on("fs:changed",handler)
             const stopBtn = document.createElement("button");
             stopBtn.textContent = "⏹ stop watching";
             stopBtn.addEventListener("click", () => {
-                term.removeEventListener("fs:modified", handler);
+                unsub()
                 stopBtn.remove();
             });
             term.log(stopBtn);

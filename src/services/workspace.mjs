@@ -49,7 +49,6 @@ export const workspace = {
             terminal.prompt = fs.rootName;
             terminal.loadHistory(fs.rootName);
             // Legacy event — new code should listen on the bus instead.
-            terminal.dispatchEvent(new CustomEvent("fs:init"));
         }
         bus.emit("workspace:open", fs);
 

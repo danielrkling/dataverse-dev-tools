@@ -18,6 +18,7 @@ import { createCommand } from "../services/commands.mjs";
 import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 import { dropUndefined } from "../utils/json.mjs";
+import {bus} from "../services/bus.mjs"
 
 /**
  * Convert esbuild-style --flag:value args to --flag value for optique parsing.
@@ -424,12 +425,12 @@ export default createCommand({
         const watchMode = merged.watch;
         const { watch: _w, entryPoints: epPatterns, ...rest } = merged;
 
-        const isMatch = picomatch(epPatterns.map((p) => p.replace(/^\.\//, "")));
+        const isMatch = picomatch((/** @type {string[]} */ (epPatterns)).map((p) => p.replace(/^\.\//, "")));
         const matched = await terminal.fs.getFilesFromDirectory("", isMatch);
         const resolvedEntryPoints =
             matched.length > 0
-                ? matched.map(([p]) => `/${p}`)
-                : epPatterns.map((p) => (p.startsWith("/") ? p : `/${p}`));
+                ? matched.map((/** @type {[string, string]} */ [p]) => `/${p}`)
+                : epPatterns.map((/** @type {string} */ p) => (p.startsWith("/") ? p : `/${p}`));
 
         const buildOptions = {
             ...rest,
@@ -469,12 +470,12 @@ export default createCommand({
                     }
                 }
             };
-            terminal.addEventListener("fs:modified", handler);
+            const unsub = bus.on("fs:changed",handler)
             const stopBtn = document.createElement("button");
             stopBtn.textContent = "⏹ stop watching";
             stopBtn.addEventListener("click", () => {
                 context.dispose();
-                terminal.removeEventListener("fs:modified", handler);
+                unsub()
                 stopBtn.remove();
             });
             terminal.log(stopBtn);

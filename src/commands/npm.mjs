@@ -2,7 +2,7 @@ import { createCommand } from "../services/commands.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { dirname } from "../utils/path.mjs";
 import { object, optional, argument, string, message, or, command, constant, option } from "@optique/core";
-
+import {bus} from "../services/bus.mjs"
 // ---- tar extraction (inlined) ----
 
 /**
@@ -255,7 +255,7 @@ async function fetchPackageMeta(name) {
 const installing = new Set();
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {import('../components/terminal.mjs').WebTerminal} term
  * @param {string} name
  * @param {string} version
@@ -333,7 +333,7 @@ async function installOne(fs, term, name, version, tsOnly, force = false) {
 
 /**
  * Install all dependencies from a package.json object.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {import('../components/terminal.mjs').WebTerminal} term
  * @param {Record<string, any>} pkg
  * @param {boolean} tsOnly
@@ -357,7 +357,7 @@ async function installAll(fs, term, pkg, tsOnly) {
 
 /**
  * Read and parse package.json, returning null when missing/invalid.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<Record<string, any> | null>}
  */
 async function readPackageJson(fs) {
@@ -371,7 +371,7 @@ async function readPackageJson(fs) {
 
 /**
  * List all installed package names, expanding @scope folders into full names.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<string[]>}
  */
 async function listInstalled(fs) {
@@ -401,7 +401,7 @@ async function listInstalled(fs) {
 
 /**
  * Get the installed version of a package, or null when not installed.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} name
  * @returns {Promise<string | null>}
  */
@@ -418,7 +418,7 @@ async function getInstalledVersion(fs, name) {
 let pkgJsonQueue = Promise.resolve();
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} name
  * @param {string} version
  * @param {boolean} [dev]
@@ -431,7 +431,7 @@ function updatePackageJson(fs, name, version, dev) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} name
  * @param {string} version
  * @param {boolean} [dev]
@@ -451,7 +451,7 @@ async function writePackageJson(fs, name, version, dev) {
 
 /**
  * Remove a package from dependencies/devDependencies in package.json.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} name
  */
 function removeFromPackageJson(fs, name) {
@@ -627,7 +627,7 @@ export const npmCommand = createCommand({
     usage: message`npm install [package] [--ts-only] [-D] [--force] | npm update [package] | npm uninstall <package> | npm ci | npm prune | npm ls [package] | npm outdated | npm view <package> [field] | npm init [-y] | npm dedupe | npm audit | npm why <package> | npm run <script>`,
     brief: message`Manage npm packages and scripts`,
     init: async (term) => {
-        term.addEventListener("fs:init", async () => {
+        bus.on("workspace:open", async () => {
             try {
                 const raw = await term.fs.readFile("package.json", { encoding: "utf8" });
                 const pkg = JSON.parse(/** @type {string} */ (raw));

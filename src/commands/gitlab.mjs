@@ -136,7 +136,7 @@ const MANIFEST_FILE = '.git/gitlab.json';
 /**
  * Author for local mirror commits. Mirrors git.mjs's getAuthor: cached in the
  * repo, then Dataverse WhoAmI, then a fallback.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Promise<{name: string, email: string}>}
  */
 async function getLocalAuthor(fs) {
@@ -189,7 +189,7 @@ async function mirrorCommit(git, gitFs, dir, message, author) {
 
 /**
  * Reads the manifest describing the last sync with GitLab.
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} root
  */
 async function readManifest(fs, root) {
@@ -331,7 +331,7 @@ async function pooledMap(items, limit, fn) {
   return results;
 }
 
-/** @type {Record<string, (parsed: any, ctx: { fs: import('../fs.mjs').WebFileSystem, term?: any }) => Promise<string | undefined>>} */
+/** @type {Record<string, (parsed: any, ctx: { fs: import('../services/fs.mjs').WebFileSystem, term?: any }) => Promise<string | undefined>>} */
 const handlers = {
   /**
    * gitlab clone <project> [--host H] [--ref R] [--dir D]
