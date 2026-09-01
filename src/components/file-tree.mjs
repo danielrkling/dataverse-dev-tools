@@ -4,6 +4,7 @@ import "@pierre/trees/web-components"; // registers <file-tree-container> + styl
 import { bus } from "../services/bus.mjs";
 import { workspace, listHandles, deleteHandle } from "../services/workspace.mjs";
 import { WebFileSystem } from "../services/fs.mjs";
+import { discardFileChanges, getGitStatusEntries, readHeadFile } from "../services/git-status.mjs";
 import { SCAN_IGNORED, scanPaths } from "../utils/scan-paths.mjs";
 
 /**
@@ -48,6 +49,12 @@ export class FileTreePane extends LitElement {
         this._emptyElMenu = null;
         /** @type {boolean} true while a drag-move is being applied to the fs */
         this._moving = false;
+        /** @type {number} generation guard for git-status refreshes */
+        this._gitStatusGeneration = 0;
+        /** @type {Map<string, import("@pierre/trees").GitStatus>} path -> last computed status */
+        this._gitStatuses = new Map();
+        /** @type {ReturnType<typeof setTimeout> | null} debounced git-status refresh timer */
+        this._gitStatusTimer = null;
     }
 
     static styles = css`
@@ -303,6 +310,7 @@ export class FileTreePane extends LitElement {
         this._unsubs.push(
             bus.on("workspace:open", () => this.rebuild()),
             bus.on("fs:changed", (e) => this._onFsChanged(e.detail)),
+            bus.on("fs:changed", () => this._scheduleGitStatusRefresh()),
         );
 
         // Keyboard shortcuts acting on the tree selection.
@@ -481,6 +489,37 @@ export class FileTreePane extends LitElement {
 
         // Files are loaded — drop the spinner.
         this._loadingEl.classList.remove("visible");
+
+        // Git status badges (no-op when the workspace isn't a repo).
+        this._refreshGitStatus();
+    }
+
+    /**
+     * Refresh the git status badges shown by the tree. The library renders
+     * per-file badges AND a "contains changes" marker on ancestor folders,
+     * so only file entries are needed here.
+     */
+    async _refreshGitStatus() {
+        const fs = workspace.fs;
+        if (!fs || !this._tree) return;
+        const generation = ++this._gitStatusGeneration;
+        try {
+            const entries = await getGitStatusEntries(fs);
+            if (generation !== this._gitStatusGeneration) return; // superseded
+            this._gitStatuses = new Map(entries.map((e) => [e.path, e.status]));
+            this._tree.setGitStatus(entries);
+        } catch (error) {
+            console.error("Git status refresh failed:", error);
+        }
+    }
+
+    /** Debounce git-status refreshes — fs:changed fires per file. */
+    _scheduleGitStatusRefresh() {
+        if (this._gitStatusTimer) clearTimeout(this._gitStatusTimer);
+        this._gitStatusTimer = setTimeout(() => {
+            this._gitStatusTimer = null;
+            this._refreshGitStatus();
+        }, 500);
     }
 
     /**
@@ -505,7 +544,12 @@ export class FileTreePane extends LitElement {
      */
     async _onFsChanged({ path, type }) {
         const tree = this._tree;
-        if (!tree || !workspace.fs) return;
+        if (!tree || !workspace.fs || !path) return;
+
+        // Never surface git internals (or other scan-ignored entries) as tree
+        // rows: .git churns constantly (index writes etc.) and its entries
+        // aren't openable files.
+        if (SCAN_IGNORED.includes(path.split("/")[0]) || path.startsWith(".git/")) return;
 
         if (type === "deleted") {
             this._removeFromTree(path);
@@ -608,6 +652,38 @@ export class FileTreePane extends LitElement {
     }
 
     /**
+     * Discard uncommitted workdir changes to a file (restore from HEAD).
+     * The fs observer + git-status refresh pick up the restore afterwards.
+     * @param {string} path clean path
+     */
+    async _discardChanges(path) {
+        if (!workspace.fs) return;
+        if (!confirm(`Discard uncommitted changes to ${path}? This cannot be undone.`)) return;
+        try {
+            await discardFileChanges(workspace.fs, path);
+            this._scheduleGitStatusRefresh();
+        } catch (error) {
+            console.error(`Failed to discard changes to ${path}:`, error);
+            alert(`Discard failed: ${/** @type {any} */ (error).message}`);
+        }
+    }
+
+    /**
+     * Open the Monaco diff view for a file: HEAD version vs the live buffer.
+     * @param {string} path clean path
+     */
+    async _showDiff(path) {
+        const fs = workspace.fs;
+        if (!fs) return;
+        try {
+            const original = await readHeadFile(fs, path);
+            bus.emit("editor:diff", { path, original });
+        } catch (error) {
+            console.error(`Failed to compute diff for ${path}:`, error);
+        }
+    }
+
+    /**
      * Context menu rendered by @pierre/trees' composition API.
      * @param {{ path: string, name: string, kind: "directory" | "file" }} item
      * @param {{ close: (options?: { restoreFocus?: boolean }) => void }} context
@@ -628,6 +704,13 @@ export class FileTreePane extends LitElement {
             );
         }
         entries.push({ label: "Copy Path", fn: () => navigator.clipboard?.writeText(path) });
+        if (!isDir) {
+            entries.push({ label: "Show Diff", fn: () => this._showDiff(path) });
+            const status = this._gitStatuses.get(path);
+            if (status && status !== "untracked" && status !== "ignored") {
+                entries.push({ label: "Discard Changes…", fn: () => this._discardChanges(path) });
+            }
+        }
         entries.push("-");
         entries.push(
             { label: "Cut", fn: () => (this._clipboard = { path, isDir, cut: true }) },

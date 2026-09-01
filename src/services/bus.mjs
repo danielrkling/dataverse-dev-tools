@@ -8,6 +8,7 @@
  * - "workspace:open"   { fs: WebFileSystem }              a folder became active
  * - "fs:changed"       { path: string, type: ChangeType } a path changed on disk
  * - "editor:open"      { path: string }                   request to open a file in the editor
+ * - "editor:diff"      { path: string, original: string }  request to show a HEAD-vs-buffer diff
  *
  * @typedef {"modified" | "deleted" | "moved"} FsChangeType
  */
@@ -50,6 +51,7 @@ class EventBus extends EventTarget {
  *     "workspace:open": import("./fs.mjs").WebFileSystem,
  *     "fs:changed": { path: string, type: FsChangeType },
  *     "editor:open": { path: string },
+ *     "editor:diff": { path: string, original: string },
  *     "dataverse:uploaded": { files: [string, string][] },
  *     "dataverse:published": { files: [string, string][] },
  *     "npm:install": { name?: string },

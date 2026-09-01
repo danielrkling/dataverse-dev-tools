@@ -1,7 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { bus } from "../services/bus.mjs";
 import { workspace } from "../services/workspace.mjs";
-import { editorState, ensureMonaco } from "../services/editor.mjs";
+import { editorState, ensureMonaco, languageForPath } from "../services/editor.mjs";
 
 /**
  * Center panel: Monaco editor with a tab strip (LitElement).
@@ -112,6 +112,18 @@ export class EditorPane extends LitElement {
         // Slotted into the shadow tree below the tab strip.
         /** @type {HTMLDivElement} */
         this._mount = Object.assign(document.createElement("div"), { className: "editor-mount" });
+
+        // Light-DOM mount for the git diff view (same styling constraints as
+        // _mount). Hidden until a diff is requested from the file tree.
+        /** @type {HTMLDivElement} */
+        this._diffMount = Object.assign(document.createElement("div"), { className: "editor-mount" });
+        Object.assign(this._diffMount.style, { display: "none", flexDirection: "column" });
+        /** @type {import("monaco-editor").editor.IStandaloneDiffEditor | null} */
+        this._diffEditor = null;
+        /** @type {HTMLSpanElement | null} diff header title */
+        this._diffTitle = null;
+        /** @type {import("monaco-editor").editor.ITextModel | null} ephemeral HEAD-content model */
+        this._diffOriginalModel = null;
     }
 
     render() {
@@ -150,8 +162,13 @@ export class EditorPane extends LitElement {
             bus.on("workspace:open", () => this._reset()),
         );
 
-        // (Re-)attach the light-DOM Monaco mount below the tab strip.
+        // (Re-)attach the light-DOM Monaco mounts below the tab strip.
         if (this._mount.parentNode !== this) this.appendChild(this._mount);
+        if (this._diffMount.parentNode !== this) this.appendChild(this._diffMount);
+
+        this._unsubs.push(
+            bus.on("editor:diff", (e) => this.showDiff(e.detail.path, e.detail.original)),
+        );
 
         // Monaco is NOT loaded here — it loads on the first file open.
         document.addEventListener("keydown", (e) => this._onDocumentKeyDown(e));
@@ -215,6 +232,10 @@ export class EditorPane extends LitElement {
         }
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
+        this._diffEditor?.dispose();
+        this._diffEditor = null;
+        this._diffOriginalModel?.dispose();
+        this._diffOriginalModel = null;
         this._editor?.dispose();
         this._editor = null;
     }
@@ -230,6 +251,8 @@ export class EditorPane extends LitElement {
      */
     async openFile(path) {
         try {
+            // Opening a regular file closes the git diff view.
+            this._closeDiff();
             // Lazily boot the editor on the very first file open.
             await this._ensureEditor();
             const model = await editorState.getModel(path);
@@ -240,6 +263,91 @@ export class EditorPane extends LitElement {
             await this._setActive(path, model);
         } catch (error) {
             console.error(`Failed to open ${path}:`, error);
+        }
+    }
+
+    /**
+     * Show a side-by-side diff of a file: original (git HEAD content, empty
+     * for untracked files) vs the live Monaco model (includes unsaved edits).
+     * The regular editor stays mounted but hidden; clicking a tab or closing
+     * the diff returns to it.
+     * @param {string} path clean path
+     * @param {string} original HEAD content of the file
+     */
+    async showDiff(path, original) {
+        try {
+            const monaco = await ensureMonaco();
+            await this._ensureEditor();
+            if (!this.isConnected) return;
+
+            if (!this._diffEditor) {
+                // Header: file name + close affordance, styled inline because
+                // this DOM lives in the light DOM (outside the shadow root).
+                const bar = document.createElement("div");
+                bar.style.cssText =
+                    "display:flex;align-items:center;justify-content:space-between;" +
+                    "padding:4px 8px;background:#181818;border-bottom:1px solid #333;" +
+                    "font-size:12px;color:#a0a0a0;flex-shrink:0;";
+                this._diffTitle = Object.assign(document.createElement("span"), { textContent: path });
+                const closeBtn = document.createElement("button");
+                closeBtn.textContent = "✕ Close diff";
+                closeBtn.style.cssText =
+                    "all:unset;cursor:pointer;padding:2px 8px;border-radius:3px;color:#d4d4d4;";
+                closeBtn.addEventListener("mouseenter", () => (closeBtn.style.background = "#333"));
+                closeBtn.addEventListener("mouseleave", () => (closeBtn.style.background = ""));
+                closeBtn.addEventListener("click", () => this._closeDiff());
+                bar.append(this._diffTitle, closeBtn);
+                const editorDiv = document.createElement("div");
+                editorDiv.style.cssText = "flex:1;min-height:0;";
+                this._diffMount.style.display = "flex";
+                this._diffMount.append(bar, editorDiv);
+
+                this._diffEditor = monaco.editor.createDiffEditor(editorDiv, {
+                    automaticLayout: true,
+                    theme: "vs-dark",
+                    fontSize: 13,
+                    fontFamily: "'Consolas', 'Monaco', monospace",
+                    readOnly: true,
+                    renderSideBySide: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: true,
+                });
+            } else {
+                this._diffMount.style.display = "flex";
+                if (this._diffTitle) this._diffTitle.textContent = path;
+            }
+
+            // Reuse the file's live model (so local edits show up) and build
+            // an ephemeral model for the HEAD content. IMPORTANT: reset the
+            // diff editor BEFORE disposing the previous original model —
+            // disposing a model still attached to the widget throws
+            // "TextModel got disposed before DiffEditorWidget model got reset".
+            this._diffEditor?.setModel(null);
+            this._diffOriginalModel?.dispose();
+            const modified = await editorState.getModel(path);
+            this._diffOriginalModel = monaco.editor.createModel(original, languageForPath(path));
+            this._diffEditor?.setModel({ original: this._diffOriginalModel, modified });
+
+            // Hide the regular editor while the diff is open.
+            this._mount.style.display = "none";
+            this.renderRoot.querySelector("#placeholder").style.display = "none";
+        } catch (error) {
+            console.error(`Failed to show diff for ${path}:`, error);
+        }
+    }
+
+    /** Close the diff view and restore the regular editor. */
+    _closeDiff() {
+        if (!this._diffEditor || this._diffMount.style.display === "none") return;
+        this._diffMount.style.display = "none";
+        this._diffEditor.setModel(null);
+        this._diffOriginalModel?.dispose();
+        this._diffOriginalModel = null;
+        this._mount.style.display = "";
+        if (editorState.activePath) {
+            this.renderRoot.querySelector("#placeholder").style.display = "none";
+        } else {
+            this.renderRoot.querySelector("#placeholder").style.display = "";
         }
     }
 
@@ -420,6 +528,8 @@ export class EditorPane extends LitElement {
 
     /** New workspace opened: drop all tabs and models. */
     _reset() {
+        this._closeDiff();
+        this._diffMount.style.display = "none";
         editorState.reset();
         this._viewStates.clear();
         this._editor?.setModel(null);

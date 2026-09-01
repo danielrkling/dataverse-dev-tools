@@ -368,6 +368,8 @@ class EditorStateImpl {
             }
             depFiles.sort((a, b) => rank(a) - rank(b));
             if (depNames.length > 0) {
+                // Hydration diagnostics are dev-noise in normal use — keep
+                // them at debug level so they don't spam the console.
                 const perDep = {};
                 for (const f of depFiles) {
                     const pkg = f.replace(/^node_modules\//, "").replace(/\/[^/]+$/, "");
@@ -375,7 +377,7 @@ class EditorStateImpl {
                     if (/\.(d\.ts|d\.mts|d\.cts)$/.test(f)) perDep[pkg].decls++;
                     else perDep[pkg].pkgJson++;
                 }
-                console.log(
+                console.debug(
                     "[hydrate] deps:", depNames.join(", "),
                     "| collected:", depFiles.length, "file(s) —",
                     Object.entries(perDep)
@@ -384,7 +386,7 @@ class EditorStateImpl {
                 );
                 for (const name of depNames) {
                     if (!depFiles.some((f) => f.startsWith(`node_modules/${name}/`))) {
-                        console.warn(`[hydrate] no files collected for "${name}" — not installed, or no package.json/.d.* inside (types won't resolve)`);
+                        console.debug(`[hydrate] no files collected for "${name}" — not installed, or no package.json/.d.* inside (types won't resolve)`);
                     }
                 }
             }
@@ -424,7 +426,7 @@ class EditorStateImpl {
                 await new Promise((r) => setTimeout(r, 0));
             }
             if (loaded >= HYDRATION_CAP) {
-                console.warn(`[hydrate] hit HYDRATION_CAP (${HYDRATION_CAP}) — some files were NOT hydrated`);
+                console.debug(`[hydrate] hit HYDRATION_CAP (${HYDRATION_CAP}) — some files were NOT hydrated`);
             }
             if (depNames.length > 0) {
                 for (const name of depNames) {
@@ -435,9 +437,9 @@ class EditorStateImpl {
                         (p) => p.startsWith(`node_modules/${name}/`) && /\.(d\.ts|d\.mts|d\.cts)$/.test(p),
                     );
                     if (decls.length === 0) {
-                        console.warn(`[hydrate] "${name}": zero declarations hydrated — IntelliSense for this package will fail`);
+                        console.debug(`[hydrate] "${name}": zero declarations hydrated — IntelliSense for this package will fail`);
                     } else {
-                        console.log(`[hydrate] "${name}": ${decls.length} declaration(s), e.g. ${decls[0]}`);
+                        console.debug(`[hydrate] "${name}": ${decls.length} declaration(s), e.g. ${decls[0]}`);
                     }
                 }
             }
@@ -533,7 +535,7 @@ bus.on("npm:uninstall", ({ names }) => {
  * file by file — no full re-scan needed.
  */
 bus.on("fs:changed", async ({ path, type }) => {
-    if (!path.startsWith("node_modules/")) return;
+    if (!path || !path.startsWith("node_modules/")) return;
     if (!workspace.fs) return;
 
     if (type === "deleted") {

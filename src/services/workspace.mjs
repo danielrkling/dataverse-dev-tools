@@ -101,8 +101,14 @@ async function createObserver() {
 
     const observer = new FileSystemObserver((records) => {
         for (const record of records) {
-            const path = record.relativePathComponents.join("/");
-            const name = record.relativePathComponents.at(-1);
+            // Defensive: observer records (esp. during write bursts like git
+            // clone) can arrive with missing/malformed relativePathComponents.
+            // Emitting a { path: undefined } event crashes every listener.
+            const components = record?.relativePathComponents;
+            if (!Array.isArray(components)) continue;
+            const path = components.join("/");
+            if (!path) continue; // root-level change — per-file handlers can't use it
+            const name = components.at(-1);
             if (name === "desktop.ini" || (name && name.endsWith(".crswap"))) continue;
 
             /** @type {"modified" | "deleted" | undefined} */

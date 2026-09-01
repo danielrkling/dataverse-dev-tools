@@ -672,6 +672,22 @@ const handlers = {
     return output.join('\n');
   },
 
+  async restore(parsed, { fs }) {
+    const { git, gitFs } = await gitCtx(fs);
+    const filepath = parsed.filepath;
+    try {
+      // No ref = current branch; filepaths + force = discard workdir changes
+      // (also restores workdir-deleted files).
+      await git.checkout({ fs: gitFs, dir: fs.cwd, filepaths: [filepath], force: true });
+      return `Discarded changes to ${filepath}`;
+    } catch (/** @type {any} */ e) {
+      if (e.code === 'NotFoundError' || e.code === 'PathNotFoundError') {
+        return `${filepath} is not tracked by git (nothing to discard)`;
+      }
+      throw e;
+    }
+  },
+
   async help(parsed, { fs }) {
     const names = Object.keys(handlers).filter((k) => k !== 'help').join(', ');
     return [
@@ -689,6 +705,7 @@ const handlers = {
       '  git push                                  # push current branch to origin',
       '  git pull                                  # fast-forward from origin',
       '  git diff                                  # unified diff of changes',
+      '  git restore <file>                        # discard workdir changes to a file',
     ].join('\n');
   },
 };
@@ -775,6 +792,9 @@ const subcommandParsers = {
     filepath: optional(argument(string({ metavar: 'FILE' }))),
     includeUntracked: optional(option('--include-untracked')),
   }), (r) => ({ subcommand: 'diff', ...r })),
+  restore: map(object({
+    filepath: argument(string({ metavar: 'FILE' })),
+  }), (r) => ({ subcommand: 'restore', ...r })),
   help: map(object({}), () => ({ subcommand: 'help' })),
 };
 
@@ -799,6 +819,7 @@ const gitParser = or(
     command('reset', subcommandParsers.reset),
     command('creds', subcommandParsers.creds),
     command('diff', subcommandParsers.diff),
+    command('restore', subcommandParsers.restore),
     command('help', subcommandParsers.help),
   ),
 );
