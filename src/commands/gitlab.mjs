@@ -674,6 +674,31 @@ const handlers = {
   },
 };
 
+/**
+ * Programmatic entry points used by the `git` command: repos cloned via
+ * `gitlab clone` carry a .git/gitlab.json manifest and sync through the
+ * CORS-safe REST API. `git push`/`git pull` detect the manifest and call
+ * these instead of isomorphic-git's smart-HTTP transfer.
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {any} term
+ * @param {{ force?: boolean }} [options]
+ */
+export async function apiPull(fs, term, options = {}) {
+  return handlers.pull({ force: options.force }, { fs, term });
+}
+
+/**
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {any} term
+ * @param {{ message?: string, branch?: string, force?: boolean }} [options]
+ */
+export async function apiPush(fs, term, options = {}) {
+  return handlers.push(
+    { message: options.message, branch: options.branch, force: options.force },
+    { fs, term },
+  );
+}
+
 const subcommandParsers = {
   clone: map(object({
     project: argument(string({ metavar: 'PROJECT' })),

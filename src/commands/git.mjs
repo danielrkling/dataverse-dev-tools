@@ -229,28 +229,95 @@ async function makeOnAuth(fs, urls = []) {
   };
 }
 
-const http = {
-  /**
-   * Unlike a naive fetch wrapper this must NOT throw on non-2xx:
-   * isomorphic-git inspects statusCode itself (401 -> auth flow, 404 -> repo
-   * not found, etc.) and throwing here breaks those flows.
-   * @param {{ url: string, method: string, headers: Record<string, string>, body: any }} opts
-   * @returns {Promise<{ url: string, method: string, headers: Record<string, string>, body: Uint8Array[], statusCode: number, statusMessage: string }>}
-   */
-  async request(opts) {
-    const { url, method, headers, body } = opts;
-    const response = await fetch(url, { method, headers, body });
-    const buffer = await response.arrayBuffer();
-    return {
-      url: response.url,
-      method,
-      headers: Object.fromEntries(response.headers.entries()),
-      body: [new Uint8Array(buffer)],
-      statusCode: response.status,
-      statusMessage: response.statusText,
-    };
-  },
-};
+// ---------------------------------------------------------------------------
+// CORS proxies (repo-scoped inside <repoRoot>/.git, global fallback before
+// the first clone — same layout as the credential store)
+// ---------------------------------------------------------------------------
+
+/** Global bootstrap proxy store, used only when no repo exists yet. */
+const GLOBAL_PROXIES_FILE = '/.gitproxies.json';
+
+/**
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @returns {Promise<Record<string, string>>} host -> proxy URL template
+ */
+async function loadProxies(fs) {
+  try {
+    const root = await findRepoRoot(fs);
+    return JSON.parse(await fs.readFile(`${root}/.git/proxies.json`, { encoding: 'utf8' }));
+  } catch {}
+  try {
+    return JSON.parse(await fs.readFile(GLOBAL_PROXIES_FILE, { encoding: 'utf8' }));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {Record<string, string>} proxies
+ */
+async function saveProxies(fs, proxies) {
+  // Same rule as saveCreds: never fabricate a .git directory outside a repo
+  // (it would break findRepoRoot), so fall back to the global store.
+  let target = GLOBAL_PROXIES_FILE;
+  try {
+    const root = await findRepoRoot(fs);
+    if (await fs.exists(`${root}/.git`)) target = `${root}/.git/proxies.json`;
+  } catch {}
+  await fs.writeFile(target, JSON.stringify(proxies, null, 2));
+}
+
+/**
+ * Routes a git smart-HTTP URL through the per-host CORS proxy, if one is
+ * configured. Templates: a proxy containing "{url}" gets the (encoded) URL
+ * substituted; otherwise the URL is appended to the proxy origin
+ * (e.g. "https://cors.isomorphic-git.org" + "/" + original URL).
+ * @param {string} url
+ * @param {Record<string, string>} proxies
+ * @returns {string}
+ */
+function applyProxy(url, proxies) {
+  try {
+    const proxy = proxies[new URL(url).host];
+    if (!proxy) return url;
+    if (proxy.includes('{url}')) return proxy.replace('{url}', encodeURIComponent(url));
+    return `${proxy.replace(/\/+$/, '')}/${url}`;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Builds the isomorphic-git http layer, routing requests through any
+ * per-host CORS proxy the user configured (`git proxy set <host> <url>`).
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ */
+async function makeHttp(fs) {
+  const proxies = await loadProxies(fs);
+  return {
+    /**
+     * Unlike a naive fetch wrapper this must NOT throw on non-2xx:
+     * isomorphic-git inspects statusCode itself (401 -> auth flow, 404 -> repo
+     * not found, etc.) and throwing here breaks those flows.
+     * @param {{ url: string, method: string, headers: Record<string, string>, body: any }} opts
+     * @returns {Promise<{ url: string, method: string, headers: Record<string, string>, body: Uint8Array[], statusCode: number, statusMessage: string }>}
+     */
+    async request(opts) {
+      const { url, method, headers, body } = opts;
+      const response = await fetch(applyProxy(url, proxies), { method, headers, body });
+      const buffer = await response.arrayBuffer();
+      return {
+        url: response.url,
+        method,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: [new Uint8Array(buffer)],
+        statusCode: response.status,
+        statusMessage: response.statusText,
+      };
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Diff rendering
@@ -333,6 +400,28 @@ export function lineDiff(oldText, newText, context = 3) {
     k = end;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// GitLab API-synced project detection
+// ---------------------------------------------------------------------------
+
+const GITLAB_MANIFEST = '.git/gitlab.json';
+
+/**
+ * Detects a project cloned via 'gitlab clone' (manifest written by the
+ * gitlab command). Those repos keep a real local .git (so status, diff,
+ * commit, restore and the tree badges all work with isomorphic-git), but
+ * push/pull must go through the CORS-safe GitLab REST API.
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @returns {Promise<any | null>}
+ */
+async function readGitlabManifest(fs) {
+  try {
+    return JSON.parse(await fs.readFile(`${fs.cwd}/${GITLAB_MANIFEST}`, { encoding: 'utf8' }));
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +575,7 @@ const handlers = {
 
   async clone(parsed, { fs, term }) {
     const { git, gitFs } = await gitCtx(fs);
+    const http = await makeHttp(fs);
     const url = parsed.url;
     // Clone into a subdirectory named after the repo unless one was given.
     let dir = parsed.dir;
@@ -495,20 +585,35 @@ const handlers = {
     }
     const onAuth = await makeOnAuth(fs, [url]);
     term.log(`Cloning ${url} into ${dir}/...`);
-    await git.clone({
-      fs: gitFs,
-      dir: `${fs.cwd}/${dir}`.replace(/\/+/g, '/'),
-      url,
-      http,
-      onAuth,
-      singleBranch: !!parsed.depth,
-      depth: parsed.depth,
-      ref: parsed.branch,
-      onProgress: (/** @param {any} ev */ (ev) => {
-        if (ev.phase === 'received') return;
-        term.log(`${ev.phase}: ${ev.loaded}/${ev.total}`);
-      }),
-    });
+    try {
+      await git.clone({
+        fs: gitFs,
+        dir: `${fs.cwd}/${dir}`.replace(/\/+/g, '/'),
+        url,
+        http,
+        onAuth,
+        singleBranch: !!parsed.depth,
+        depth: parsed.depth,
+        ref: parsed.branch,
+        onProgress: (/** @param {any} ev */ (ev) => {
+          if (ev.phase === 'received') return;
+          term.log(`${ev.phase}: ${ev.loaded}/${ev.total}`);
+        }),
+      });
+    } catch (/** @type {any} */ e) {
+      // Browser fetch failures here are almost always CORS: the git
+      // endpoints of github.com (and some self-hosted GitLabs) don't send
+      // Access-Control-Allow-Origin.
+      if (/Failed to fetch|NetworkError|CORS|Load failed/i.test(e?.message ?? '') || e instanceof TypeError) {
+        return [
+          `Direct git access to ${url} failed (the browser blocked it — CORS).`,
+          'Options:',
+          '  git proxy set <host> <proxy-url>   # route this host through a CORS proxy',
+          '  gitlab clone <group/project>       # GitLab: REST-based clone, no proxy needed',
+        ].join('\n');
+      }
+      throw e;
+    }
     // Remember origin so push/pull work right away.
     const repoRoot = `${fs.cwd}/${dir}`.replace(/\/+/g, '/');
     await fs.writeFile(`${repoRoot}/.git/remotes.json`, JSON.stringify({ origin: { url } }, null, 2));
@@ -517,6 +622,7 @@ const handlers = {
 
   async fetch(parsed, { fs, term }) {
     const { git, gitFs } = await gitCtx(fs);
+    const http = await makeHttp(fs);
     const remote = await resolveRemote(fs, parsed.remote);
     const onAuth = await makeOnAuth(fs, [remote.url]);
     term.log(`Fetching ${remote.name} (${remote.url})...`);
@@ -532,7 +638,13 @@ const handlers = {
   },
 
   async pull(parsed, { fs, term }) {
+    // GitLab API-synced project: pull through the REST API (compare endpoint).
+    if (await readGitlabManifest(fs)) {
+      const gitlab = await import('./gitlab.mjs');
+      return gitlab.apiPull(fs, term, { force: parsed.force });
+    }
     const { git, gitFs } = await gitCtx(fs);
+    const http = await makeHttp(fs);
     const remote = await resolveRemote(fs, parsed.remote);
     const onAuth = await makeOnAuth(fs, [remote.url]);
     const branch = parsed.branch || await git.currentBranch({ fs: gitFs, dir: fs.cwd, fullname: true });
@@ -550,7 +662,17 @@ const handlers = {
   },
 
   async push(parsed, { fs, term }) {
+    // GitLab API-synced project: push through the REST commits API.
+    if (await readGitlabManifest(fs)) {
+      const gitlab = await import('./gitlab.mjs');
+      return gitlab.apiPush(fs, term, {
+        message: parsed.message || 'Update from dataverse-webresource-ide',
+        branch: parsed.branch,
+        force: parsed.force,
+      });
+    }
     const { git, gitFs } = await gitCtx(fs);
+    const http = await makeHttp(fs);
     const remote = await resolveRemote(fs, parsed.remote);
     const onAuth = await makeOnAuth(fs, [remote.url]);
     const branchRef = await git.currentBranch({ fs: gitFs, dir: fs.cwd, fullname: true });
@@ -688,6 +810,32 @@ const handlers = {
     }
   },
 
+  async proxy(parsed, { fs }) {
+    const proxies = await loadProxies(fs);
+    if (parsed.proxyAction === 'set') {
+      const host = hostOf(parsed.host);
+      proxies[host] = parsed.url;
+      await saveProxies(fs, proxies);
+      return `Proxy for ${host} -> ${parsed.url}`;
+    }
+    if (parsed.proxyAction === 'remove') {
+      const host = hostOf(parsed.host);
+      if (!proxies[host]) return `No proxy stored for ${host}`;
+      delete proxies[host];
+      await saveProxies(fs, proxies);
+      return `Removed proxy for ${host}`;
+    }
+    const entries = Object.entries(proxies);
+    if (entries.length === 0) {
+      return [
+        'no proxies configured. Example:',
+        '  git proxy set github.com https://cors.isomorphic-git.org',
+        '  git proxy set git.example.com https://my-proxy.example.com/{url}',
+      ].join('\n');
+    }
+    return entries.map(([host, url]) => `${host}\t${url}`).join('\n');
+  },
+
   async help(parsed, { fs }) {
     const names = Object.keys(handlers).filter((k) => k !== 'help').join(', ');
     return [
@@ -702,6 +850,10 @@ const handlers = {
       '  git commit -a -m "msg"                    # stage all + commit',
       '  git remote add origin https://gitlab.com/group/repo.git',
       '  git creds set gitlab.com <PAT>            # store a token for private repos (per-repo once inside one, global before first clone)',
+      '  git proxy set github.com https://cors.isomorphic-git.org',
+      '  git proxy set host https://my-proxy/{url}  # route git HTTP for <host> through a CORS proxy',
+      '  git proxy remove <host>                    # stop proxying a host',
+      '  git proxy                                  # list configured proxies',
       '  git push                                  # push current branch to origin',
       '  git pull                                  # fast-forward from origin',
       '  git diff                                  # unified diff of changes',
@@ -788,6 +940,20 @@ const subcommandParsers = {
       credsAction: constant('list'),
     }), (r) => ({ subcommand: 'creds', ...r })),
   ), (r) => r),
+  proxy: map(or(
+    map(object({
+      proxyAction: constant('set'),
+      host: argument(string({ metavar: 'HOST' })),
+      url: argument(string({ metavar: 'URL' })),
+    }), (r) => ({ subcommand: 'proxy', ...r })),
+    map(object({
+      proxyAction: constant('remove'),
+      host: argument(string({ metavar: 'HOST' })),
+    }), (r) => ({ subcommand: 'proxy', ...r })),
+    map(object({
+      proxyAction: constant('list'),
+    }), (r) => ({ subcommand: 'proxy', ...r })),
+  ), (r) => r),
   diff: map(object({
     filepath: optional(argument(string({ metavar: 'FILE' }))),
     includeUntracked: optional(option('--include-untracked')),
@@ -818,6 +984,7 @@ const gitParser = or(
     command('remote', subcommandParsers.remote),
     command('reset', subcommandParsers.reset),
     command('creds', subcommandParsers.creds),
+    command('proxy', subcommandParsers.proxy),
     command('diff', subcommandParsers.diff),
     command('restore', subcommandParsers.restore),
     command('help', subcommandParsers.help),
@@ -836,7 +1003,7 @@ export default createCommand({
     const handler = handlers[/** @type {keyof typeof handlers} */ (subcommand)];
     if (!handler) return `Unknown git subcommand: ${subcommand}. Try 'git help'.`;
 
-    if (!['init', 'clone', 'creds'].includes(subcommand)) {
+    if (!['init', 'clone', 'creds', 'proxy'].includes(subcommand)) {
       const hasGit = await term.fs.exists('.git');
       if (!hasGit) return "Not a git repository. Run 'git init' first.";
     }
