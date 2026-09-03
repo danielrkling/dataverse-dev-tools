@@ -1,5 +1,31 @@
 import { command, or, object, optional, argument, string, option, integer, constant, map, message } from '@optique/core';
+import { Effect } from "effect";
 import { createCommand } from "../services/commands.mjs";
+import { GitStatus, GitStatusLive } from "../services/git-status.mjs";
+
+/**
+ * Typed git operation failure (JSDoc-friendly _tag factory — see
+ * effects/dataverse-service.mjs). Carries the subcommand so the registry's
+ * Cause.pretty output shows a single friendly line.
+ * @typedef {{ _tag: "GitError", operation: string, cause: unknown, message: string }} GitError
+ */
+export const GitError = (/** @type {{ operation: string, cause: unknown }} */ props) => ({
+  _tag: /** @type {const} */ ("GitError"),
+  message: /** @type {any} */ (props.cause)?.message ?? `git ${props.operation} failed`,
+  ...props,
+});
+
+/**
+ * Build an Error carrying a single friendly line (no stack) — Cause.pretty
+ * in the registry then renders exactly one line per command failure.
+ * @param {string} message
+ * @returns {Error}
+ */
+const friendlyError = (message) => {
+  const err = new Error(message);
+  delete err.stack;
+  return err;
+};
 
 /** @returns {Promise<any>} */
 async function getGit() {
@@ -450,18 +476,90 @@ async function resolveRemote(fs, name) {
   return { name: key, ...remotes[key] };
 }
 
+/**
+ * Directories never walked by status/diff/add/commit scans. Used as the
+ * default ignore set when the repo has no .gitignore; names parsed from a
+ * .gitignore are merged on top.
+ */
+const DEFAULT_IGNORED_DIRS = ['node_modules', '.git'];
+
+/**
+ * Top-level directory names to skip during workdir scans: the defaults plus
+ * any plain (non-glob, non-negated) names from <cwd>/.gitignore.
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @returns {Promise<Set<string>>}
+ */
+async function ignoredTopDirs(fs) {
+    const ignored = new Set(DEFAULT_IGNORED_DIRS);
+    try {
+        const raw = await fs.readFile(`${fs.cwd}/.gitignore`, { encoding: 'utf8' });
+        for (let line of String(raw).split('\n')) {
+            line = line.trim();
+            if (!line || line.startsWith('#') || line.startsWith('!')) continue;
+            const name = line.replace(/\/+$/, '').split('/').pop() ?? '';
+            if (name && !name.includes('*')) ignored.add(name);
+        }
+    } catch { /* no .gitignore — defaults only */ }
+    return ignored;
+}
+
+/**
+ * statusMatrix with ignored directories (node_modules et al.) filtered out of
+ * the walk. isomorphic-git's statusMatrix does NOT apply .gitignore, so it
+ * would otherwise traverse — and offer to stage — everything under the repo.
+ * We scan only top-level entries (dirs minus the ignore set, plus top files);
+ * un-ignored directories are recursed by statusMatrix itself.
+ * @param {any} git isomorphic-git module
+ * @param {any} gitFs wrapped fs (makeGitFs)
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @returns {Promise<[string, number, number, number][]>}
+ */
+export async function workdirMatrix(git, gitFs, fs) {
+    const ignored = await ignoredTopDirs(fs);
+    /** @type {string[] | undefined} */
+    let filepaths;
+    try {
+        const tops = await fs.readdir(fs.cwd, { types: true });
+        filepaths = tops
+            .filter(([name, kind]) => kind === 'file' || !ignored.has(name))
+            .map(([name]) => name);
+    } catch { /* fall back to a full walk */ }
+    if (!filepaths || filepaths.length === 0) filepaths = ['.'];
+    return git.statusMatrix({ fs: gitFs, dir: fs.cwd, filepaths });
+}
+
 /** @type {Record<string, (parsed: any, ctx: { fs: import('../services/fs.mjs').WebFileSystem, term?: any }) => Promise<string | undefined>>} */
-const handlers = {
-  async init(parsed, { fs }) {
+const handlers = {  async init(parsed, { fs }) {
     const { git, gitFs } = await gitCtx(fs);
     await git.init({ fs: gitFs, dir: fs.cwd });
-    return `Initialized empty git repository in ${fs.cwd}/.git`;
+    // Seed a .gitignore (node_modules et al. — matches workdirMatrix's
+    // default ignore set) unless the user already has one.
+    let created = false;
+    if (!(await fs.exists(`${fs.cwd}/.gitignore`))) {
+      const defaultIgnore = [
+        '# Dependencies',
+        'node_modules/',
+        '',
+        '# Build output',
+        'dist/',
+        'build/',
+        'out/',
+        '',
+        '# Logs & OS',
+        '*.log',
+        '.DS_Store',
+        '',
+      ].join('\n');
+      await fs.writeFile(`${fs.cwd}/.gitignore`, defaultIgnore, { encoding: 'utf8' });
+      created = true;
+    }
+    return `Initialized empty git repository in ${fs.cwd}/.git${created ? ' (created .gitignore)' : ''}`;
   },
 
   async status(parsed, { fs }) {
     const { git, gitFs } = await gitCtx(fs);
     const branch = await git.currentBranch({ fs: gitFs, dir: fs.cwd });
-    const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
+    const matrix = await workdirMatrix(git, gitFs, fs);
     const lines = [];
     for (const row of matrix) {
       const label = statusLabel(row);
@@ -477,7 +575,7 @@ const handlers = {
     const filepath = parsed.filepath;
 
     if (!filepath || filepath === '.') {
-      const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
+      const matrix = await workdirMatrix(git, gitFs, fs);
       let added = 0, removed = 0;
       for (const [fp, head, workdir, stage] of matrix) {
         if (workdir === 0 && stage !== 0) {
@@ -519,7 +617,7 @@ const handlers = {
     const { git, gitFs } = await gitCtx(fs);
     if (parsed.all) {
       // Stage everything (including deletions) before committing.
-      const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
+      const matrix = await workdirMatrix(git, gitFs, fs);
       for (const [fp, head, workdir, stage] of matrix) {
         if (workdir === 0 && stage !== 0) await git.remove({ fs: gitFs, dir: fs.cwd, filepath: fp });
         else if (workdir !== 0 && workdir !== stage) await git.add({ fs: gitFs, dir: fs.cwd, filepath: fp });
@@ -725,7 +823,7 @@ const handlers = {
       await git.resetIndex({ fs: gitFs, dir: fs.cwd, filepath });
       return `Unstaged ${filepath}`;
     }
-    const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
+    const matrix = await workdirMatrix(git, gitFs, fs);
     let count = 0;
     for (const [fp, head, , stage] of matrix) {
       if (stage !== head) {
@@ -758,7 +856,7 @@ const handlers = {
   async diff(parsed, { fs }) {
     const { git, gitFs } = await gitCtx(fs);
     const oid = await git.resolveRef({ fs: gitFs, dir: fs.cwd, ref: 'HEAD' }).catch(() => null);
-    const matrix = await git.statusMatrix({ fs: gitFs, dir: fs.cwd });
+    const matrix = await workdirMatrix(git, gitFs, fs);
     const changed = matrix.filter((/** @type {[string, number, number, number]} */ row) => {
       const label = statusLabel(row);
       if (!label) return false;
@@ -794,21 +892,9 @@ const handlers = {
     return output.join('\n');
   },
 
-  async restore(parsed, { fs }) {
-    const { git, gitFs } = await gitCtx(fs);
-    const filepath = parsed.filepath;
-    try {
-      // No ref = current branch; filepaths + force = discard workdir changes
-      // (also restores workdir-deleted files).
-      await git.checkout({ fs: gitFs, dir: fs.cwd, filepaths: [filepath], force: true });
-      return `Discarded changes to ${filepath}`;
-    } catch (/** @type {any} */ e) {
-      if (e.code === 'NotFoundError' || e.code === 'PathNotFoundError') {
-        return `${filepath} is not tracked by git (nothing to discard)`;
-      }
-      throw e;
-    }
-  },
+  // `git restore` is handled by executeEffect via the shared GitStatus
+  // service (services/git-status.mjs discardFileChanges) — the checkout
+  // logic lives there now and is not duplicated here.
 
   async proxy(parsed, { fs }) {
     const proxies = await loadProxies(fs);
@@ -837,7 +923,7 @@ const handlers = {
   },
 
   async help(parsed, { fs }) {
-    const names = Object.keys(handlers).filter((k) => k !== 'help').join(', ');
+    const names = [...Object.keys(handlers), 'restore'].filter((k) => k !== 'help').join(', ');
     return [
       'Usage: git <subcommand> [args]',
       '',
@@ -998,21 +1084,63 @@ export default createCommand({
   description: message`Git version control commands`,
   usage: message`git <subcommand> [args...]`,
   brief: message`Git version control commands`,
-  execute: async (parsed, term) => {
+  /**
+   * Effect-based execution: one span per subcommand (`git.<op>`), typed
+   * GitError mapped to a single friendly Error for the registry, and
+   * `git restore` routed through the shared GitStatus service.
+   *
+   * @param {any} parsed
+   * @param {import("../types/terminal.d.ts").Terminal} term
+   * @returns {Effect.Effect<string | undefined, Error>}
+   */
+  timeoutSeconds: 600, // statusMatrix walks every file — slow over FS Access API
+  executeEffect: (parsed, term) => {
     const subcommand = /** @type {string} */ (parsed.subcommand);
-    const handler = handlers[/** @type {keyof typeof handlers} */ (subcommand)];
-    if (!handler) return `Unknown git subcommand: ${subcommand}. Try 'git help'.`;
+    const span = `git.${subcommand}`;
+    return /** @type {Effect.Effect<string | undefined, Error>} */ (
+      Effect.gen(function* () {
+        const handler = handlers[/** @type {keyof typeof handlers} */ (subcommand)];
+        if (!handler && subcommand !== 'restore') {
+          return `Unknown git subcommand: ${subcommand}. Try 'git help'.`;
+        }
 
-    if (!['init', 'clone', 'creds', 'proxy'].includes(subcommand)) {
-      const hasGit = await term.fs.exists('.git');
-      if (!hasGit) return "Not a git repository. Run 'git init' first.";
-    }
+        if (!['init', 'clone', 'creds', 'proxy'].includes(subcommand)) {
+          const hasGit = yield* Effect.tryPromise({
+            try: () => term.fs.exists('.git'),
+            catch: (/** @type {unknown} */ cause) => GitError({ operation: 'exists', cause }),
+          });
+          if (!hasGit) return "Not a git repository. Run 'git init' first.";
+        }
 
-    try {
-      const result = await handler(parsed, { fs: term.fs, term });
-      if (result != null) return result;
-    } catch (/** @type {any} */ e) {
-      term.error(`${subcommand}: ${e.message}`);
-    }
+        // Discard workdir changes via the shared git-status service (same
+        // behavior: NotFoundError → friendly "not tracked" message).
+        if (subcommand === 'restore') {
+          const gitStatus = yield* GitStatus;
+          const filepath = /** @type {string} */ (/** @type {any} */ (parsed).filepath);
+          return yield* gitStatus
+            .discardFileChanges(term.fs, filepath)
+            .pipe(
+              Effect.as(`Discarded changes to ${filepath}`),
+              Effect.catchAll((/** @type {any} */ e) =>
+                e?._tag === 'GitError' && /not tracked by git/.test(e.message)
+                  ? Effect.succeed(e.message)
+                  : Effect.fail(e),
+              ),
+            );
+        }
+
+        return yield* Effect.tryPromise({
+          try: () => handler(parsed, { fs: term.fs, term }),
+          catch: (/** @type {unknown} */ cause) => GitError({ operation: subcommand, cause }),
+        });
+      }).pipe(
+        Effect.withSpan(span),
+        Effect.withLogSpan(span),
+        Effect.mapError((/** @type {GitError | any} */ e) =>
+          friendlyError(`${e.operation}: ${e.message ?? String(e)}`),
+        ),
+        Effect.provide(GitStatusLive),
+      )
+    );
   },
 });

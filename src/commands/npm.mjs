@@ -2,7 +2,53 @@ import { createCommand } from "../services/commands.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { dirname } from "../utils/path.mjs";
 import { object, optional, argument, string, message, or, command, constant, option } from "@optique/core";
+import { Effect } from "effect";
 import {bus} from "../services/bus.mjs"
+
+// ---------------------------------------------------------------------------
+// Effect plumbing for the command layer
+// ---------------------------------------------------------------------------
+
+/**
+ * Typed npm flow failure — carries the subcommand and the underlying cause so
+ * the registry's Cause.pretty output shows a single friendly line.
+ * @typedef {{ _tag: "NpmError", subcommand: string, cause: unknown, message: string }} NpmError
+ */
+const NpmError = (/** @type {{ subcommand: string, cause: unknown }} */ props) => ({
+    _tag: /** @type {const} */ ("NpmError"),
+    message: /** @type {any} */ (props.cause)?.message ?? `npm ${props.subcommand} failed`,
+    ...props,
+});
+
+/**
+ * Build an {@link NpmError} factory bound to a subcommand.
+ * @param {string} subcommand
+ * @returns {(cause: unknown) => NpmError}
+ */
+const npmFlowError = (subcommand) => (/** @type {unknown} */ cause) =>
+  NpmError({ subcommand, cause });
+
+/**
+ * Shared span pipeline for npm subcommand flows: `npm.<sub>` span paired with
+ * the mandatory log span (rendered by the terminal logger).
+ * @template A
+ * @template [E=never]
+ * @template [R=never]
+ * @param {string} sub
+ * @param {Effect.Effect<A, E, R>} effect
+ * @returns {Effect.Effect<A, E, R>}
+ */
+const withNpmSpan = (sub, effect) =>
+  Effect.withLogSpan(Effect.withSpan(effect, `npm.${sub}`), `npm.${sub}`);
+
+/**
+ * Lift a plain async npm subcommand flow into an Effect.
+ * @param {string} sub
+ * @param {(parsed: any, term: any) => Promise<string | undefined>} fn
+ * @returns {(parsed: any, term: any) => Effect.Effect<string | undefined, NpmError>}
+ */
+const liftFlow = (sub, fn) => (parsed, term) =>
+  withNpmSpan(sub, Effect.tryPromise({ try: () => fn(parsed, term), catch: npmFlowError(sub) }));
 // ---- tar extraction (inlined) ----
 
 /**
@@ -630,6 +676,592 @@ const npmParser = or(
     ),
 );
 
+/**
+ * Per-subcommand flows. Plain async flows are lifted once (span + typed
+ * NpmError) via {@link liftFlow}; flows whose bodies are file-mutation loops
+ * (prune, dedupe) are written as Effect.gen with `Effect.forEach`
+ * ({ concurrency: 1 }) so OPFS writes are strictly serialized.
+ *
+ * @type {Record<string, (parsed: any, term: any) => Effect.Effect<string | undefined, any>>}
+ */
+const flows = {
+  install: liftFlow("install", async (parsed, term) => {
+    const fs = term.fs;
+    const tsOnly = parsed.tsOnly ?? false;
+    const dev = parsed.dev ?? false;
+    const force = parsed.force ?? false;
+    const spec = parsed.spec;
+
+    if (spec) {
+      const { name, version } = parsePackageSpec(spec);
+      try {
+        await installOne(fs, term, name, version, tsOnly, force);
+        const meta = await fetchPackageMeta(name);
+        const versions = Object.keys(meta.versions || {});
+        const resolved = pickBestVersion(versions, version || "latest");
+        if (resolved) {
+          await updatePackageJson(fs, name, resolved, dev);
+          const target = dev ? "devDependencies" : "dependencies";
+          term.success(`Added ${name}@${resolved} to ${target}`);
+        }
+        bus.emit("npm:install", { name });
+      } catch (e) {
+        return `npm install failed: ${e.message}`;
+      }
+      return "";
+    }
+
+    let pkg = await readPackageJson(fs);
+    if (!pkg) {
+      return "No package.json found.";
+    }
+
+    await installAll(fs, term, pkg, tsOnly);
+    bus.emit("npm:install", {});
+    return "";
+  }),
+
+  uninstall: liftFlow("uninstall", async (parsed, term) => {
+    const fs = term.fs;
+    const { name } = parsePackageSpec(parsed.spec);
+    try {
+      const targetDir = `node_modules/${name}`;
+      if (await fs.exists(targetDir)) {
+        await withFsLock(() => fs.rm(targetDir, { recursive: true }));
+      }
+      installing.delete(name);
+      metaCache.delete(name);
+
+      const changed = await removeFromPackageJson(fs, name);
+      if (changed) {
+        term.success(`Removed ${name} from package.json`);
+      } else {
+        term.info(`Removed ${name} from node_modules (was not in package.json)`);
+      }
+      bus.emit("npm:uninstall", { names: [name] });
+    } catch (e) {
+      return `npm uninstall failed for ${name}: ${e.message}`;
+    }
+    return "";
+  }),
+
+  ci: liftFlow("ci", async (parsed, term) => {
+    const fs = term.fs;
+    if (!(await fs.exists("package.json"))) {
+      return "No package.json found. Nothing to ci.";
+    }
+    term.info("Removing node_modules...");
+    try {
+      await withFsLock(() => fs.rm("node_modules", { recursive: true }));
+    } catch {
+      // node_modules may not exist yet
+    }
+    installing.clear();
+
+    let pkg = await readPackageJson(fs);
+    if (!pkg) {
+      return "No package.json found.";
+    }
+    await installAll(fs, term, pkg, parsed.tsOnly ?? false);
+    bus.emit("npm:install", {});
+    return "";
+  }),
+
+  prune: (parsed, term) =>
+    withNpmSpan(
+      "prune",
+      Effect.gen(function* () {
+      const fs = term.fs;
+      const pkg = yield* Effect.tryPromise({ try: () => readPackageJson(fs), catch: npmFlowError("prune") });
+      if (!pkg) {
+        return "No package.json found. Nothing to prune.";
+      }
+      const wanted = new Set([
+        ...Object.keys(pkg.dependencies || {}),
+        ...Object.keys(pkg.devDependencies || {}),
+      ]);
+
+      const installed = yield* Effect.tryPromise({ try: () => listInstalled(fs), catch: npmFlowError("prune") });
+      if (installed.length === 0) {
+        term.info("No node_modules directory. Nothing to prune.");
+        return "";
+      }
+
+      const stale = installed.filter((/** @type {string} */ n) => !wanted.has(n));
+      if (stale.length === 0) {
+        term.success("Nothing to prune.");
+        return "";
+      }
+
+      // Group scoped packages so we can remove the whole @scope dir when empty.
+      /** @type {Set<string>} */
+      const dirsToRemove = new Set();
+      for (const name of stale) {
+        if (name.startsWith("@")) dirsToRemove.add(name.split("/")[0]);
+        else dirsToRemove.add(name);
+      }
+      // Only remove a @scope dir if every package inside it is stale.
+      for (const dir of [...dirsToRemove]) {
+        if (!dir.startsWith("@")) continue;
+        const allStale = installed
+          .filter((/** @type {string} */ n) => n.startsWith(`${dir}/`))
+          .every((/** @type {string} */ n) => stale.includes(n));
+        if (!allStale) dirsToRemove.delete(dir);
+      }
+
+      // Strictly serialized file mutations (OPFS unsafe under concurrency).
+      yield* Effect.forEach(
+        [...dirsToRemove],
+        (/** @type {string} */ name) =>
+          Effect.tryPromise({
+            try: async () => {
+              term.info(`Removing extraneous ${name}...`);
+              await withFsLock(() => fs.rm(`node_modules/${name}`, { recursive: true }));
+              installing.delete(name);
+              metaCache.delete(name);
+            },
+            catch: npmFlowError("prune"),
+          }),
+        { concurrency: 1 },
+      );
+      term.success(`Pruned ${stale.length} package${stale.length === 1 ? "" : "s"}`);
+      bus.emit("npm:uninstall", { names: stale });
+      return "";
+      }),
+    ),
+
+  ls: liftFlow("ls", async (parsed, term) => {
+    const fs = term.fs;
+    const installed = await listInstalled(fs);
+    if (installed.length === 0) {
+      term.info("node_modules is empty. Run npm install first.");
+      return "";
+    }
+    const filter = parsed.spec;
+    let count = 0;
+    for (const name of installed) {
+      if (filter && !name.includes(filter)) continue;
+      const version = await getInstalledVersion(fs, name);
+      count++;
+      if (version) term.log(`  ${name}@${version}`);
+      else term.error(`  ${name} (missing package.json)`);
+    }
+    if (count === 0) term.info(`No packages matching "${filter}"`);
+    return "";
+  }),
+
+  outdated: liftFlow("outdated", async (parsed, term) => {
+    const fs = term.fs;
+    const pkg = await readPackageJson(fs);
+    if (!pkg) return "No package.json found.";
+    const entries = Object.entries({
+      ...(pkg.dependencies || {}),
+      ...(pkg.devDependencies || {}),
+    });
+    if (entries.length === 0) {
+      term.info("No dependencies in package.json.");
+      return "";
+    }
+
+    /** @type {Array<{ name: string, current: string, wanted: string, latest: string }>} */
+    const rows = [];
+    await eachWithConcurrency(entries, async ([name, range]) => {
+      try {
+        const current = (await getInstalledVersion(fs, name)) ?? "(missing)";
+        const meta = await fetchPackageMeta(name);
+        const latest = meta["dist-tags"]?.latest ?? "?";
+        const wanted =
+          pickBestVersion(Object.keys(meta.versions || {}), range || "*") ?? "?";
+        if (current !== wanted || current !== latest) {
+          rows.push({ name, current: String(current), wanted, latest });
+        }
+      } catch (e) {
+        term.error(`  Failed to check ${name}: ${e.message}`);
+      }
+    });
+
+    if (rows.length === 0) {
+      term.success("All dependencies are up to date.");
+      return "";
+    }
+    const w = Math.max(...rows.map((r) => r.name.length));
+    for (const r of rows.sort((a, b) => a.name.localeCompare(b.name))) {
+      term.log(
+        `  ${r.name.padEnd(w)}  current: ${r.current.padEnd(12)} wanted: ${r.wanted.padEnd(12)} latest: ${r.latest}`,
+      );
+    }
+    return "";
+  }),
+
+  view: liftFlow("view", async (parsed, term) => {
+    const fs = term.fs;
+    const { name } = parsePackageSpec(parsed.spec);
+    try {
+      const meta = await fetchPackageMeta(name);
+      const latestManifest = meta.versions?.[meta["dist-tags"]?.latest] ?? {};
+
+      // Resolve dotted paths like "dist-tags.latest" or "dependencies.foo".
+      /**
+       * @param {any} obj
+       * @param {string} path
+       */
+      const resolveField = (obj, path) =>
+        path
+          .split(".")
+          .reduce((/** @type {any} */ acc, /** @type {string} */ key) => (acc == null ? acc : acc[key]), obj);
+
+      if (parsed.field) {
+        const field = parsed.field;
+        // npm treats "version" as the latest version.
+        const value =
+          field === "version"
+            ? meta["dist-tags"]?.latest
+            : resolveField(latestManifest, field) ??
+              resolveField(meta, field);
+        if (value === undefined) {
+          return `No field "${field}" on ${name}`;
+        }
+        term.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+      } else {
+        term.log(`  ${name}@${meta["dist-tags"]?.latest ?? "?"}`);
+        if (latestManifest.description)
+          term.log(`  ${latestManifest.description}`);
+        if (latestManifest.license) term.log(`  license: ${latestManifest.license}`);
+        if (latestManifest.homepage)
+          term.log(`  homepage: ${latestManifest.homepage}`);
+        const depCount = Object.keys(latestManifest.dependencies || {}).length;
+        term.log(`  dependencies: ${depCount}`);
+      }
+    } catch (e) {
+      return `npm view failed for ${name}: ${e.message}`;
+    }
+    return "";
+  }),
+
+  init: liftFlow("init", async (parsed, term) => {
+    const fs = term.fs;
+    const existing = await readPackageJson(fs);
+    if (existing && !parsed.yes) {
+      return "package.json already exists. Use `npm init -y` to overwrite with defaults.";
+    }
+    let name = "my-project";
+    try {
+      const cwd = fs.cwd || "/";
+      const base = cwd.split("/").filter(Boolean).pop();
+      if (base) name = base;
+    } catch {}
+
+    const starter = {
+      name,
+      version: "1.0.0",
+      description: "",
+      type: "module",
+      scripts: {
+        start: "echo \"Error: no script specified\" && exit 1",
+      },
+      dependencies: {},
+      devDependencies: {},
+    };
+    await withFsLock(() =>
+      fs.writeFile("package.json", JSON.stringify(starter, null, 2)),
+    );
+    term.success(`Created package.json (${name}@1.0.0). Edit it to add scripts and deps.`);
+    return "";
+  }),
+
+  dedupe: (parsed, term) =>
+    withNpmSpan(
+      "dedupe",
+      Effect.gen(function* () {
+      const fs = term.fs;
+      // This installer uses a flat layout (everything in root node_modules),
+      // so duplicates only occur as nested node_modules dirs from older installs.
+      /** @type {string[]} */
+      const nested = [];
+      /**
+       * @param {string} dir
+       * @param {number} depth
+       */
+      const scan = async (dir, depth) => {
+        if (depth > 6) return;
+        /** @type {string[]} */
+        let entries = [];
+        try {
+          entries = await fs.readdir(dir);
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const child = `${dir}/${entry}`;
+          if (entry === "node_modules") {
+            nested.push(child);
+            continue;
+          }
+          await scan(child, depth + 1);
+        }
+      };
+      yield* Effect.tryPromise({ try: () => scan("node_modules", 0), catch: npmFlowError("dedupe") });
+
+      if (nested.length === 0) {
+        term.success("Already deduped — no nested node_modules found.");
+        return "";
+      }
+      // Strictly serialized file mutations (OPFS unsafe under concurrency).
+      yield* Effect.forEach(
+        nested,
+        (/** @type {string} */ dir) =>
+          Effect.tryPromise({
+            try: async () => {
+              term.info(`Removing duplicate ${dir}...`);
+              await withFsLock(() => fs.rm(dir, { recursive: true }));
+            },
+            catch: npmFlowError("dedupe"),
+          }),
+        { concurrency: 1 },
+      );
+      term.success(`Removed ${nested.length} duplicate folder(s)`);
+      return "";
+      }),
+    ),
+
+  audit: liftFlow("audit", async (parsed, term) => {
+    const fs = term.fs;
+    const installed = await listInstalled(fs);
+    if (installed.length === 0) {
+      term.info("Nothing installed. Nothing to audit.");
+      return "";
+    }
+    /** @type {Array<[string, string]>} */
+    const packages = [];
+    await eachWithConcurrency(installed, async (name) => {
+      const version = await getInstalledVersion(fs, name);
+      if (version) packages.push([name, version]);
+    });
+
+    // The npm registry's bulk advisories endpoint doesn't handle CORS
+    // preflights (it's designed for the server-side npm CLI), so query
+    // the GitHub Security Advisories API instead, which is CORS-enabled.
+    term.info("Querying security advisories...");
+    /** @type {Array<{ name: string, version: string, id: string, severity: string, summary: string, url: string }>} */
+    const findings = [];
+    let failed = 0;
+    // Unauthenticated GitHub allows 60 req/hour — keep batches small.
+    await eachWithConcurrency(packages.slice(0, 50), async ([name, version]) => {
+      try {
+        const res = await fetch(
+          `https://api.github.com/advisories?ecosystem=npm&affects=${encodeURIComponent(`${name}@${version}`)}`,
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        /** @type {any[]} */
+        const advisories = await res.json();
+        for (const adv of advisories) {
+          findings.push({
+            name,
+            version,
+            id: adv.ghsa_id ?? "?",
+            severity: adv.severity ?? "?",
+            summary: adv.summary ?? "advisory",
+            url: adv.html_url ?? "",
+          });
+        }
+      } catch {
+        failed++;
+      }
+    }, 4);
+
+    if (failed > 0) {
+      term.error(`  Could not check ${failed} package(s) (rate limit or network error)`);
+    }
+
+    findings.sort((a, b) => a.name.localeCompare(b.name));
+    for (const f of findings) {
+      term.error(`  ${f.name}@${f.version} — ${f.summary} [${f.id}, ${f.severity}]`);
+      if (f.url) term.log(`    ${f.url}`);
+    }
+    if (findings.length === 0 && failed === 0) {
+      term.success(`No known vulnerabilities found in ${packages.length} packages.`);
+    } else if (findings.length > 0) {
+      term.info(`Found ${findings.length} vulnerabilit${findings.length === 1 ? "y" : "ies"}.`);
+    }
+    return "";
+  }),
+
+  why: liftFlow("why", async (parsed, term) => {
+    const fs = term.fs;
+    const target = parsed.spec;
+    const pkg = await readPackageJson(fs);
+    if (!pkg) return "No package.json found.";
+
+    // DFS from the roots in package.json through installed manifests,
+    // collecting every dependency chain that reaches the target.
+    /**
+     * @param {string} name
+     * @param {Set<string>} visited
+     * @param {string[]} chain
+     * @returns {Promise<string[][]>}
+     */
+    const findChains = async (name, visited, chain) => {
+      if (visited.has(name)) return [];
+      visited.add(name);
+      const nextChain = [...chain, name];
+      if (name === target) return [nextChain];
+
+      const manifest = await readJSON(fs, `node_modules/${name}/package.json`);
+      if (!manifest?.dependencies) return [];
+      /** @type {string[][]} */
+      const chains = [];
+      for (const dep of Object.keys(manifest.dependencies)) {
+        if (!(await getInstalledVersion(fs, dep))) continue;
+        chains.push(...(await findChains(dep, new Set(visited), nextChain)));
+      }
+      return chains;
+    };
+
+    const roots = [
+      ...Object.keys(pkg.dependencies || {}),
+      ...Object.keys(pkg.devDependencies || {}),
+    ];
+    /** @type {string[][]} */
+    const allChains = [];
+    for (const root of roots) {
+      if (!(await getInstalledVersion(fs, root))) continue;
+      allChains.push(...(await findChains(root, new Set(), [])));
+    }
+
+    if (allChains.length === 0) {
+      return `${target} is not reachable from any installed dependency.`;
+    }
+    for (const chain of allChains.slice(0, 20)) {
+      term.log("  " + chain.map((c) => c).join(" > "));
+    }
+    if (allChains.length > 20) {
+      term.info(`...and ${allChains.length - 20} more chain(s)`);
+    }
+    return "";
+  }),
+
+  run: liftFlow("run", async (parsed, term) => {
+    const fs = term.fs;
+    const scriptName = parsed.script;
+    let pkg;
+    try {
+      const raw = await fs.readFile("package.json", { encoding: "utf8" });
+      pkg = JSON.parse(/** @type {string} */ (raw));
+    } catch {
+      return "No package.json found. Create one to define npm scripts.";
+    }
+    const scripts = pkg.scripts || {};
+    const scriptValue = scripts[scriptName];
+    if (!scriptValue) {
+      const available = Object.keys(scripts).join(", ");
+      return `Script "${scriptName}" not found. Available scripts: ${available || "(none)"}`;
+    }
+    term.info(`> ${scriptName}: ${scriptValue}`);
+    await term.processCommand(scriptValue);
+    return undefined;
+  }),
+
+  update: liftFlow("update", async (parsed, term) => {
+    const fs = term.fs;
+    const tsOnly = parsed.tsOnly ?? false;
+    const spec = parsed.spec;
+
+    // Helper to perform the actual update of a single package
+    /**
+     *
+     * @param {string} name
+     * @param {string} currentRange
+     */
+    const performUpdate = async (name, currentRange) => {
+      term.info(`Updating ${name}...`);
+
+      // 1. Remove the old directory in node_modules to ensure a clean slate
+      const targetDir = `node_modules/${name}`;
+      if (await fs.exists(targetDir)) {
+        // Assuming your WebFileSystem supports a recursive rm/unlink helper.
+        // If not, installOne will overwrite files, but removing old ones is cleaner.
+        try {
+          await withFsLock(() => fs.rm(targetDir, { recursive: true }));
+        } catch {
+          // Fallback if rm isn't implemented: proceed with overwrite
+        }
+      }
+
+      // 2. Clear the package from our in-memory installing Set to force re-download
+      installing.delete(name);
+
+      // 3. Fetch registry metadata
+      const meta = await fetchPackageMeta(name);
+      const versions = Object.keys(meta.versions || {});
+
+      // If the package is in package.json, we respect its semver range limit.
+      // If not, we update to "latest".
+      const range = currentRange || "latest";
+      const resolved = pickBestVersion(versions, range);
+
+      if (!resolved) {
+        throw new Error(`No compatible version found for ${name} matching ${range}`);
+      }
+
+      // 4. Install the resolved version
+      await installOne(fs, term, name, resolved, tsOnly);
+
+      // 5. Update package.json to reflect the newly resolved version
+      await updatePackageJson(fs, name, resolved, false);
+      term.success(`Updated ${name} to @${resolved}`);
+      bus.emit("npm:install", { name });
+    };
+
+    // Scenario A: Updating a specific package (e.g., "npm update lodash")
+    if (spec) {
+      const { name } = parsePackageSpec(spec);
+
+      // Read current range from package.json if it exists
+      /** @type {Record<string,any>} */
+      let pkg = {};
+      try {
+        const raw = await fs.readFile("package.json", { encoding: "utf8" });
+        pkg = JSON.parse(raw);
+      } catch {}
+
+      const currentRange = pkg.dependencies?.[name] || pkg.devDependencies?.[name];
+
+      try {
+        await performUpdate(name, currentRange);
+      } catch (e) {
+        return `npm update failed for ${name}: ${e.message}`;
+      }
+      return "";
+    }
+
+    // Scenario B: Updating all packages (e.g., "npm update")
+    let pkg;
+    try {
+      const raw = await fs.readFile("package.json", { encoding: "utf8" });
+      pkg = JSON.parse(raw);
+    } catch {
+      return "No package.json found. Nothing to update.";
+    }
+
+    const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const entries = Object.entries(allDeps);
+    if (entries.length === 0) {
+      term.info("No dependencies found to update.");
+      return "";
+    }
+
+    await eachWithConcurrency(entries, async ([depName, depRange]) => {
+      try {
+        await performUpdate(depName, depRange);
+      } catch (e) {
+        term.error(`Failed to update ${depName}: ${e.message}`);
+      }
+    });
+    bus.emit("npm:install", {});
+    return "";
+  }),
+};
+
 export const npmCommand = createCommand({
     name: "npm",
     parser: npmParser,
@@ -650,544 +1282,28 @@ export const npmCommand = createCommand({
             }
         });
     },
-    execute: async (parsed, term) => {
-        const { fs } = term;
-        const subcommand = parsed.subcommand;
-
-        if (subcommand === "install") {
-            const tsOnly = parsed.tsOnly ?? false;
-            const dev = parsed.dev ?? false;
-            const force = parsed.force ?? false;
-            const spec = parsed.spec;
-
-            if (spec) {
-                const { name, version } = parsePackageSpec(spec);
-                try {
-                    await installOne(fs, term, name, version, tsOnly, force);
-                    const meta = await fetchPackageMeta(name);
-                    const versions = Object.keys(meta.versions || {});
-                    const resolved = pickBestVersion(versions, version || "latest");
-                    if (resolved) {
-                        await updatePackageJson(fs, name, resolved, dev);
-                        const target = dev ? "devDependencies" : "dependencies";
-                        term.success(`Added ${name}@${resolved} to ${target}`);
-                    }
-                    bus.emit("npm:install", { name });
-                } catch (e) {
-                    return `npm install failed: ${e.message}`;
-                }
-                return "";
-            }
-
-            let pkg = await readPackageJson(fs);
-            if (!pkg) {
-                return "No package.json found.";
-            }
-
-            await installAll(fs, term, pkg, tsOnly);
-            bus.emit("npm:install", {});
-            return "";
-        }
-
-        if (subcommand === "uninstall") {
-            const { name } = parsePackageSpec(parsed.spec);
-            try {
-                const targetDir = `node_modules/${name}`;
-                if (await fs.exists(targetDir)) {
-                    await withFsLock(() => fs.rm(targetDir, { recursive: true }));
-                }
-                installing.delete(name);
-                metaCache.delete(name);
-
-                const changed = await removeFromPackageJson(fs, name);
-                if (changed) {
-                    term.success(`Removed ${name} from package.json`);
-                } else {
-                    term.info(`Removed ${name} from node_modules (was not in package.json)`);
-                }
-                bus.emit("npm:uninstall", { names: [name] });
-            } catch (e) {
-                return `npm uninstall failed for ${name}: ${e.message}`;
-            }
-            return "";
-        }
-
-        if (subcommand === "ci") {
-            if (!(await fs.exists("package.json"))) {
-                return "No package.json found. Nothing to ci.";
-            }
-            term.info("Removing node_modules...");
-            try {
-                await withFsLock(() => fs.rm("node_modules", { recursive: true }));
-            } catch {
-                // node_modules may not exist yet
-            }
-            installing.clear();
-
-            let pkg = await readPackageJson(fs);
-            if (!pkg) {
-                return "No package.json found.";
-            }
-            await installAll(fs, term, pkg, parsed.tsOnly ?? false);
-            bus.emit("npm:install", {});
-            return "";
-        }
-
-        if (subcommand === "prune") {
-            const pkg = await readPackageJson(fs);
-            if (!pkg) {
-                return "No package.json found. Nothing to prune.";
-            }
-            const wanted = new Set([
-                ...Object.keys(pkg.dependencies || {}),
-                ...Object.keys(pkg.devDependencies || {}),
-            ]);
-
-            const installed = await listInstalled(fs);
-            if (installed.length === 0) {
-                term.info("No node_modules directory. Nothing to prune.");
-                return "";
-            }
-
-            const stale = installed.filter((n) => !wanted.has(n));
-            if (stale.length === 0) {
-                term.success("Nothing to prune.");
-                return "";
-            }
-
-            // Group scoped packages so we can remove the whole @scope dir when empty.
-            /** @type {Set<string>} */
-            const dirsToRemove = new Set();
-            for (const name of stale) {
-                if (name.startsWith("@")) dirsToRemove.add(name.split("/")[0]);
-                else dirsToRemove.add(name);
-            }
-            // Only remove a @scope dir if every package inside it is stale.
-            for (const dir of [...dirsToRemove]) {
-                if (!dir.startsWith("@")) continue;
-                const allStale = installed
-                    .filter((n) => n.startsWith(`${dir}/`))
-                    .every((n) => stale.includes(n));
-                if (!allStale) dirsToRemove.delete(dir);
-            }
-
-            await eachWithConcurrency([...dirsToRemove], async (name) => {
-                term.info(`Removing extraneous ${name}...`);
-                await withFsLock(() => fs.rm(`node_modules/${name}`, { recursive: true }));
-                installing.delete(name);
-                metaCache.delete(name);
-            });
-            term.success(`Pruned ${stale.length} package${stale.length === 1 ? "" : "s"}`);
-            bus.emit("npm:uninstall", { names: stale });
-            return "";
-        }
-
-        if (subcommand === "ls") {
-            const installed = await listInstalled(fs);
-            if (installed.length === 0) {
-                term.info("node_modules is empty. Run npm install first.");
-                return "";
-            }
-            const filter = parsed.spec;
-            let count = 0;
-            for (const name of installed) {
-                if (filter && !name.includes(filter)) continue;
-                const version = await getInstalledVersion(fs, name);
-                count++;
-                if (version) term.log(`  ${name}@${version}`);
-                else term.error(`  ${name} (missing package.json)`);
-            }
-            if (count === 0) term.info(`No packages matching "${filter}"`);
-            return "";
-        }
-
-        if (subcommand === "outdated") {
-            const pkg = await readPackageJson(fs);
-            if (!pkg) return "No package.json found.";
-            const entries = Object.entries({
-                ...(pkg.dependencies || {}),
-                ...(pkg.devDependencies || {}),
-            });
-            if (entries.length === 0) {
-                term.info("No dependencies in package.json.");
-                return "";
-            }
-
-            /** @type {Array<{ name: string, current: string, wanted: string, latest: string }>} */
-            const rows = [];
-            await eachWithConcurrency(entries, async ([name, range]) => {
-                try {
-                    const current = (await getInstalledVersion(fs, name)) ?? "(missing)";
-                    const meta = await fetchPackageMeta(name);
-                    const latest = meta["dist-tags"]?.latest ?? "?";
-                    const wanted =
-                        pickBestVersion(Object.keys(meta.versions || {}), range || "*") ?? "?";
-                    if (current !== wanted || current !== latest) {
-                        rows.push({ name, current: String(current), wanted, latest });
-                    }
-                } catch (e) {
-                    term.error(`  Failed to check ${name}: ${e.message}`);
-                }
-            });
-
-            if (rows.length === 0) {
-                term.success("All dependencies are up to date.");
-                return "";
-            }
-            const w = Math.max(...rows.map((r) => r.name.length));
-            for (const r of rows.sort((a, b) => a.name.localeCompare(b.name))) {
-                term.log(
-                    `  ${r.name.padEnd(w)}  current: ${r.current.padEnd(12)} wanted: ${r.wanted.padEnd(12)} latest: ${r.latest}`,
-                );
-            }
-            return "";
-        }
-
-        if (subcommand === "view") {
-            const { name } = parsePackageSpec(parsed.spec);
-            try {
-                const meta = await fetchPackageMeta(name);
-                const latestManifest = meta.versions?.[meta["dist-tags"]?.latest] ?? {};
-
-                // Resolve dotted paths like "dist-tags.latest" or "dependencies.foo".
-                /**
-                 * @param {any} obj
-                 * @param {string} path
-                 */
-                const resolveField = (obj, path) =>
-                    path
-                        .split(".")
-                        .reduce((/** @type {any} */ acc, /** @type {string} */ key) => (acc == null ? acc : acc[key]), obj);
-
-                if (parsed.field) {
-                    const field = parsed.field;
-                    // npm treats "version" as the latest version.
-                    const value =
-                        field === "version"
-                            ? meta["dist-tags"]?.latest
-                            : resolveField(latestManifest, field) ??
-                              resolveField(meta, field);
-                    if (value === undefined) {
-                        return `No field "${field}" on ${name}`;
-                    }
-                    term.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
-                } else {
-                    term.log(`  ${name}@${meta["dist-tags"]?.latest ?? "?"}`);
-                    if (latestManifest.description)
-                        term.log(`  ${latestManifest.description}`);
-                    if (latestManifest.license) term.log(`  license: ${latestManifest.license}`);
-                    if (latestManifest.homepage)
-                        term.log(`  homepage: ${latestManifest.homepage}`);
-                    const depCount = Object.keys(latestManifest.dependencies || {}).length;
-                    term.log(`  dependencies: ${depCount}`);
-                }
-            } catch (e) {
-                return `npm view failed for ${name}: ${e.message}`;
-            }
-            return "";
-        }
-
-        if (subcommand === "init") {
-            const existing = await readPackageJson(fs);
-            if (existing && !parsed.yes) {
-                return "package.json already exists. Use `npm init -y` to overwrite with defaults.";
-            }
-            let name = "my-project";
-            try {
-                const cwd = fs.cwd || "/";
-                const base = cwd.split("/").filter(Boolean).pop();
-                if (base) name = base;
-            } catch {}
-
-            const starter = {
-                name,
-                version: "1.0.0",
-                description: "",
-                type: "module",
-                scripts: {
-                    start: "echo \"Error: no script specified\" && exit 1",
-                },
-                dependencies: {},
-                devDependencies: {},
-            };
-            await withFsLock(() =>
-                fs.writeFile("package.json", JSON.stringify(starter, null, 2)),
-            );
-            term.success(`Created package.json (${name}@1.0.0). Edit it to add scripts and deps.`);
-            return "";
-        }
-
-        if (subcommand === "dedupe") {
-            // This installer uses a flat layout (everything in root node_modules),
-            // so duplicates only occur as nested node_modules dirs from older installs.
-            /** @type {string[]} */
-            const nested = [];
-            /**
-             * @param {string} dir
-             * @param {number} depth
-             */
-            const scan = async (dir, depth) => {
-                if (depth > 6) return;
-                /** @type {string[]} */
-                let entries = [];
-                try {
-                    entries = await fs.readdir(dir);
-                } catch {
-                    return;
-                }
-                for (const entry of entries) {
-                    const child = `${dir}/${entry}`;
-                    if (entry === "node_modules") {
-                        nested.push(child);
-                        continue;
-                    }
-                    await scan(child, depth + 1);
-                }
-            };
-            await scan("node_modules", 0);
-
-            if (nested.length === 0) {
-                term.success("Already deduped — no nested node_modules found.");
-                return "";
-            }
-            await eachWithConcurrency(nested, async (dir) => {
-                term.info(`Removing duplicate ${dir}...`);
-                await withFsLock(() => fs.rm(dir, { recursive: true }));
-            });
-            term.success(`Removed ${nested.length} duplicate folder(s)`);
-            return "";
-        }
-
-        if (subcommand === "audit") {
-            const installed = await listInstalled(fs);
-            if (installed.length === 0) {
-                term.info("Nothing installed. Nothing to audit.");
-                return "";
-            }
-            /** @type {Array<[string, string]>} */
-            const packages = [];
-            await eachWithConcurrency(installed, async (name) => {
-                const version = await getInstalledVersion(fs, name);
-                if (version) packages.push([name, version]);
-            });
-
-            // The npm registry's bulk advisories endpoint doesn't handle CORS
-            // preflights (it's designed for the server-side npm CLI), so query
-            // the GitHub Security Advisories API instead, which is CORS-enabled.
-            term.info("Querying security advisories...");
-            /** @type {Array<{ name: string, version: string, id: string, severity: string, summary: string, url: string }>} */
-            const findings = [];
-            let failed = 0;
-            // Unauthenticated GitHub allows 60 req/hour — keep batches small.
-            await eachWithConcurrency(packages.slice(0, 50), async ([name, version]) => {
-                try {
-                    const res = await fetch(
-                        `https://api.github.com/advisories?ecosystem=npm&affects=${encodeURIComponent(`${name}@${version}`)}`,
-                    );
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    /** @type {any[]} */
-                    const advisories = await res.json();
-                    for (const adv of advisories) {
-                        findings.push({
-                            name,
-                            version,
-                            id: adv.ghsa_id ?? "?",
-                            severity: adv.severity ?? "?",
-                            summary: adv.summary ?? "advisory",
-                            url: adv.html_url ?? "",
-                        });
-                    }
-                } catch {
-                    failed++;
-                }
-            }, 4);
-
-            if (failed > 0) {
-                term.error(`  Could not check ${failed} package(s) (rate limit or network error)`);
-            }
-
-            findings.sort((a, b) => a.name.localeCompare(b.name));
-            for (const f of findings) {
-                term.error(`  ${f.name}@${f.version} — ${f.summary} [${f.id}, ${f.severity}]`);
-                if (f.url) term.log(`    ${f.url}`);
-            }
-            if (findings.length === 0 && failed === 0) {
-                term.success(`No known vulnerabilities found in ${packages.length} packages.`);
-            } else if (findings.length > 0) {
-                term.info(`Found ${findings.length} vulnerabilit${findings.length === 1 ? "y" : "ies"}.`);
-            }
-            return "";
-        }
-
-        if (subcommand === "why") {
-            const target = parsed.spec;
-            const pkg = await readPackageJson(fs);
-            if (!pkg) return "No package.json found.";
-
-            // DFS from the roots in package.json through installed manifests,
-            // collecting every dependency chain that reaches the target.
-            /**
-             * @param {string} name
-             * @param {Set<string>} visited
-             * @param {string[]} chain
-             * @returns {Promise<string[][]>}
-             */
-            const findChains = async (name, visited, chain) => {
-                if (visited.has(name)) return [];
-                visited.add(name);
-                const nextChain = [...chain, name];
-                if (name === target) return [nextChain];
-
-                const manifest = await readJSON(fs, `node_modules/${name}/package.json`);
-                if (!manifest?.dependencies) return [];
-                /** @type {string[][]} */
-                const chains = [];
-                for (const dep of Object.keys(manifest.dependencies)) {
-                    if (!(await getInstalledVersion(fs, dep))) continue;
-                    chains.push(...(await findChains(dep, new Set(visited), nextChain)));
-                }
-                return chains;
-            };
-
-            const roots = [
-                ...Object.keys(pkg.dependencies || {}),
-                ...Object.keys(pkg.devDependencies || {}),
-            ];
-            /** @type {string[][]} */
-            const allChains = [];
-            for (const root of roots) {
-                if (!(await getInstalledVersion(fs, root))) continue;
-                allChains.push(...(await findChains(root, new Set(), [])));
-            }
-
-            if (allChains.length === 0) {
-                return `${target} is not reachable from any installed dependency.`;
-            }
-            for (const chain of allChains.slice(0, 20)) {
-                term.log("  " + chain.map((c) => c).join(" > "));
-            }
-            if (allChains.length > 20) {
-                term.info(`...and ${allChains.length - 20} more chain(s)`);
-            }
-            return "";
-        }
-
-        if (subcommand === "run") {
-            const scriptName = parsed.script;
-            let pkg;
-            try {
-                const raw = await fs.readFile("package.json", { encoding: "utf8" });
-                pkg = JSON.parse(/** @type {string} */ (raw));
-            } catch {
-                return "No package.json found. Create one to define npm scripts.";
-            }
-            const scripts = pkg.scripts || {};
-            const scriptValue = scripts[scriptName];
-            if (!scriptValue) {
-                const available = Object.keys(scripts).join(", ");
-                return `Script "${scriptName}" not found. Available scripts: ${available || "(none)"}`;
-            }
-            term.info(`> ${scriptName}: ${scriptValue}`);
-            await term.processCommand(scriptValue);
-        }
-
-        if (subcommand === "update") {
-            const tsOnly = parsed.tsOnly ?? false;
-            const spec = parsed.spec;
-
-            // Helper to perform the actual update of a single package
-            /**
-             * 
-             * @param {string} name 
-             * @param {string} currentRange 
-             */
-            const performUpdate = async (name, currentRange) => {
-                term.info(`Updating ${name}...`);
-
-                // 1. Remove the old directory in node_modules to ensure a clean slate
-                const targetDir = `node_modules/${name}`;
-                if (await fs.exists(targetDir)) {
-                    // Assuming your WebFileSystem supports a recursive rm/unlink helper.
-                    // If not, installOne will overwrite files, but removing old ones is cleaner.
-                    try {
-                        await withFsLock(() => fs.rm(targetDir, { recursive: true }));
-                    } catch {
-                        // Fallback if rm isn't implemented: proceed with overwrite
-                    }
-                }
-
-                // 2. Clear the package from our in-memory installing Set to force re-download
-                installing.delete(name);
-
-                // 3. Fetch registry metadata
-                const meta = await fetchPackageMeta(name);
-                const versions = Object.keys(meta.versions || {});
-
-                // If the package is in package.json, we respect its semver range limit.
-                // If not, we update to "latest".
-                const range = currentRange || "latest";
-                const resolved = pickBestVersion(versions, range);
-
-                if (!resolved) {
-                    throw new Error(`No compatible version found for ${name} matching ${range}`);
-                }
-
-                // 4. Install the resolved version
-                await installOne(fs, term, name, resolved, tsOnly);
-
-                // 5. Update package.json to reflect the newly resolved version
-                await updatePackageJson(fs, name, resolved, false);
-                term.success(`Updated ${name} to @${resolved}`);
-                bus.emit("npm:install", { name });
-            };
-
-            // Scenario A: Updating a specific package (e.g., "npm update lodash")
-            if (spec) {
-                const { name } = parsePackageSpec(spec);
-
-                // Read current range from package.json if it exists
-                /** @type {Record<string,any>} */
-                let pkg = {}; 
-                try {
-                    const raw = await fs.readFile("package.json", { encoding: "utf8" });
-                    pkg = JSON.parse(raw);
-                } catch {}
-
-                const currentRange = pkg.dependencies?.[name] || pkg.devDependencies?.[name];
-
-                try {
-                    await performUpdate(name, currentRange);
-                } catch (e) {
-                    return `npm update failed for ${name}: ${e.message}`;
-                }
-                return "";
-            }
-
-            // Scenario B: Updating all packages (e.g., "npm update")
-            let pkg;
-            try {
-                const raw = await fs.readFile("package.json", { encoding: "utf8" });
-                pkg = JSON.parse(raw);
-            } catch {
-                return "No package.json found. Nothing to update.";
-            }
-
-            const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-            const entries = Object.entries(allDeps);
-            if (entries.length === 0) {
-                term.info("No dependencies found to update.");
-                return "";
-            }
-
-            await eachWithConcurrency(entries, async ([depName, depRange]) => {
-                try {
-                    await performUpdate(depName, depRange);
-                } catch (e) {
-                    term.error(`Failed to update ${depName}: ${e.message}`);
-                }
-            });
-            bus.emit("npm:install", {});
-            return "";
-        }
+    /**
+     * Effect-based execution: dispatches to the per-subcommand flow (see
+     * `flows`), each with its own `npm.<sub>` span + log span and a typed
+     * NpmError mapped to a single friendly Error for the registry.
+     *
+     * @param {any} parsed
+     * @param {import("../types/terminal.d.ts").Terminal} term
+     * @returns {Effect.Effect<string | undefined, Error>}
+     */
+    timeoutSeconds: 600, // installs/updates download + rewrite package.json
+    executeEffect: (parsed, term) => {
+      const subcommand = /** @type {string} */ (parsed.subcommand);
+      const flow = flows[subcommand];
+      if (!flow) return Effect.succeed(undefined);
+      return /** @type {Effect.Effect<string | undefined, Error>} */ (
+        flow(parsed, term).pipe(
+          Effect.mapError((/** @type {NpmError | any} */ e) => {
+            const err = new Error(e?.message ?? String(e));
+            delete err.stack; // single friendly line from Cause.pretty
+            return err;
+          }),
+        )
+      );
     },
 });

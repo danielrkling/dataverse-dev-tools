@@ -19,7 +19,11 @@
     "zod": "^4.4.3"
   },
   "dependencies": {
+    "@effect/platform": "^0.97.1",
+    "@effect/platform-browser": "^0.77.1",
     "@optique/core": "^1.1.1",
+    "@tanstack/ai": "^0.52.1",
+    "effect": "^3.22.1",
     "esbuild-wasm": "^0.28.1",
     "isomorphic-git": "^1.27.1",
     "lit": "^3.3.1",

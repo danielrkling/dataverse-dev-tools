@@ -1,13 +1,16 @@
 import { dirname, join } from "../utils/path.mjs";
 import * as z from "zod";
 import { createCommand } from "../services/commands.mjs";
-import { object, optional, argument, choice, message, option, string, multiple, map } from "@optique/core";
-import { aliasPlugin, fsPlugin, getEsbuild, httpPlugin } from "../utils/esbuild.mjs";
+import { object, optional, message, option, string, multiple, map } from "@optique/core";
+import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
-import {bus} from "../services/bus.mjs"
+import { Effect } from "effect";
+import { WorkspaceFs } from "../effects/services.mjs";
+import { FsError } from "./fs.mjs";
+import { createWatchPipeline } from "../effects/watch-pipeline.mjs";
+import { bus } from "../services/bus.mjs";
 
 // import * as oxide from "https://esm.sh/@tailwindcss/oxide-wasm32-wasi"
-
 
 
 // const scanner = new oxide.Scanner({})
@@ -28,6 +31,95 @@ const CSS_BASE = `https://cdn.jsdelivr.net/npm/tailwindcss@${TAILWIND_VERSION}`;
 const cssCache = new Map();
 
 /**
+ * Typed tailwind failure — carries the operation so error mapping can
+ * produce a single friendly line.
+ * @typedef {{ _tag: "TailwindError", op: string, cause: unknown }} TailwindError
+ */
+
+/**
+ * Error factory for {@link TailwindError}.
+ * @param {string} op
+ * @returns {(cause: unknown) => TailwindError}
+ */
+const TailwindError = (op) => (cause) => ({
+    _tag: /** @type {const} */ ("TailwindError"),
+    op,
+    cause,
+});
+
+/**
+ * Describe a typed failure on a single line.
+ * @param {{ _tag: string, op?: string, cause?: unknown }} e
+ * @returns {string}
+ */
+function describeError(e) {
+    return `${e.op || e._tag}: ${describeBuildCause(e.cause)}`;
+}
+
+/**
+ * Friendly single-line error for the registry's Cause.pretty output
+ * (stack stripped so the terminal shows one line, not a trace).
+ * @param {string} message
+ * @returns {Error}
+ */
+function friendlyError(message) {
+    const e = new Error(message);
+    /** @type {any} */ (e).stack = null;
+    return e;
+}
+
+/** @type {((css: string, opts: any) => any) | null} */
+let _compile = null;
+
+/**
+ * Memoized tailwind compile init (Effect.cached — module import runs at most
+ * once and its result is shared by every subsequent build).
+ *
+ * @type {Effect.Effect<(css: string, opts: any) => any, TailwindError>}
+ */
+const getCompileEffect = /** @type {any} */ (
+    Effect.runSync(
+        Effect.cached(
+            Effect.tryPromise({
+                try: async () => {
+                    if (!_compile) {
+                        const mod = await import(COMPILE_URL);
+                        _compile = mod.compile;
+                    }
+                    return /** @type {(css: string, opts: any) => any} */ (_compile);
+                },
+                catch: TailwindError("init"),
+            }),
+        ),
+    )
+);
+
+/** @type {((opts: { content: string, extension: string }) => string[]) | null} */
+let _getTailwindClasses = null;
+
+/**
+ * Memoized wasm scanner init (Effect.cached, same pattern as compile).
+ *
+ * @type {Effect.Effect<(opts: { content: string, extension: string }) => string[], TailwindError>}
+ */
+const getScannerEffect = /** @type {any} */ (
+    Effect.runSync(
+        Effect.cached(
+            Effect.tryPromise({
+                try: async () => {
+                    if (!_getTailwindClasses) {
+                        const mod = await import(ISO_URL);
+                        _getTailwindClasses = mod.getTailwindClasses;
+                    }
+                    return /** @type {(opts: { content: string, extension: string }) => string[]} */ (_getTailwindClasses);
+                },
+                catch: TailwindError("init"),
+            }),
+        ),
+    )
+);
+
+/**
  * @param {string} name
  * @returns {Promise<string>}
  */
@@ -39,29 +131,6 @@ async function getCSSAsset(name) {
     const text = await res.text();
     cssCache.set(name, text);
     return text;
-}
-
-/** @type {((css: string, opts: any) => any) | null} */
-let _compile = null;
-
-/** @returns {Promise<((css: string, opts: any) => any)>} */
-async function getCompile() {
-    if (!_compile) {
-        const mod = await import(COMPILE_URL);
-        _compile = mod.compile;
-    }
-    return /** @type {((css: string, opts: any) => any)} */ (_compile);
-}
-
-/** @type {((opts: { content: string, extension: string }) => string[]) | null} */
-let _getTailwindClasses = null;
-
-/** @returns {Promise<void>} */
-async function ensureWasmLoaded() {
-    if (!_getTailwindClasses) {
-        const mod = await import(ISO_URL);
-        _getTailwindClasses = mod.getTailwindClasses;
-    }
 }
 
 /**
@@ -128,8 +197,8 @@ function createLoadModule(fs) {
         }
 
         const fullPath = base && base !== "/" ? join(base, id) : id;
-        const esbuild = await getEsbuild();
-        const result = await esbuild.build({
+        const esb = await Effect.runPromise(getEsbuildEffect);
+        const result = await esb.build({
             entryPoints: [fullPath],
             bundle: true,
             format: "esm",
@@ -155,14 +224,14 @@ function createLoadModule(fs) {
 
 /**
  * @param {object} config
- * @param {string | string[]} [config.css]
+ * @param {string | string[]} [config.input]
  * @param {string} [config.importCSS]
  * @param {string[]} [config.plugins]
  * @returns {string}
  */
 function buildCSSInput(config) {
-    if (Array.isArray(config.css)) {
-        return config.css
+    if (Array.isArray(config.input)) {
+        return config.input
             .map((item) => {
                 const t = item.trim();
                 if (t.startsWith("@") || t.startsWith("http://") || t.startsWith("https://")) return t;
@@ -173,7 +242,7 @@ function buildCSSInput(config) {
     const parts = [];
     if (config.importCSS) parts.push(config.importCSS);
     else parts.push('@import "tailwindcss"');
-    if (config.css && typeof config.css === "string") parts.push(`@import "${config.css}"`);
+    if (config.input && typeof config.input === "string") parts.push(`@import "${config.input}"`);
     if (config.plugins) {
         for (const p of config.plugins) {
             if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("./") || p.startsWith("/")) {
@@ -187,97 +256,103 @@ function buildCSSInput(config) {
 }
 
 /**
+ * Scan the workspace for candidate classes via the wasm scanner.
+ *
  * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string[]} globs
- * @returns {Promise<string[]>}
+ * @returns {Effect.Effect<string[], TailwindError>}
  */
-async function extractClasses(fs, globs) {
-    await ensureWasmLoaded();
-    const classes = new Set();
+function extractClassesEffect(fs, globs) {
     const isMatch = picomatch(globs.map((g) => g.replace(/^\.\//, "")));
-
-    const files = await fs.getFilesFromDirectory("", isMatch);
-
-    /** @type {Record<string, string[]>} */
-    const byExt = {};
-    for (const [filePath, content] of files) {
-        const dot = filePath.lastIndexOf(".");
-        if (dot === -1) continue;
-        const ext = filePath.slice(dot + 1);
-        (byExt[ext] ||= []).push(content);
-    }
-
-    for (const [ext, contents] of Object.entries(byExt)) {
-        const results = await /** @type {Function} */ (_getTailwindClasses)({
-            content: contents.join("\n"),
-            extension: ext,
+    return Effect.gen(function* () {
+        const getClasses = yield* getScannerEffect;
+        const files = yield* Effect.tryPromise({
+            try: () => fs.getFilesFromDirectory("", isMatch),
+            catch: TailwindError("scan"),
         });
-        for (const r of results) {
-            classes.add(r);
+
+        /** @type {Record<string, string[]>} */
+        const byExt = {};
+        for (const [filePath, content] of files) {
+            const dot = filePath.lastIndexOf(".");
+            if (dot === -1) continue;
+            const ext = filePath.slice(dot + 1);
+            (byExt[ext] ||= []).push(content);
         }
-    }
 
-    return [...classes];
-}
-
-/**
- * @param {{ content?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
- * @param {import('../services/fs.mjs').WebFileSystem} fs
- * @returns {{ getOrCreateCompiler(): Promise<any>, invalidateCache(): void }}
- */
-function createCompilerCache(config, fs) {
-    /** @type {any} */
-    let compiler = null;
-    /** @type {string | null} */
-    let lastCSSInput = null;
-    return {
-        async getOrCreateCompiler() {
-            const cssInput = buildCSSInput(config);
-            if (compiler && cssInput === lastCSSInput) return compiler;
-            const compile = await getCompile();
-            const ls = createLoadStylesheet(fs);
-            const lm = createLoadModule(fs);
-            compiler = await /** @type {Function} */ (compile)(cssInput, {
-                base: "/",
-                loadStylesheet: ls,
-                loadModule: lm,
+        const classes = new Set();
+        // Concurrency 1: scanner calls run in deterministic extension order.
+        const exts = Object.keys(byExt);
+        for (const ext of exts) {
+            const results = yield* Effect.tryPromise({
+                try: () => Promise.resolve(getClasses({ content: byExt[ext].join("\n"), extension: ext })),
+                catch: TailwindError("scan"),
             });
-            lastCSSInput = cssInput;
-            return compiler;
-        },
-        invalidateCache() {
-            lastCSSInput = null;
-        },
-    };
+            for (const r of results) {
+                classes.add(r);
+            }
+        }
+
+        return [...classes];
+    });
 }
 
 /**
- * @param {{ content?: string[], css?: string | string[], importCSS?: string, outfile?: string, plugins?: string[] }} config
+ * Full tailwind build flow as an Effect (span `tailwind.build`, typed
+ * {@link TailwindError} failures mapped to friendly Errors).
+ *
+ * @param {{ files?: string[], input?: string | string[], importCSS?: string, output?: string, plugins?: string[] }} config
  * @param {import('../services/fs.mjs').WebFileSystem} fs
- * @param {import('../components/terminal.mjs').WebTerminal} term
- * @returns {Promise<{outfile: string, bytes: number, classes: number}>}
+ * @returns {Effect.Effect<{output: string, bytes: number, classes: number}, Error>}
  */
-async function runBuild(config, fs, term) {
-    const cache = createCompilerCache(config, fs);
-    const c = await cache.getOrCreateCompiler();
-    const globs = config.content || ["./src/**/*.{html,js,ts,jsx,tsx,mjs}"];
-    const classes = await extractClasses(fs, globs);
-    const result = await c.build(classes);
-    const outfile = config.outfile || "./dist/tailwind.css";
-    const dir = dirname(outfile);
-    if (dir) {
-        try {
-            await fs.mkdir(dir, { recursive: true });
-        } catch {}
-    }
-    await fs.writeFile(outfile, result);
-    return { outfile, bytes: result.length, classes: classes.length };
+function runBuildEffect(config, fs) {
+    return Effect.gen(function* () {
+        const compile = yield* getCompileEffect;
+        const cssInput = buildCSSInput(config);
+        const compiler = yield* Effect.tryPromise({
+            try: () =>
+                Promise.resolve(compile(cssInput, {
+                    base: "/",
+                    loadStylesheet: createLoadStylesheet(fs),
+                    loadModule: createLoadModule(fs),
+                })),
+            catch: TailwindError("compile"),
+        });
+        const globs =
+            config.files && config.files.length > 0
+                ? config.files
+                : ["./src/**/*.{html,js,ts,jsx,tsx,mjs}"];
+        const classes = yield* extractClassesEffect(fs, globs);
+        const result = yield* Effect.tryPromise({
+            try: () => Promise.resolve(compiler.build(classes)),
+            catch: TailwindError("build"),
+        });
+        const output = config.output || "./dist/tailwind.css";
+        const dir = dirname(output);
+        if (dir) {
+            yield* Effect.tryPromise({
+                try: () => fs.mkdir(dir, { recursive: true }),
+                catch: TailwindError("mkdir"),
+            }).pipe(Effect.ignore);
+        }
+        yield* Effect.tryPromise({
+            try: () => fs.writeFile(output, result),
+            catch: TailwindError("write"),
+        });
+        return { output, bytes: result.length, classes: classes.length };
+    }).pipe(
+        Effect.withSpan("tailwind.build", { attributes: { output: config.output || "./dist/tailwind.css" } }),
+        Effect.withLogSpan("tailwind.build"),
+        Effect.mapError(
+            (/** @type {TailwindError} */ e) => friendlyError(describeError(e)),
+        ),
+    );
 }
 
 const tailwindParser = object({
-    action: optional(
-        argument(choice(["build", "watch"]), {
-            description: message`Tailwind action (build or watch)`,
+    init: optional(
+        option("--init", {
+            description: message`Scaffold the default config file and exit`,
         }),
     ),
     config: optional(
@@ -285,7 +360,7 @@ const tailwindParser = object({
             description: message`Path to config file (default: tailwind.config.json)`,
         }),
     ),
-    css: map(
+    input: map(
         optional(
             option("-i", "--input", string({ metavar: "FILE" }), {
                 description: message`Input CSS file`,
@@ -293,7 +368,7 @@ const tailwindParser = object({
         ),
         (s) => (s ? [s] : undefined),
     ),
-    outfile: optional(
+    output: optional(
         option("-o", "--output", string({ metavar: "FILE" }), {
             description: message`Output CSS file`,
         }),
@@ -303,21 +378,21 @@ const tailwindParser = object({
             description: message`Watch for changes and rebuild`,
         }),
     ),
-    content: multiple(
-        option("--content", string({ metavar: "GLOB" }), {
+    files: multiple(
+        option("--files", string({ metavar: "GLOB" }), {
             description: message`Glob pattern for content files to scan`,
         }),
     ),
 });
 
 export const tailwindConfigSchema = z.object({
-    content: z
+    files: z
         .union([z.string(), z.array(z.string())])
         .transform((v) => (typeof v === "string" ? [v] : v))
         .optional(),
 
-    css: z.union([z.string(), z.array(z.string())]).optional(),
-    outfile: z.string().optional(),
+    input: z.union([z.string(), z.array(z.string())]).optional(),
+    output: z.string().optional(),
     importCSS: z.string().optional(),
     plugins: z.array(z.string()).optional(),
 });
@@ -327,75 +402,135 @@ export default createCommand({
     parser: tailwindParser,
     aliases: ["tw"],
     description: message`Generate Tailwind CSS using compile() API with WasmScanner`,
-    usage: message`tailwind [build|watch] [-i FILE] [-o FILE] [--watch] [--content GLOB]...`,
+    usage: message`tailwind [--init] [-i FILE] [-o FILE] [--watch] [--content GLOB]...`,
     brief: message`Generate Tailwind CSS using compile() API with WasmScanner`,
-    execute: async (parsed, term) => {
+    /**
+     * @param {import("@optique/core").InferValue<typeof tailwindParser>} parsed
+     * @param {import("../types/terminal.d.ts").Terminal} term
+     * @returns {Effect.Effect<undefined, Error>}
+     */
+    timeoutSeconds: 300,
+    executeEffect: (parsed, term) => {
         const configPath = parsed.config || "tailwind.config.json";
 
-        let rawConfig;
-        try {
-            const content = await term.fs.readFile(configPath, { encoding: "utf8" });
-            rawConfig = JSON.parse(content);
-        } catch (e) {
-            if (parsed.config) {
-                term.error(`${configPath}: ${e.message}`);
-                return;
-            }
-            rawConfig = {};
-        }
+        return /** @type {Effect.Effect<undefined, Error>} */ (
+            Effect.gen(function* () {
+                const fs = yield* WorkspaceFs;
 
-        const configResult = tailwindConfigSchema.safeParse(rawConfig);
-        if (!configResult.success) {
-            term.error(`${configPath}: ${configResult.error.issues.map((i) => i.message).join(", ")}`);
-            return;
-        }
-        const validatedConfig = configResult.data;
-
-        const { config: _, ...cliFields } = parsed;
-        const mergedResult = tailwindConfigSchema.safeParse({
-            ...validatedConfig,
-            ...cliFields,
-        });
-        if (!mergedResult.success) {
-            term.error(`Config merge: ${mergedResult.error.issues.map((i) => i.message).join(", ")}`);
-            return;
-        }
-        const config = mergedResult.data;
-
-        const sub = parsed.watch ? "watch" : /** @type {string} */ (parsed.action || "build");
-
-        if (sub === "watch") {
-            const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
-            term.success(`Built ${outfile} (${bytes} bytes, ${classes} classes)`);
-
-            const isMatch = picomatch((config.content ?? []).map((/** @type {string} */ g) => g.replace(/^\.\//, "")));
-            const handler = async (/** @type {CustomEvent} */ e) => {
-                const path = e.detail?.path;
-                if (!path) return;
-                if (!isMatch(path)) return;
-                try {
-                    const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
-                    term.info(`Rebuilt ${outfile} (${bytes} bytes, ${classes} classes)`);
-                } catch (/** @type {any} */ e) {
-                    term.error(`Rebuild failed: ${e.message}`);
+                // --- `tailwind --init`: scaffold the default config file ---
+                if (parsed.init) {
+                    if (yield* Effect.tryPromise({ try: () => fs.exists(configPath), catch: () => false })) {
+                        term.error(`${configPath} already exists — remove it first if you want to re-scaffold.`);
+                        return undefined;
+                    }
+                    const scaffold = {
+                        files: ["./**/*.html", "./src/**/*.{js,mjs}"],
+                        output: "./dist/tailwind.css",
+                    };
+                    yield* Effect.tryPromise({
+                        try: () => fs.writeFile(configPath, `${JSON.stringify(scaffold, null, 2)}\n`, "utf8"),
+                        catch: FsError("writeFile", configPath),
+                    });
+                    term.success(`Wrote ${configPath} — edit files globs and output to match your project.`);
+                    return undefined;
                 }
-            };
 
-            const unsub = bus.on("fs:changed",handler)
-            const stopBtn = document.createElement("button");
-            stopBtn.textContent = "⏹ stop watching";
-            stopBtn.addEventListener("click", () => {
-                unsub()
-                stopBtn.remove();
-            });
-            term.log(stopBtn);
+                // --- config loading + validation (early returns keep the
+                // old behaviour: friendly terminal error, no crash) ---
+                const required = Boolean(parsed.config);
 
-            term.info("Watching for changes...");
-            return undefined;
-        } else {
-            const { outfile, bytes, classes } = await runBuild(config, term.fs, term);
-            term.success(`Wrote ${outfile} (${bytes} bytes, ${classes} classes)`);
-            return undefined;
-        }
+                /** @type {any} */
+                let rawConfig = {};
+                const readResult = yield* Effect.either(
+                    Effect.tryPromise({
+                        try: () => fs.readFile(configPath, { encoding: "utf8" }),
+                        catch: FsError("readFile", configPath),
+                    }).pipe(
+                        Effect.flatMap((content) =>
+                            Effect.try({
+                                try: () => JSON.parse(/** @type {string} */ (content)),
+                                catch: FsError("parse", configPath),
+                            }),
+                        ),
+                    ),
+                );
+                if (readResult._tag === "Left") {
+                    if (required) {
+                        term.error(`${configPath}: ${describeBuildCause(readResult.left.cause)}`);
+                        return undefined;
+                    }
+                } else {
+                    rawConfig = readResult.right;
+                }
+
+                const configResult = tailwindConfigSchema.safeParse(rawConfig);
+                if (!configResult.success) {
+                    term.error(`${configPath}: ${configResult.error.issues.map((i) => i.message).join(", ")}`);
+                    return undefined;
+                }
+                const validatedConfig = configResult.data;
+
+                const { config: _, ...cliFields } = parsed;
+                const mergedResult = tailwindConfigSchema.safeParse({
+                    ...validatedConfig,
+                    ...cliFields,
+                });
+                if (!mergedResult.success) {
+                    term.error(`Config merge: ${mergedResult.error.issues.map((i) => i.message).join(", ")}`);
+                    return undefined;
+                }
+                const config = mergedResult.data;
+
+                const sub = parsed.watch ? "watch" : "build";
+
+                if (sub === "watch") {
+                    const first = yield* runBuildEffect(config, term.fs);
+                    term.success(`Built ${first.output} (${first.bytes} bytes, ${first.classes} classes)`);
+
+                    const isMatch = picomatch((config.files ?? []).map((/** @type {string} */ g) => g.replace(/^\.\//, "")));
+
+                    const pipeline = createWatchPipeline({
+                        name: "tailwind-watch",
+                        debounceMs: 200,
+                        match: isMatch,
+                        handler: () =>
+                            runBuildEffect(config, term.fs).pipe(
+                                Effect.tap((r) =>
+                                    Effect.sync(() =>
+                                        term.info(`Rebuilt ${r.output} (${r.bytes} bytes, ${r.classes} classes)`),
+                                    ),
+                                ),
+                            ),
+                        term,
+                    });
+
+                    const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
+                        pipeline.push(/** @type {any} */ (e).detail);
+                    });
+                    const stopBtn = document.createElement("button");
+                    stopBtn.textContent = "⏹ stop watching";
+                    stopBtn.addEventListener("click", () => {
+                        unsub();
+                        pipeline.stop();
+                        stopBtn.remove();
+                    });
+                    term.log(stopBtn);
+
+                    term.info("Watching for changes...");
+                    return undefined;
+                } else {
+                    const { output, bytes, classes } = yield* runBuildEffect(config, term.fs);
+                    term.success(`Wrote ${output} (${bytes} bytes, ${classes} classes)`);
+                    return undefined;
+                }
+            }).pipe(
+                Effect.mapError(
+                    (/** @type {any} */ e) =>
+                        friendlyError(
+                            e instanceof Error ? e.message : describeError(e),
+                        ),
+                ),
+            )
+        );
     },
 });

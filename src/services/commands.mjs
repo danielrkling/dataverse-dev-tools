@@ -8,6 +8,9 @@
  */
 import parseArgs from "string-argv";
 import { runParser } from "@optique/core";
+import { Effect, Duration, Cause, Exit } from "effect";
+import { withTerminalLogger } from "../effects/logger.mjs";
+import { commandLayers } from "../effects/services.mjs";
 
 /**
  * @template {import("@optique/core").Parser<any>} TParser
@@ -18,9 +21,18 @@ import { runParser } from "@optique/core";
  * @property {import("@optique/core").Message} [usage]
  * @property {import("@optique/core").Message} [brief]
  * @property {TParser} parser
- * @property {(args: import("@optique/core").InferValue<TParser>, terminal: any) => any | Promise<any>} execute
+ * @property {(args: import("@optique/core").InferValue<TParser>, terminal: any) => any | Promise<any>} [execute]
+ * @property {(args: import("@optique/core").InferValue<TParser>, terminal: any) => import("effect").Effect.Effect<any, any, any>} [executeEffect]
+ *        Effect-based execution. Typed errors become the command's
+ *        contract; run via Effect with terminal logging, context service
+ *        layers (TerminalSink/WorkspaceFs/DataverseApi), a span per
+ *        invocation, and a 60s timeout. Takes precedence over `execute`.
  * @property {(terminal: any) => void} [init]
  * @property {(args: string[]) => string[]} [transformArgs]
+ * @property {number} [timeoutSeconds]
+ *        Per-command Effect timeout for executeEffect runs (default 60).
+ *        Set higher for long local operations (git/npm scans over the
+ *        File System Access API) or 0 to disable entirely.
  */
 
 /**
@@ -78,6 +90,16 @@ export class CommandRegistry {
     constructor() {
         /** @type {Map<string, TerminalCommand<any>>} */
         this.commands = new Map();
+    }
+
+    /** Unique registered commands (aliases deduped), sorted by name. @returns {TerminalCommand<any>[]} */
+    values() {
+        return [...new Set(this.commands.values())];
+    }
+
+    /** @returns {IterableIterator<string>} */
+    keys() {
+        return this.commands.keys();
     }
 
     /**
@@ -150,7 +172,44 @@ export class CommandRegistry {
             });
 
             if (result) {
-                const executeResult = await command.execute(result, term);
+                if (command.executeEffect) {
+                    /** Effect-based execution: span, timeout, context layers, terminal logging. */
+                    let effect = command.executeEffect(result, term).pipe(
+                        Effect.withSpan(`cmd.${command.name}`),
+                        Effect.provide(commandLayers(term)),
+                    );
+                    // Per-command timeout; 0 opts out (long local scans).
+                    const timeoutSeconds = command.timeoutSeconds ?? 60;
+                    if (timeoutSeconds > 0) {
+                        effect = Effect.timeout(effect, Duration.seconds(timeoutSeconds));
+                    }
+                    const exit = await Effect.runPromiseExit(withTerminalLogger(effect, term));
+                    if (Exit.isSuccess(exit)) {
+                        if (exit.value !== undefined && exit.value !== null) term.log(exit.value);
+                    } else {
+                        // Typed/plain Errors print as a single friendly line;
+                        // defects (unexpected crashes) keep full Cause.pretty.
+                        const failure = Cause.failureOption(exit.cause);
+                        const message = /** @type {any} */ (failure)?.message;
+                        if (typeof message === "string" && message.length > 0) {
+                            term.log(message, { class: "log-error" });
+                        } else {
+                            term.log(Cause.pretty(exit.cause), { class: "log-error" });
+                        }
+                    }
+                    return;
+                }
+                const executeResult = await Effect.runPromise(
+                    withTerminalLogger(
+                        Effect.tryPromise({
+                            // Promise.resolve: sync-void executes (echo, help,
+                            // clear) return undefined, not a Promise.
+                            try: () => Promise.resolve(command.execute?.(result, term)),
+                            catch: (cause) => cause,
+                        }),
+                        term,
+                    ),
+                );
                 if (executeResult) term.log(executeResult);
             }
         } catch (error) {

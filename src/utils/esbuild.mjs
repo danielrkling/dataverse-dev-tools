@@ -3,6 +3,7 @@ import { dirname, join, EXTENSIONS } from "../utils/path.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { object, optional, option, string, passThrough, message } from "@optique/core";
 import { createCommand } from "../services/commands.mjs";
+import { Effect } from "effect";
 
 // ---- esbuild-wasm (lazy loaded) ----
 const ESBUILD_CDN = "https://unpkg.com/esbuild-wasm@0.28.1/esm/browser.min.js";
@@ -10,17 +11,96 @@ const ESBUILD_CDN = "https://unpkg.com/esbuild-wasm@0.28.1/esm/browser.min.js";
 /** @type {typeof import('esbuild-wasm') | null} */
 let esbuild = null;
 
-/** @returns {Promise<typeof import('esbuild-wasm')>} */
-export async function getEsbuild() {
-    if (!esbuild) {
-        esbuild = await import(ESBUILD_CDN);
-        if (!esbuild) throw new Error(`Error loading esbuild`);
-        await esbuild.initialize({
-            worker: true,
-            wasmURL: "https://unpkg.com/esbuild-wasm@0.28.1/esbuild.wasm",
-        });
-    }
-    return /** @type {typeof import('esbuild-wasm')} */ (esbuild);
+/**
+ * Typed build failure — carries the esbuild operation so error mapping can
+ * produce a single friendly line.
+ * @typedef {{ _tag: "BuildError", op: string, cause: unknown }} BuildError
+ */
+
+/**
+ * Error factory for {@link BuildError}.
+ * @param {string} op
+ * @returns {(cause: unknown) => BuildError}
+ */
+export const BuildError = (op) => (cause) => ({
+    _tag: /** @type {const} */ ("BuildError"),
+    op,
+    cause,
+});
+
+/**
+ * Describe a cause on a single line (no stack noise).
+ * @param {unknown} cause
+ * @returns {string}
+ */
+export function describeBuildCause(cause) {
+    const msg =
+        cause instanceof Error
+            ? cause.message
+            : /** @type {any} */ (cause)?.message ?? String(cause);
+    return msg || "unknown error";
+}
+
+/** Lazily initializes esbuild-wasm as an Effect with a typed {@link BuildError}. */
+const esbuildInitEffect = Effect.tryPromise({
+    try: async () => {
+        if (!esbuild) {
+            esbuild = await import(ESBUILD_CDN);
+            if (!esbuild) throw new Error(`Error loading esbuild`);
+            await esbuild.initialize({
+                worker: true,
+                wasmURL: "https://unpkg.com/esbuild-wasm@0.28.1/esbuild.wasm",
+            });
+        }
+        return /** @type {typeof import('esbuild-wasm')} */ (esbuild);
+    },
+    catch: BuildError("init"),
+});
+
+/**
+ * Memoized esbuild-wasm init (Effect.cached — init runs at most once and its
+ * result is shared by every subsequent use).
+ *
+ * @type {Effect.Effect<typeof import('esbuild-wasm'), BuildError>}
+ */
+export const getEsbuildEffect = /** @type {any} */ (
+    Effect.runSync(Effect.cached(esbuildInitEffect))
+);
+
+/**
+ * Thin Promise wrapper over {@link getEsbuildEffect} for non-Effect callers.
+ *
+ * @returns {Promise<typeof import('esbuild-wasm')>}
+ */
+export function getEsbuild() {
+    return Effect.runPromise(getEsbuildEffect);
+}
+
+/**
+ * Transform source with esbuild-wasm as an Effect (typed {@link BuildError}).
+ *
+ * @param {string | Uint8Array} input
+ * @param {import('esbuild-wasm').TransformOptions} [options]
+ * @returns {Effect.Effect<import('esbuild-wasm').TransformResult, BuildError>}
+ */
+export function transformEffect(input, options) {
+    return Effect.flatMap(getEsbuildEffect, (esb) =>
+        Effect.tryPromise({
+            try: () => esb.transform(input, options),
+            catch: BuildError("transform"),
+        }),
+    );
+}
+
+/**
+ * Thin Promise wrapper over {@link transformEffect} for non-Effect callers.
+ *
+ * @param {string | Uint8Array} input
+ * @param {import('esbuild-wasm').TransformOptions} [options]
+ * @returns {Promise<import('esbuild-wasm').TransformResult>}
+ */
+export function transform(input, options) {
+    return Effect.runPromise(transformEffect(input, options));
 }
 
 // --- RESOLVE HELPERS ---
@@ -46,7 +126,7 @@ export function getLoaderFromContentType(contentType, url) {
 // --- RESOLVE HELPERS ---
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} path
  * @returns {Promise<string | null>}
  */
@@ -63,7 +143,7 @@ async function resolveFile(fs, path) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} dir
  * @returns {Promise<string | null>}
  */
@@ -85,7 +165,7 @@ async function resolveDirectory(fs, dir) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {string} specifier
  * @param {string} importerDir
  * @returns {Promise<string | null>}
@@ -168,7 +248,7 @@ function resolveConditionalExport(target, activeConditions) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
  */
 export function fsPlugin(fs) {
     return {

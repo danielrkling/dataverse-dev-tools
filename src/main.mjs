@@ -1,4 +1,4 @@
-import { clear, help, echo } from "./commands/builtin.mjs";
+import { clear, help, echo, logLevel } from "./commands/builtin.mjs";
 import esbuild from "./commands/esbuild.mjs";
 import { flatten, templateCommand } from "./commands/flatten.mjs";
 import {
@@ -17,6 +17,7 @@ import tailwind from "./commands/tailwind.mjs";
 import { uploadCommand, previewCommand, cacheCommand } from "./commands/dataverse.mjs";
 import git from "./commands/git.mjs";
 import gitlab from "./commands/gitlab.mjs";
+import { runCommand } from "./commands/run.mjs";
 import "./components/terminal.mjs";
 import "./components/file-tree.mjs";
 import "./components/editor-pane.mjs";
@@ -28,6 +29,7 @@ export const terminal = /** @type {import("./components/terminal.mjs").WebTermin
 terminal.registerCommand(help);
 terminal.registerCommand(clear);
 terminal.registerCommand(echo);
+terminal.registerCommand(logLevel);
 terminal.registerCommand(historyCommand);
 terminal.registerCommand(flatten);
 terminal.registerCommand(templateCommand); 
@@ -46,4 +48,5 @@ terminal.registerCommand(tailwind);
 terminal.registerCommand(uploadCommand);
 terminal.registerCommand(git);
 terminal.registerCommand(esbuild);
-terminal.registerCommand(cacheCommand)
+terminal.registerCommand(cacheCommand);
+terminal.registerCommand(runCommand);
