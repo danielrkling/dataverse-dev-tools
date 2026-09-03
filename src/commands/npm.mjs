@@ -215,30 +215,67 @@ function filterFiles(files, tsOnly) {
  * @returns {{ major: number, minor: number, patch: number } | null}
  */
 function parseSemver(v) {
-    const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
-    return m ? { major: +m[1], minor: +m[2], patch: +m[3] } : null;
+    const m = v.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+    return m
+        ? { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] ? m[4].split(".") : null }
+        : null;
 }
 
 /**
- * @param {{ major: number, minor: number, patch: number }} a
- * @param {{ major: number, minor: number, patch: number }} b
+ * Semver prerelease precedence: a release outranks any prerelease of the
+ * same triple; prerelease identifiers compare numerically when both numeric,
+ * lexically otherwise; a shorter identifier list loses.
+ * @param {string[] | null} a
+ * @param {string[] | null} b
+ * @returns {number}
+ */
+function comparePre(a, b) {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const x = a[i], y = b[i];
+        if (x === undefined) return -1;
+        if (y === undefined) return 1;
+        const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+        if (nx && ny) {
+            const d = +x - +y;
+            if (d) return d;
+        } else if (nx !== ny) {
+            return nx ? -1 : 1; // numeric identifiers < alphanumeric
+        } else if (x !== y) {
+            return x < y ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @param {{ major: number, minor: number, patch: number, pre?: string[] | null }} a
+ * @param {{ major: number, minor: number, patch: number, pre?: string[] | null }} b
  * @returns {number}
  */
 function compareSemver(a, b) {
-    return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+    return a.major - b.major || a.minor - b.minor || a.patch - b.patch || comparePre(a.pre, b.pre);
 }
 
 /**
- * @param {{ major: number, minor: number, patch: number }} sv
+ * @param {{ major: number, minor: number, patch: number, pre?: string[] | null }} sv
  * @param {string} range
  * @returns {boolean}
  */
 function satisfies(sv, range) {
     if (!range || range === "*" || range === "latest") return true;
 
-    if (/^\d+\.\d+\.\d+$/.test(range)) {
-        const p = range.split(".");
-        return sv.major === +p[0] && sv.minor === +p[1] && sv.patch === +p[2];
+    // Exact version, prerelease included (e.g. "2.0.0-rc.6").
+    const exact = range.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+    if (exact) {
+        return (
+            sv.major === +exact[1] &&
+            sv.minor === +exact[2] &&
+            sv.patch === +exact[3] &&
+            (sv.pre ? sv.pre.join(".") : null) === (exact[4] ?? null)
+        );
     }
 
     const c = range.match(/^\^(\d+)\.(\d+)\.(\d+)/);
@@ -273,15 +310,22 @@ function satisfies(sv, range) {
  * @returns {string | undefined}
  */
 function pickBestVersion(versions, range) {
-    /** @type {Array<{ major: number, minor: number, patch: number }>} */
+    // Prereleases are only candidates when the range itself names one
+    // (mirrors npm: `latest` never resolves to a prerelease).
+    const allowPre = /-/.test(range);
+    /** @type {Array<{ major: number, minor: number, patch: number, pre?: string[] | null }>} */
     const parsed = [];
     for (const v of versions) {
-        if (!/^\d+\.\d+\.\d+$/.test(v)) continue;
+        if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)) continue;
         const sv = parseSemver(v);
-        if (sv && satisfies(sv, range)) parsed.push(sv);
+        if (sv && satisfies(sv, range)) {
+            if (sv.pre && !allowPre) continue;
+            parsed.push(sv);
+        }
     }
     parsed.sort((a, b) => compareSemver(b, a));
-    return parsed[0] ? `${parsed[0].major}.${parsed[0].minor}.${parsed[0].patch}` : undefined;
+    const best = parsed[0];
+    return best ? `${best.major}.${best.minor}.${best.patch}${best.pre ? "-" + best.pre.join(".") : ""}` : undefined;
 }
 
 /** @type {Map<string, any>} */
@@ -331,7 +375,10 @@ async function installOne(fs, term, name, version, tsOnly, force = false) {
 
     const meta = await fetchPackageMeta(name);
     const versions = Object.keys(meta.versions || {});
-    const resolved = pickBestVersion(versions, version || "latest");
+    // Dist-tag first (latest, next, beta, ...) so tags like `next` can point
+    // at prereleases that range selection would never pick.
+    const tagVersion = meta["dist-tags"]?.[version || "latest"];
+    const resolved = tagVersion ?? pickBestVersion(versions, version || "latest");
     if (!resolved) {
         throw new Error(`No version of ${name} matches ${version}`);
     }

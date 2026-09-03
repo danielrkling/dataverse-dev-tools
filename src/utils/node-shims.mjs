@@ -15,13 +15,41 @@
  * gets a friendly "no shim" resolve error instead of a confusing fs miss.
  * @type {string[]}
  */
-const SHIMMED = ["fs", "fs/promises", "path", "process", "util", "os", "url"];
+const SHIMMED = ["fs", "fs/promises", "path", "process", "util", "os", "url", "module", "assert", "crypto"];
 
-const SHIM_RESOLVE_RE = /^(node:)?(fs|fs\/promises|path|process|util|os|url)$/;
-const BUILTIN_LIKE_RE = /^(node:)?(fs|path|process|util|os|url|assert|buffer|child_process|cluster|crypto|dgram|dns|events|http|http2|https|net|perf_hooks|querystring|readline|repl|stream|string_decoder|tls|tty|v8|vm|worker_threads|zlib)\b/;
+const SHIM_RESOLVE_RE = /^(node:)?(fs|fs\/promises|path|process|util|os|url|module|assert|crypto)$/;
+const BUILTIN_LIKE_RE = /^(node:)?(fs|path|process|util|os|url|module|assert|buffer|child_process|cluster|crypto|dgram|dns|events|http|http2|https|net|perf_hooks|querystring|readline|repl|stream|string_decoder|tls|tty|v8|vm|worker_threads|zlib|inspector|async_hooks)\b/;
+const STUB_RESOLVE_RE = /^(node:)?(v8|vm|inspector|async_hooks|tls|dgram|cluster|http2|source-map-support|fsevents)$/;
+
+// ---------------------------------------------------------------------------
+// Stubs — modules that cannot work in a browser but whose *import* must not
+// break the build. Every export throws if actually called.
+// ---------------------------------------------------------------------------
+
+const STUBS = {
+    v8: ["serialize", "deserialize", "getHeapStatistics", "setFlagsFromString", "cachedDataVersionTag", "getHeapSpaceStatistics"],
+    vm: ["runInContext", "runInNewContext", "runInThisContext", "createContext", "isContext", "compileFunction"],
+    inspector: ["open", "url", "waitForDebugger"],
+    async_hooks: ["createHook", "executionAsyncId", "triggerAsyncId", "executionAsyncResource"],
+    tls: ["connect", "createServer", "TLSSocket", "DEFAULT_CIPHERS"],
+    dgram: ["createSocket"],
+    cluster: ["fork", "isMaster", "isPrimary", "workers"],
+    http2: ["connect", "createServer"],
+    // Optional npm deps some CLIs try to load inside try/catch.
+    "source-map-support": ["install", "retrieveSourceMap", "mapSourcePosition", "handleUncaughtExceptions", "resetRetrieveHandlers"],
+    fsevents: ["watch", "stopWatching", "setEncoding"],
+};
+
+/** @returns {string} */
+function stubShimSource(mod, names) {
+    const fns = names
+        .map((n) => `export const ${n} = (...a) => { throw new Error("node:${mod}.${n}() is not available in the browser"); };`)
+        .join("\n");
+    return `${fns}\nexport default { ${names.map((n) => `${n}: () => { throw new Error("node:${mod}.${n}() is not available in the browser"); }`).join(", ")} };\n`;
+}
 
 /**
- * esbuild plugin that shims node builtin imports.
+ * esbuild plugin that shims node builtin imports with inline browser shims.
  *
  * Register it BEFORE `fsPlugin()` so builtin specifiers never hit workspace /
  * node_modules resolution.
@@ -38,12 +66,19 @@ export function nodeShimPlugin() {
                 namespace: "node-shim",
             }));
 
+            build.onResolve({ filter: STUB_RESOLVE_RE }, (args) => ({
+                path: args.path.replace(/^node:/, ""),
+                namespace: "node-stub",
+            }));
+
             // Friendly error for builtins we don't shim (e.g. `node:crypto`).
             build.onResolve({ filter: BUILTIN_LIKE_RE }, (args) => {
                 if (SHIM_RESOLVE_RE.test(args.path)) return;
+                // Leave http(s) URLs to the httpPlugin.
+                if (/^https?:\/\//.test(args.path)) return;
                 return {
                     errors: [
-                        { text: `No browser shim for node module '${args.path}' (shimmed: ${SHIMMED.join(", ")})` },
+                        { text: `No shim for node module '${args.path}'` },
                     ],
                 };
             });
@@ -52,6 +87,14 @@ export function nodeShimPlugin() {
                 { filter: /.*/, namespace: "node-shim" },
                 (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => ({
                     contents: /** @type {string} */ (SHIMS[args.path]),
+                    loader: "js",
+                }),
+            );
+
+            build.onLoad(
+                { filter: /.*/, namespace: "node-stub" },
+                (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => ({
+                    contents: stubShimSource(args.path, STUBS[args.path]),
                     loader: "js",
                 }),
             );
@@ -95,7 +138,32 @@ export const promises = {
     unlink, rm, rename, chmod, copyFile, realpath, exists,
 };
 export const constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 };
-export default { ...promises, constants, existsSync: undefined };
+
+// Sync API — no synchronous fs exists in the browser, but importing these
+// must not break the build. Calls throw with an actionable message.
+const __sync = (name) => () => {
+    throw new Error("fs." + name + "() is not supported in the browser (no sync fs) — use the promises API");
+};
+export const readFileSync = __sync("readFileSync");
+export const writeFileSync = __sync("writeFileSync");
+export const appendFileSync = __sync("appendFileSync");
+export const existsSync = __sync("existsSync");
+export const statSync = __sync("statSync");
+export const lstatSync = __sync("lstatSync");
+export const readdirSync = __sync("readdirSync");
+export const mkdirSync = __sync("mkdirSync");
+export const rmdirSync = __sync("rmdirSync");
+export const rmSync = __sync("rmSync");
+export const unlinkSync = __sync("unlinkSync");
+export const realpathSync = __sync("realpathSync");
+export const copyFileSync = __sync("copyFileSync");
+
+export default { ...promises, constants, ...Object.fromEntries([
+    ["readFileSync", readFileSync], ["writeFileSync", writeFileSync], ["appendFileSync", appendFileSync],
+    ["existsSync", existsSync], ["statSync", statSync], ["lstatSync", lstatSync], ["readdirSync", readdirSync],
+    ["mkdirSync", mkdirSync], ["rmdirSync", rmdirSync], ["rmSync", rmSync], ["unlinkSync", unlinkSync],
+    ["realpathSync", realpathSync], ["copyFileSync", copyFileSync],
+]) };
 `;
 
 // `fs/promises` shares the same (already promise-based) source as `fs`.
@@ -283,7 +351,7 @@ export const argv = __proc()?.argv ?? (__proc().argv = []);
 export const platform = __proc()?.platform ?? "browser";
 export const arch = __proc()?.arch ?? "wasm32";
 export const pid = 0;
-export const version = __proc()?.version ?? "v0.0.0";
+export const version = __proc()?.version ?? "v22.11.0";
 export const versions = __proc()?.versions ?? {};
 export function cwd() { return __proc()?.cwd?.() ?? "/"; }
 export function chdir(d) { __proc()?.chdir?.(d); }
@@ -389,6 +457,171 @@ export function format(url, options) {
 export default { URL, URLSearchParams, fileURLToPath, pathToFileURL, format };
 `;
 
+// ---------------------------------------------------------------------------
+// module
+// ---------------------------------------------------------------------------
+
+const MODULE_SHIM = `
+export function createRequire(filename) {
+    // Bundled CJS is converted by esbuild at build time, so a runtime
+    // require can only fail — dynamic requires have no node runtime here.
+    const requireFn = (id) => {
+        throw new Error("createRequire() dynamic require of '" + id + "' is not supported in the browser");
+    };
+    requireFn.resolve = (id) => id;
+    requireFn.cache = Object.create(null);
+    return requireFn;
+}
+export const builtinModules = ["fs", "fs/promises", "path", "process", "util", "os", "url", "module"];
+export class Module {}
+export default { createRequire, builtinModules, Module };
+`;
+
+// ---------------------------------------------------------------------------
+// assert (inline — nodepod's assert is CJS-style with no named ESM exports,
+// which breaks `import { ok } from "assert"`)
+// ---------------------------------------------------------------------------
+
+const ASSERT_SHIM = `
+export class AssertionError extends Error {
+    constructor(options) {
+        const opts = typeof options === "string" ? { message: options } : options ?? {};
+        super(opts.message ?? "Assertion failed");
+        this.name = "AssertionError";
+        this.code = "ERR_ASSERTION";
+        this.actual = opts.actual;
+        this.expected = opts.expected;
+        this.operator = opts.operator ?? "";
+        this.generatedMessage = opts.generatedMessage ?? false;
+    }
+}
+
+function __fail(actual, expected, message, operator, fn) {
+    throw new AssertionError({ actual, expected, message, operator, stackStartFn: fn });
+}
+
+function __deepEqual(a, b) {
+    if (Object.is(a, b)) return true;
+    if (a === null || b === null || a === undefined || b === undefined) return a === b;
+    if (typeof a !== typeof b) return false;
+    if (typeof a !== "object") return a === b || (a !== a && b !== b);
+    if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+    if (a instanceof RegExp && b instanceof RegExp) return a.source === b.source && a.flags === b.flags;
+    if (Array.isArray(a) && Array.isArray(b)) {
+        if (a.length !== b.length) return false;
+        return a.every((v, i) => __deepEqual(v, b[i]));
+    }
+    if (a instanceof Map && b instanceof Map) {
+        if (a.size !== b.size) return false;
+        for (const [k, v] of a) if (!b.has(k) || !__deepEqual(v, b.get(k))) return false;
+        return true;
+    }
+    if (a instanceof Set && b instanceof Set) {
+        if (a.size !== b.size) return false;
+        for (const v of a) {
+            let found = false;
+            for (const w of b) if (__deepEqual(v, w)) { found = true; break; }
+            if (!found) return false;
+        }
+        return true;
+    }
+    if (a instanceof Uint8Array && b instanceof Uint8Array) {
+        return a.length === b.length && a.every((v, i) => v === b[i]);
+    }
+    if (typeof a === "object" && typeof b === "object") {
+        const ka = Object.keys(a), kb = Object.keys(b);
+        if (ka.length !== kb.length) return false;
+        return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && __deepEqual(a[k], b[k]));
+    }
+    return false;
+}
+
+function assert(value, message) {
+    if (!value) __fail(value, true, message ?? "Value is falsy", "==", assert);
+}
+
+assert.ok = assert;
+assert.equal = (a, b, m) => { if (a != b) __fail(a, b, m, "==", assert.equal); };
+assert.notEqual = (a, b, m) => { if (a == b) __fail(a, b, m, "!=", assert.notEqual); };
+assert.strictEqual = (a, b, m) => { if (a !== b) __fail(a, b, m, "===", assert.strictEqual); };
+assert.notStrictEqual = (a, b, m) => { if (a === b) __fail(a, b, m, "!==", assert.notStrictEqual); };
+assert.deepEqual = (a, b, m) => { if (!__deepEqual(a, b)) __fail(a, b, m, "deepEqual", assert.deepEqual); };
+assert.deepStrictEqual = (a, b, m) => { if (!__deepEqual(a, b)) __fail(a, b, m, "deepStrictEqual", assert.deepStrictEqual); };
+assert.notDeepStrictEqual = (a, b, m) => { if (__deepEqual(a, b)) __fail(a, b, m, "notDeepStrictEqual", assert.notDeepStrictEqual); };
+assert.throws = (fn, _err, m) => {
+    let threw = false;
+    try { fn(); } catch { threw = true; }
+    if (!threw) __fail(undefined, undefined, m ?? "Expected function to throw", "throws", assert.throws);
+};
+assert.doesNotThrow = (fn, _err, m) => {
+    try { fn(); } catch (e) { __fail(undefined, undefined, m ?? "Unexpected throw", "doesNotThrow", assert.doesNotThrow); }
+};
+assert.rejects = async (p, _err, m) => {
+    let threw = false;
+    try { await (typeof p === "function" ? p() : p); } catch { threw = true; }
+    if (!threw) __fail(undefined, undefined, m ?? "Expected promise to reject", "rejects", assert.rejects);
+};
+assert.doesNotReject = async (p, _err, m) => {
+    try { await (typeof p === "function" ? p() : p); } catch (e) { __fail(undefined, undefined, m ?? "Unexpected rejection", "doesNotReject", assert.doesNotReject); }
+};
+assert.fail = (m) => { __fail(undefined, undefined, typeof m === "string" ? m : "Failed", "fail", assert.fail); };
+assert.match = (s, re, m) => { if (!re.test(s)) __fail(s, re, m, "match", assert.match); };
+assert.doesNotMatch = (s, re, m) => { if (re.test(s)) __fail(s, re, m, "doesNotMatch", assert.doesNotMatch); };
+assert.ifError = (e) => { if (e != null) throw e instanceof Error ? e : new AssertionError({ message: String(e) }); };
+assert.AssertionError = AssertionError;
+assert.strict = Object.assign(function strict(value, message) {
+    if (!value) __fail(value, true, message ?? "Value is falsy", "===", assert.strict);
+}, assert);
+assert.strict.strict = assert.strict;
+
+export const ok = assert.ok;
+export const equal = assert.equal;
+export const notEqual = assert.notEqual;
+export const strictEqual = assert.strictEqual;
+export const notStrictEqual = assert.notStrictEqual;
+export const deepEqual = assert.deepEqual;
+export const deepStrictEqual = assert.deepStrictEqual;
+export const notDeepStrictEqual = assert.notDeepStrictEqual;
+export const throws = assert.throws;
+export const doesNotThrow = assert.doesNotThrow;
+export const rejects = assert.rejects;
+export const doesNotReject = assert.doesNotReject;
+export const fail = assert.fail;
+export const match = assert.match;
+export const doesNotMatch = assert.doesNotMatch;
+export const ifError = assert.ifError;
+export const strict = assert.strict;
+export default assert;
+`;
+
+// ---------------------------------------------------------------------------
+// crypto — WebCrypto-backed where possible
+// ---------------------------------------------------------------------------
+
+const CRYPTO_SHIM = `
+const __wc = globalThis.crypto;
+export const webcrypto = __wc;
+export const getRandomValues = (arr) => __wc.getRandomValues(arr);
+export const randomUUID = () => __wc.randomUUID();
+export const subtle = __wc.subtle;
+export function randomBytes(size) {
+    return __wc.getRandomValues(new Uint8Array(size));
+}
+export function createHash(algorithm) {
+    throw new Error("crypto.createHash('" + algorithm + "') is not supported in the browser (only WebCrypto: subtle, getRandomValues, randomUUID)");
+}
+createHash.sha256 = createHash;
+export function createHmac(algorithm, key) {
+    throw new Error("crypto.createHmac() is not supported in the browser — use crypto.subtle.sign() with WebCrypto");
+}
+export const constants = {};
+export const fips = false;
+export default {
+    webcrypto, getRandomValues, randomUUID, subtle, randomBytes,
+    createHash, createHmac, constants, fips,
+};
+`;
+
 /** @type {Record<string, string>} */
 const SHIMS = {
     fs: FS_SHIM,
@@ -398,4 +631,7 @@ const SHIMS = {
     util: UTIL_SHIM,
     os: OS_SHIM,
     url: URL_SHIM,
+    module: MODULE_SHIM,
+    assert: ASSERT_SHIM,
+    crypto: CRYPTO_SHIM,
 };
