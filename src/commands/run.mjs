@@ -23,18 +23,18 @@ import {
  * (and the node shims, which read `globalThis.fs` lazily) can use them.
  * Globals persist between runs by design.
  *
- * @param {import("../services/fs.mjs").WebFileSystem} fs
+ * @param {import("../types/services.d.ts").WorkspaceFsService} fs
  * @param {string} entry
  * @param {string[]} scriptArgs
  */
 function installGlobals(fs, entry, scriptArgs) {
-    globalThis.fs = fs;
-
+    /** @type {any} */ (globalThis).fs = fs;
     /** @type {any} */ (globalThis.process) ??= {};
     const proc = /** @type {any} */ (globalThis.process);
     proc.argv = [proc.argv?.[0] ?? "run", entry, ...scriptArgs];
     proc.env ??= {};
     proc.cwd = () => fs.cwd;
+    /** @param {string} d */
     proc.chdir = (d) => { fs.cwd = d; };
     proc.platform = "browser";
     proc.exit = (code = 0) => {
@@ -72,20 +72,26 @@ function formatValue(v) {
  * @returns {A}
  */
 function withPipedConsole(term, fn) {
+    /** @type {(keyof typeof console)[]} */
     const levels = ["log", "info", "warn", "error", "debug", "trace"];
-    const orig = /** @type {Record<string, any>} */ ({});
-    for (const level of levels) orig[level] = console[level].bind(console);
+    /** @type {Record<string, (...args: any[]) => void>} */
+    const orig = {};
+    /** @param {keyof typeof console} level */
+    const grab = (level) => /** @type {any} */ (console)[level].bind(console);
+    for (const level of levels) orig[level] = grab(level);
     for (const level of levels) {
-        console[level] = (...args) => {
+        /** @param {...any} args */
+        const patched = (...args) => {
             const text = args.map(formatValue).join(" ");
             if (level === "error") term.error(text);
             else if (level === "warn") term.log(`⚠ ${text}`);
             else term.log(text);
             orig[level](...args);
         };
+        /** @type {any} */ (console)[level] = patched;
     }
     const restore = () => {
-        for (const level of levels) console[level] = orig[level];
+        for (const level of levels) /** @type {any} */ (console)[level] = orig[level];
     };
     let result;
     try {
@@ -252,7 +258,7 @@ ${bundleCode}
  * fs (FileSystemDirectoryHandle is structured-cloneable).
  *
  * @param {string} source
- * @param {import("../services/fs.mjs").WebFileSystem} fs
+ * @param {import("../types/services.d.ts").WorkspaceFsService} fs
  * @param {import("../types/terminal.d.ts").Terminal} term
  * @returns {Promise<void>}
  */
@@ -262,6 +268,10 @@ function runInWorker(source, fs, term) {
         /** @type {Worker | null} */
         let worker = null;
         let settled = false;
+        /**
+         * @param {(r: void) => void} fn
+         * @param {any} value
+         */
         const finish = (fn, value) => {
             if (settled) return;
             settled = true;
@@ -376,15 +386,8 @@ export const runCommand = createCommand({
     timeoutSeconds: 300,
 
     /**
-     * @param {{
-     *   entry: string,
-     *   raw?: boolean,
-     *   bundle?: boolean,
-     *   worker?: boolean,
-     *   main?: boolean,
-     *   evalMode?: boolean,
-     *   scriptArgs?: string[],
-     * }} parsed
+     * `parsed` is inferred from the inline parser via createCommand's
+     * contextual typing — do not annotate it (readonly-array variance).
      * @param {import("../types/terminal.d.ts").Terminal} term
      * @returns {Effect.Effect<undefined, Error>}
      */

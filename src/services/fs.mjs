@@ -301,7 +301,8 @@ export class WebFileSystem {
     /**
      * Reads the contents of a directory.
      * @param {string} [path=''] The path of the directory to read (defaults to CWD).
-     * @returns {Promise<string[]>} An array of names of the entries in the directory.
+     * @returns {Promise<string[] | [string, string][]>} Entry names, or
+     *          [name, "file" | "directory"] tuples when { types: true }.
      * @throws {Error} If the path is not a directory or does not exist.
      */
     async readdir(path = ".", options = /** @type {any} */ ({})) {
@@ -316,6 +317,7 @@ export class WebFileSystem {
         // {types:true} returns [name, kind][] straight from the handles —
         // avoids a stat() round-trip per entry in bulk scans.
         if (options.types) {
+            /** @type {[string, string][]} */
             const entries = [];
             for await (const entry of dirHandle_.values()) {
                 entries.push([entry.name, entry.kind]);

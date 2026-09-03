@@ -332,12 +332,13 @@ class EditorStateImpl {
             await applyTsConfig((p) => rfs.readFile(p, "utf8"));
 
             const { paths } = await scanPaths(fs, { ignore: [...SCAN_IGNORED, "node_modules"] });
+            /** @param {string} p */
             const rank = (p) =>
                 p.endsWith("package.json") ? 0
                 : /\.(d\.ts|d\.mts|d\.cts)$/.test(p) ? 1
                 : 2;
             const project = paths
-                .filter((p) => shouldHydrateModel(p))
+                .filter((/** @type {string} */ p) => shouldHydrateModel(p))
                 .sort((a, b) => rank(a) - rank(b));
 
             // Dependency packages from the root package.json.
@@ -370,6 +371,7 @@ class EditorStateImpl {
             if (depNames.length > 0) {
                 // Hydration diagnostics are dev-noise in normal use — keep
                 // them at debug level so they don't spam the console.
+                /** @type {Record<string, { pkgJson: number, decls: number }>} */
                 const perDep = {};
                 for (const f of depFiles) {
                     const pkg = f.replace(/^node_modules\//, "").replace(/\/[^/]+$/, "");
@@ -456,10 +458,9 @@ class EditorStateImpl {
      * @param {string[]} out
      */
     async #collectDepFiles(rfs, base, out) {
-        /** @type {string[][]} */
         let entries;
         try {
-            entries = await rfs.readdir(`/${base}`, { types: true });
+            entries = /** @type {[string, string][]} */ (await rfs.readdir(`/${base}`, { types: true }));
         } catch {
             return; // package not installed
         }
@@ -525,8 +526,8 @@ bus.on("npm:install", () => {
         console.error("Re-hydration after npm install failed:", e),
     );
 });
-bus.on("npm:uninstall", ({ names }) => {
-    for (const name of names) editorState.removeExtraLibsFor(`node_modules/${name}`);
+bus.on("npm:uninstall", (/** @type {CustomEvent<{ names: string[] }>} */ e) => {
+    for (const name of e.detail.names) editorState.removeExtraLibsFor(`node_modules/${name}`);
 });
 
 /**
@@ -534,7 +535,8 @@ bus.on("npm:uninstall", ({ names }) => {
  * node_modules (npm, git, manual edits) updates the TS worker's view
  * file by file — no full re-scan needed.
  */
-bus.on("fs:changed", async ({ path, type }) => {
+bus.on("fs:changed", async (/** @type {CustomEvent<{ path: string, type: string }>} */ e) => {
+    const { path, type } = e.detail;
     if (!path || !path.startsWith("node_modules/")) return;
     if (!workspace.fs) return;
 

@@ -127,7 +127,7 @@ export class WebTerminal extends LitElement {
                     autocomplete="off"
                     ?disabled=${this._disabled}
                     placeholder=${this._placeholder}
-                    @keydown=${(e) => this._onKeyDown(e)}
+                    @keydown=${(/** @type {KeyboardEvent} */ e) => this._onKeyDown(e)}
                 />
             </div>
         `;
@@ -211,7 +211,7 @@ export class WebTerminal extends LitElement {
         // has created #output — queue those lines and flush on firstUpdated.
         if (!output) {
             this._pendingLogs.push({ content, attributes });
-            return /** @type {HTMLDivElement} */ (null);
+            return /** @type {any} */ (null);
         }
         const line = document.createElement("div");
         Object.entries(attributes).forEach(([name, value]) => line.setAttribute(name, value));
@@ -355,7 +355,7 @@ export class WebTerminal extends LitElement {
 
     /**
      * @template {import("@optique/core").Parser<any>} TParser
-     * @param {import("./commands.mjs").TerminalCommand<TParser>} cmd
+     * @param {import("../services/commands.mjs").TerminalCommand<TParser>} cmd
      */
     registerCommand(cmd) {
         this.registry.registerCommand(cmd, this);

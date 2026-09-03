@@ -434,7 +434,7 @@ async function listInstalled(fs) {
     /** @type {string[]} */
     let top = [];
     try {
-        top = await fs.readdir("node_modules");
+        top = /** @type {string[]} */ (await fs.readdir("node_modules"));
     } catch {
         return [];
     }
@@ -445,7 +445,7 @@ async function listInstalled(fs) {
             /** @type {string[]} */
             let scoped = [];
             try {
-                scoped = await fs.readdir(`node_modules/${entry}`);
+                scoped = /** @type {string[]} */ (await fs.readdir(`node_modules/${entry}`));
             } catch {}
             for (const sub of scoped.sort()) names.push(`${entry}/${sub}`);
         } else {

@@ -23,13 +23,14 @@ import { SCAN_IGNORED, scanPaths } from "../utils/scan-paths.mjs";
 export class FileTreePane extends LitElement {
     static properties = {
         _title: { state: true },
-        /** @type {{ id: string }[]} recent folders, shown pre-workspace */
+        // Recent folders, shown pre-workspace. Shape: { id: string }[]
         _recents: { state: true },
     };
 
     constructor() {
         super();
         this._title = "No folder open";
+        /** @type {{ id: string }[]} */
         this._recents = [];
         /** @type {FileTree | null} */
         this._tree = null;
@@ -259,7 +260,7 @@ export class FileTreePane extends LitElement {
                                         class="recent-item remove-item"
                                         aria-label="Forget ${folder.id}"
                                         title="Forget ${folder.id}"
-                                        @click=${(e) => this._forgetRecent(folder.id, e)}
+                                        @click=${(/** @type {MouseEvent} */ e) => this._forgetRecent(folder.id, e)}
                                     >${this.icon("xmark")}</button>
                                 </div>
                             `)}
@@ -641,8 +642,8 @@ export class FileTreePane extends LitElement {
                     ? html`<div style="height: 1px; background: #444; margin: 0.25rem 0;"></div>`
                     : html`<button
                         style="all: unset; display: block; padding: 4px 12px; cursor: pointer; color: #d4d4d4;"
-                        @mouseenter=${(e) => (e.target.style.background = "#094771")}
-                        @mouseleave=${(e) => (e.target.style.background = "")}
+                        @mouseenter=${(/** @type {MouseEvent} */ e) => ((/** @type {HTMLElement} */ (e.target)).style.background = "#094771")}
+                        @mouseleave=${(/** @type {MouseEvent} */ e) => ((/** @type {HTMLElement} */ (e.target)).style.background = "")}
                         @click=${() => { /** @type {any} */ (entry).fn?.(); onClose(); }}
                     >${/** @type {any} */ (entry).label}</button>`,
             )}

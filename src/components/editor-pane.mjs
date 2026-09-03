@@ -135,7 +135,7 @@ export class EditorPane extends LitElement {
                             class="tab ${tab.path === editorState.activePath ? "active" : ""}
                                    ${editorState.dirty.has(tab.path) ? "dirty" : ""}"
                             @click=${() => this.openFile(tab.path)}
-                            @auxclick=${(e) => { if (e.button === 1) this._closeTab(tab.path); }}
+                            @auxclick=${(/** @type {MouseEvent} */ e) => { if (e.button === 1) this._closeTab(tab.path); }}
                         >
                             <span class="name" title=${tab.path}>
                                 ${tab.path.split("/").at(-1) ?? tab.path}
@@ -143,7 +143,7 @@ export class EditorPane extends LitElement {
                             <button
                                 class="close"
                                 aria-label=${`Close ${tab.path.split("/").at(-1) ?? tab.path}`}
-                                @click=${(e) => { e.stopPropagation(); this._closeTab(tab.path); }}
+                                @click=${(/** @type {MouseEvent} */ e) => { e.stopPropagation(); this._closeTab(tab.path); }}
                             >✕</button>
                         </div>
                     `,
@@ -214,7 +214,13 @@ export class EditorPane extends LitElement {
         });
     }
 
+    /** The empty-state placeholder element (asserted: it exists in the template). */
+    get _placeholderEl() {
+        return /** @type {HTMLElement} */ (this.renderRoot.querySelector("#placeholder"));
+    }
+
     /** Global save shortcut (active once the editor exists). */
+    /** @param {KeyboardEvent} e */
     _onDocumentKeyDown(e) {
         if (!this._editor) return;
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
@@ -330,7 +336,7 @@ export class EditorPane extends LitElement {
 
             // Hide the regular editor while the diff is open.
             this._mount.style.display = "none";
-            this.renderRoot.querySelector("#placeholder").style.display = "none";
+            this._placeholderEl.style.display = "none";
         } catch (error) {
             console.error(`Failed to show diff for ${path}:`, error);
         }
@@ -345,9 +351,9 @@ export class EditorPane extends LitElement {
         this._diffOriginalModel = null;
         this._mount.style.display = "";
         if (editorState.activePath) {
-            this.renderRoot.querySelector("#placeholder").style.display = "none";
+            this._placeholderEl.style.display = "none";
         } else {
-            this.renderRoot.querySelector("#placeholder").style.display = "";
+            this._placeholderEl.style.display = "";
         }
     }
 
@@ -378,7 +384,7 @@ export class EditorPane extends LitElement {
         // keep working immediately, like VS Code. Users click into the editor
         // when they want to type.
 
-        this.renderRoot.querySelector("#placeholder").style.display = "none";
+        this._placeholderEl.style.display = "none";
         this._invalidate();
     }
 
@@ -400,7 +406,7 @@ export class EditorPane extends LitElement {
                 this.openFile(next.path);
             } else {
                 this._editor?.setModel(null);
-                this.renderRoot.querySelector("#placeholder").style.display = "";
+                this._placeholderEl.style.display = "";
                 this._invalidate();
             }
         } else {
@@ -409,6 +415,7 @@ export class EditorPane extends LitElement {
     }
 
     /** Save a specific buffer to disk (root-relative path). */
+    /** @param {string} path */
     async savePath(path) {
         const fs = workspace.fs?.root;
         if (!fs || !path || !editorState.dirty.has(path)) return;
@@ -533,7 +540,7 @@ export class EditorPane extends LitElement {
         editorState.reset();
         this._viewStates.clear();
         this._editor?.setModel(null);
-        this.renderRoot.querySelector("#placeholder").style.display = "";
+        this._placeholderEl.style.display = "";
         this._invalidate();
     }
 }

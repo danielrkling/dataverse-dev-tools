@@ -639,7 +639,7 @@ const handlers = {
       const walk = (rel) =>
         Effect.gen(function* () {
           const abs = `${fs.cwd}/${rel}`.replace(/\/+/g, '/');
-          for (const name of yield* lift(() => fs.readdir(abs))) {
+          for (const name of /** @type {string[]} */ (yield* lift(() => fs.readdir(abs)))) {
             const childRel = rel ? `${rel}/${name}` : name;
             if (childRel === '.git') continue;
             const st = yield* lift(() => fs.stat(`${fs.cwd}/${childRel}`.replace(/\/+/g, '/')));
