@@ -1,4 +1,5 @@
 import { LitElement, html as litHtml, css } from "lit";
+import { hostStyles, scrollbarStyles, theme } from "./shared-styles.mjs";
 import { WebFileSystem } from "../services/fs.mjs";
 import { workspace, } from "../services/workspace.mjs";
 import { bus } from "../services/bus.mjs";
@@ -46,75 +47,37 @@ export class WebTerminal extends LitElement {
         this.registry = new CommandRegistry();
     }
 
-    static styles = css`
-        :host {
-            display: flex;
-            flex-direction: column;
-            font-family: 'Consolas', 'Monaco', monospace;
-            background-color: #1e1e1e;
-            color: #d4d4d4;
-            padding: 1rem;
-            border-radius: 5px;
-            /* Fill the split-panel slot; let the panel control sizing.
-               min-height:0 is required so the host can shrink below
-               content height inside a flex column. */
-            height: 100%;
-            min-height: 0;
-            box-sizing: border-box;
-        }
-#output {
-            flex-grow: 1;
-            /* min-height:0 lets the scroll area shrink and scroll
-               instead of expanding to fit all the log lines. */
-            min-height: 0;
-            overflow-y: auto;
-            overflow-x: hidden;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-#output::-webkit-scrollbar { width: 8px; }
-#output::-webkit-scrollbar-track { background: #2d2d2d; border-radius: 10px; }
-#output::-webkit-scrollbar-thumb { background: #555; border-radius: 10px; }
-#output::-webkit-scrollbar-thumb:hover { background: #777; }
-#output button {
-            all: unset;
-            display: block;
-            width: 100%;
-            box-sizing: border-box;
-        }
-        #output button:hover { background: #555; cursor: pointer; }
-        #output button:active, #output button:focus-visible { background: #555; cursor: pointer; }
-        .input-line {
-            display: flex;
-            align-items: center;
-            flex-wrap: nowrap;
-            margin-top: 0.5rem;
-        }
-        /* The prompt stays on one line and never shrinks; the input takes
-           the remaining space (min-width:0 lets it shrink within the flex
-           row instead of pushing the line to wrap). */
-.prompt {
-            margin-right: 0.5rem;
-            color: #569cd6;
-            white-space: nowrap;
-            flex-shrink: 0;
-        }
-#input {
-            flex-grow: 1;
-            min-width: 0;
-            background: none;
-            border: none;
-            color: inherit;
-            font-family: inherit;
-            font-size: 1em;
-            outline: none;
-        }
-.log-echo { color: #a0a0a0; }
-[data-disabled-hint] { color: #4fc1ff; margin-bottom: 0.5rem; }
-.log-info { color: #4fc1ff; }
-.log-error { color: #f48771; }
-.log-success { color: #4ec9b0; }
-    `;
+    // :host fills the split-panel slot; min-height:0 lets it shrink below
+    // content height inside a flex column (panel controls sizing).
+    static styles = [
+        hostStyles,
+        scrollbarStyles,
+        css`
+            :host { padding: 1rem; border-radius: 5px; height: 100%; }
+            /* min-height:0 lets the scroll area shrink and scroll instead of
+               expanding to fit all the log lines. */
+            #output { flex-grow: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all; }
+            #output button {
+                all: unset;
+                display: block;
+                width: 100%;
+                box-sizing: border-box;
+            }
+            #output button:hover,
+            #output button:active,
+            #output button:focus-visible { background: #555; cursor: pointer; }
+            .input-line { display: flex; align-items: center; flex-wrap: nowrap; margin-top: 0.5rem; }
+            /* Prompt never shrinks; input takes the rest (min-width:0 lets it
+               shrink within the flex row instead of wrapping). */
+            .prompt { margin-right: 0.5rem; color: ${theme.accent}; white-space: nowrap; flex-shrink: 0; }
+            #input { flex-grow: 1; min-width: 0; background: none; border: none; color: inherit; font-family: inherit; font-size: 1em; outline: none; }
+            .log-echo { color: ${theme.textDim}; }
+            .log-info, [data-disabled-hint] { color: ${theme.info}; }
+            [data-disabled-hint] { margin-bottom: 0.5rem; }
+            .log-error { color: ${theme.error}; }
+            .log-success { color: ${theme.success}; }
+        `,
+    ];
 
     render() {
         return litHtml`

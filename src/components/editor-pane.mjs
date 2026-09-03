@@ -1,4 +1,5 @@
 import { LitElement, html, css } from "lit";
+import { hostStyles, theme } from "./shared-styles.mjs";
 import { bus } from "../services/bus.mjs";
 import { workspace } from "../services/workspace.mjs";
 import { editorState, ensureMonaco, languageForPath } from "../services/editor.mjs";
@@ -33,66 +34,34 @@ export class EditorPane extends LitElement {
         _tick: { type: Number, state: true },
     };
 
-    static styles = css`
-        :host {
-            display: flex;
-            flex-direction: column;
-            min-width: 0;
-            min-height: 0;
-            overflow: hidden;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            font-family: 'Consolas', 'Monaco', monospace;
-        }
-        #tabs {
-            display: flex;
-            overflow-x: auto;
-            background: #181818;
-            border-bottom: 1px solid #333;
-            flex-shrink: 0;
-        }
-        #tabs::-webkit-scrollbar { height: 6px; }
-        .tab {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 10px;
-            cursor: pointer;
-            white-space: nowrap;
-            font-size: 12px;
-            color: #a0a0a0;
-            border-right: 1px solid #333;
-            user-select: none;
-        }
-        .tab:hover { background: #232323; }
-        .tab.active {
-            background: #1e1e1e;
-            color: #fff;
-            box-shadow: inset 0 2px 0 #569cd6;
-        }
-        .tab .close {
-            all: unset;
-            cursor: pointer;
-            padding: 0 3px;
-            border-radius: 3px;
-            line-height: 1;
-            display: inline-flex;
-        }
-        .tab .close:hover { background: #444; }
-        .tab.dirty .name::after { content: " ●"; color: #e2c08d; }
-        /* The Monaco mount lives in the light DOM (Monaco's styles come from
-           document.head) and is slotted into the shadow tree here. */
-        ::slotted(.editor-mount) {
-            flex: 1;
-            min-height: 0;
-        }
-        #placeholder {
-            flex: 1;
-            display: grid;
-            place-items: center;
-            color: #606060;
-        }
-    `;
+    static styles = [
+        hostStyles,
+        css`
+            #tabs { display: flex; flex-shrink: 0; overflow-x: auto; background: ${theme.bgPanel}; border-bottom: 1px solid ${theme.border}; }
+            #tabs::-webkit-scrollbar { height: 6px; }
+            .tab {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 10px;
+                cursor: pointer;
+                white-space: nowrap;
+                font-size: 12px;
+                color: ${theme.textDim};
+                border-right: 1px solid ${theme.border};
+                user-select: none;
+            }
+            .tab:hover { background: ${theme.bgHover}; }
+            .tab.active { background: ${theme.bg}; color: #fff; box-shadow: inset 0 2px 0 ${theme.accent}; }
+            .tab .close { all: unset; display: inline-flex; cursor: pointer; padding: 0 3px; border-radius: 3px; line-height: 1; }
+            .tab .close:hover { background: #444; }
+            .tab.dirty .name::after { content: " ●"; color: ${theme.warn}; }
+            /* The Monaco mount lives in the light DOM (Monaco's styles come from
+               document.head) and is slotted into the shadow tree here. */
+            ::slotted(.editor-mount) { flex: 1; min-height: 0; }
+            #placeholder { flex: 1; display: grid; place-items: center; color: ${theme.textMuted}; }
+        `,
+    ];
 
     constructor() {
         super();

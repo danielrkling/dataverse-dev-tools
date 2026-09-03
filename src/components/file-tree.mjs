@@ -1,4 +1,5 @@
 import { LitElement, html, css, render as litRender } from "lit";
+import { hostStyles, theme } from "./shared-styles.mjs";
 import { FileTree, prepareFileTreeInput } from "@pierre/trees";
 import "@pierre/trees/web-components"; // registers <file-tree-container> + styles
 import { bus } from "../services/bus.mjs";
@@ -58,162 +59,63 @@ export class FileTreePane extends LitElement {
         this._gitStatusTimer = null;
     }
 
-    static styles = css`
-        :host {
-            display: flex;
-            flex-direction: column;
-            background-color: #1e1e1e;
-            color: #d4d4d4;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-            min-width: 0;
-            overflow: hidden;
-        }
-        :host header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0.25rem 0.5rem;
-            border-bottom: 1px solid #333;
-            flex-shrink: 0;
-        }
-        #title {
-            font-weight: bold;
-            color: #569cd6;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        #mount {
-            flex: 1;
-            min-height: 0;
-        }
-        #empty {
-            padding: 1rem;
-            color: #808080;
-        }
+    static styles = [
+        hostStyles,
+        css`
+            :host { font-size: 13px; }
+            :host header { display: flex; align-items: center; justify-content: space-between; padding: 0.25rem 0.5rem; border-bottom: 1px solid ${theme.border}; flex-shrink: 0; }
+            #title { font-weight: bold; color: ${theme.accent}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            #mount { flex: 1; min-height: 0; }
+            #empty { padding: 1rem; color: ${theme.textFaint}; }
+            .toolbar { display: flex; align-items: center; gap: 2px; }
+            button { font-family: inherit; cursor: pointer; }
+            .icon-btn { all: unset; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 4px; color: ${theme.textDim}; cursor: pointer; box-sizing: border-box; }
+            .icon-btn:hover { background: ${theme.bgControl}; color: #fff; }
+            .icon-btn svg { width: 14px; height: 14px; }
+            .stack { display: flex; flex-direction: column; gap: 0.25rem; }
+            .flank { display: flex; align-items: stretch; gap: 0.25rem; }
+            .flank .recent-item { flex: 1; min-width: 0; }
+            .recent-item,
+            .empty-action {
+                all: unset;
+                display: inline-flex;
+                align-items: center;
+                gap: 0.4rem;
+                box-sizing: border-box;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 12px;
+                cursor: pointer;
+                max-width: 100%;
+            }
+            .recent-item > span,
+            .recent-item > svg { overflow: hidden; text-overflow: ellipsis; }
+            .recent-item { background: ${theme.bgControl}; color: ${theme.text}; }
+            .recent-item:hover { background: ${theme.bgControlHover}; }
+            .recent-item.remove-item {
+                flex: none;
+                justify-content: center;
+                width: 20px;
+                align-self: stretch;
+                min-height: 20px;
+                padding: 0;
+                background: transparent;
+                color: ${theme.error};
+            }
+            .recent-item.remove-item:hover { background: #3d2d2d; }
+            .recent-item.remove-item svg { width: 10px; height: 10px; }
+            .empty-action { border: 1px solid ${theme.border}; background: transparent; color: ${theme.text}; }
+            .empty-action:hover { border-color: ${theme.accent}; color: #fff; }
+            .empty-action svg { width: 12px; height: 12px; }
+            .empty-action hr { border: none; border-top: 1px solid ${theme.border}; }
 
-        /* --- Toolbar + generic icon button (replaces wa-button/wa-icon) --- */
-        .toolbar {
-            display: flex;
-            align-items: center;
-            gap: 2px;
-        }
-        button {
-            font-family: inherit;
-            cursor: pointer;
-        }
-        .icon-btn {
-            all: unset;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 22px;
-            height: 22px;
-            border-radius: 4px;
-            color: #a0a0a0;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-        .icon-btn:hover {
-            background: #2d2d2d;
-            color: #fff;
-        }
-        .icon-btn svg {
-            width: 14px;
-            height: 14px;
-        }
-        .stack {
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
-        }
-        .flank {
-            display: flex;
-            align-items: center;
-            gap: 0.25rem;
-        }
-        .recent-item,
-        .empty-action {
-            all: unset;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            box-sizing: border-box;
-            border-radius: 4px;
-            padding: 4px 10px;
-            font-size: 12px;
-            cursor: pointer;
-            max-width: 100%;
-        }
-        .recent-item > span,
-        .recent-item > svg {
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .recent-item {
-            background: #2d2d2d;
-            color: #d4d4d4;
-        }
-        .recent-item:hover {
-            background: #3d3d3d;
-        }
-        .recent-item.remove-item {
-            padding: 2px 6px;
-            background: transparent;
-            color: #f48771;
-        }
-        .recent-item.remove-item:hover {
-            background: #3d2d2d;
-        }
-        .recent-item.remove-item svg {
-            width: 10px;
-            height: 10px;
-        }
-        .empty-action {
-            border: 1px solid #333;
-            background: transparent;
-            color: #d4d4d4;
-        }
-        .empty-action:hover {
-            border-color: #569cd6;
-            color: #fff;
-        }
-        .empty-action svg {
-            width: 12px;
-            height: 12px;
-        }
-        .empty-action hr {
-            border: none;
-            border-top: 1px solid #333;
-        }
-
-        /* Loading overlay shown while the workspace is being scanned */
-        #loading {
-            display: none;
-            flex: 1;
-            min-height: 0;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
-            color: #808080;
-            flex-direction: column;
-        }
-        #loading.visible {
-            display: flex;
-        }
-        .spinner {
-            width: 1.75rem;
-            height: 1.75rem;
-            border: 2px solid #3d3d3d;
-            border-top-color: #569cd6;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-    `;
+            /* Loading overlay shown while the workspace is being scanned */
+            #loading { display: none; flex: 1; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem; color: ${theme.textFaint}; }
+            #loading.visible { display: flex; }
+            .spinner { width: 1.75rem; height: 1.75rem; border: 2px solid ${theme.bgControlHover}; border-top-color: ${theme.accent}; border-radius: 50%; animation: spin 0.8s linear infinite; }
+            @keyframes spin { to { transform: rotate(360deg); } }
+        `,
+    ];
 
     /** Minimal inline SVG icons (stroke = currentColor) — replaces wa-icon.
      *  Static Lit templates (no unsafe directive needed): the browser's HTML
