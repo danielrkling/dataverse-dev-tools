@@ -12,13 +12,12 @@ import {
 } from "@optique/core";
 import picomatch from "picomatch";
 import * as z from "zod";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { createWatchPipeline } from "../effects/watch-pipeline.mjs";
-import { DataverseService, DataverseServiceLive } from "../effects/dataverse-service.mjs";
-import { terminalLoggerLayer } from "../effects/logger.mjs";
-import { TerminalUi, terminalUiLayer } from "../effects/terminal-ui.mjs";
+import { DataverseService, isValidWebResource } from "../effects/dataverse-service.mjs";
+import { TerminalUi } from "../effects/terminal-ui.mjs";
+import { WorkspaceFs, commandLayers } from "../effects/services.mjs";
 import { createCommand } from "../services/commands.mjs";
-import { isValidWebResource } from "../effects/dataverse-service.mjs";
 import {bus} from "../services/bus.mjs"
 
 export const dataverseConfigSchema = z.object({
@@ -30,7 +29,7 @@ export const dataverseConfigSchema = z.object({
 });
 
 /**
- * Read and validate a dataverse config file.
+ * Read and validate a dataverse config file (Promise API — used by preview).
  * @param {any} term
  * @param {string} path
  * @returns {Promise<import("zod").infer<typeof dataverseConfigSchema>>}
@@ -42,6 +41,34 @@ async function readConfig(term, path) {
     } catch (/** @type {any} */ e) {
         throw new Error(`Error reading ${path}:\n${e instanceof Error ? e.message : e}`);
     }
+    return validateConfig(raw, path);
+}
+
+/**
+ * Effect variant over the WorkspaceFs service (used by upload's run flow).
+ * @param {import("../types/services.d.ts").WorkspaceFsService} fs
+ * @param {string} path
+ * @returns {Effect.Effect<import("zod").infer<typeof dataverseConfigSchema>, Error>}
+ */
+function readConfigEffect(fs, path) {
+    return Effect.gen(function* () {
+        const raw = yield* Effect.tryPromise({
+            try: async () => JSON.parse(/** @type {string} */ (await fs.readFile(path, { encoding: "utf-8" }))),
+            catch: (/** @type {any} */ e) => new Error(`Error reading ${path}:\n${e instanceof Error ? e.message : e}`),
+        });
+        return yield* Effect.try({
+            try: () => validateConfig(raw, path),
+            catch: (/** @type {any} */ e) => e,
+        });
+    });
+}
+
+/**
+ * @param {unknown} raw
+ * @param {string} path
+ * @returns {import("zod").infer<typeof dataverseConfigSchema>}
+ */
+function validateConfig(raw, path) {
     const result = dataverseConfigSchema.safeParse(raw);
     if (!result.success) {
         throw new Error(`Error parsing ${path}:\n${z.prettifyError(result.error)}`);
@@ -97,48 +124,54 @@ export const uploadCommand = createCommand({
     description: message`Upload web resources to Dataverse`,
     usage: message`upload init | upload [files..] [options]`,
     brief: message`Upload web resources to Dataverse`,
-    execute: async (parsed, term) => {
-        // --- `upload --init`: scaffold the default config file ---
-        if (parsed.init) {
-            const configPath = parsed.config || "dataverse.config.json";
-            if (await term.fs.exists(configPath)) {
-                term.error(`${configPath} already exists — remove it first if you want to re-scaffold.`);
-                return;
-            }
-            const scaffold = {
-                prefix: "new_",
-                files: ["**/*.js", "**/*.mjs", "**/*.html", "**/*.css"],
-                solution:"",
-                preview:""
-            };
-            await term.fs.writeFile(configPath, `${JSON.stringify(scaffold, null, 2)}\n`, "utf8");
-            term.success(
-                `Wrote ${configPath} — set prefix (must contain an underscore) and optionally solution.`,
-            );
-            return;
-        }
+    timeoutSeconds: 600, // uploads are batched with retries — don't cut at 60s
+    executeEffect: (parsed, term) => {
+        return /** @type {Effect.Effect<undefined, Error>} */ (
+            Effect.gen(function* () {
+                const fs = yield* WorkspaceFs;
 
-        let { files, prefix, solution } = parsed;
+                // --- `upload --init`: scaffold the default config file ---
+                if (parsed.init) {
+                    const configPath = parsed.config || "dataverse.config.json";
+                    if (yield* Effect.tryPromise({ try: () => fs.exists(configPath), catch: () => false })) {
+                        term.error(`${configPath} already exists — remove it first if you want to re-scaffold.`);
+                        return undefined;
+                    }
+                    const scaffold = {
+                        prefix: "new_",
+                        files: ["**/*.js", "**/*.mjs", "**/*.html", "**/*.css"],
+                        solution:"",
+                        preview:""
+                    };
+                    yield* Effect.tryPromise({
+                        try: () => fs.writeFile(configPath, `${JSON.stringify(scaffold, null, 2)}\n`, "utf8"),
+                        catch: (cause) => new Error(`write ${configPath}: ${/** @type {any} */ (cause)?.message ?? cause}`),
+                    });
+                    term.success(
+                        `Wrote ${configPath} — set prefix (must contain an underscore) and optionally solution.`,
+                    );
+                    return undefined;
+                }
 
-        if (!(files && prefix && solution)) {
-            const configFile = await readConfig(term, parsed.config);
-            files ??= configFile.files ?? [];
-            prefix ??= configFile.prefix;
-            solution ??= configFile.solution;
-        }
+                let { files, prefix, solution } = parsed;
 
-        const isMatch = picomatch(files ?? []);
-        const entries = await term.fs.getFilesFromDirectory("", isMatch);
+                if (!(files && prefix && solution)) {
+                    const configFile = yield* readConfigEffect(fs, parsed.config || "dataverse.config.json");
+                    files ??= configFile.files ?? [];
+                    prefix ??= configFile.prefix;
+                    solution ??= configFile.solution;
+                }
 
-        // Fire-and-forget: the promise is not awaited by the registry, so
-        // this catch is the single error reporter for the initial upload.
-        Effect.runPromise(
-            /** @type {Effect.Effect<void, any, never>} */ (uploadFilesEffect(entries)),
-        ).catch((e) => {
-            term.error(/** @type {any} */ (e)?.message ?? String(e));
-        });
+                const isMatch = picomatch(files ?? []);
+                const entries = yield* Effect.tryPromise({
+                    try: () => fs.getFilesFromDirectory("", isMatch),
+                    catch: (cause) => new Error(`collecting files: ${/** @type {any} */ (cause)?.message ?? cause}`),
+                });
 
-        if (parsed.watch) {
+                // Errors surface through the registry (single friendly line).
+                yield* uploadFilesEffect(entries, { files, prefix, solution, publish: parsed.publish });
+
+                if (parsed.watch) {
             /**
              * Upload a single changed file as an Effect. Content is read
              * *inside* the pipeline (after debouncing), so the latest
@@ -151,14 +184,18 @@ export const uploadCommand = createCommand({
                 Effect.gen(function* () {
                     if (e.type === "deleted") return;
                     const content = yield* Effect.tryPromise({
-                        try: () => term.fs.readFile(e.path, { encoding: "utf8" }),
-                        catch: (cause) => ({
+                        try: () => fs.readFile(e.path, { encoding: "utf8" }),                        catch: (cause) => ({
                             _tag: "ReadError",
                             message: `Could not read ${e.path}`,
                             cause,
                         }),
                     });
-                    yield* uploadFilesEffect([[e.path, /** @type {string} */ (content)]]);
+                    yield* uploadFilesEffect([[e.path, /** @type {string} */ (content)]], {
+                        files,
+                        prefix,
+                        solution,
+                        publish: parsed.publish,
+                    });
                     yield* Effect.logInfo(`watch upload complete for ${e.path}`).pipe(
                         Effect.annotateLogs({ type: e.type }),
                     );
@@ -172,7 +209,7 @@ export const uploadCommand = createCommand({
                 match: isMatch,
                 handler: uploadEffect,
                 term,
-                layer: DataverseServiceLive,
+                layer: commandLayers(term),
             });
 
             const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
@@ -193,12 +230,17 @@ export const uploadCommand = createCommand({
          * DataverseService. DOM status updates happen inline; each request
          * is retried/timed out/logged by the service.
          *
+         * Requirements (DataverseService, TerminalUi) are provided by the
+         * registry's commandLayers — or the watch pipeline's layer — never
+         * inline, so there is exactly one layer graph.
+         *
          * @param {[string,string][]} files
-         * @returns {Effect.Effect<void, any, any>}
+         * @param {{ files: any, prefix: string, solution?: string, publish: boolean }} run
+         * @returns {Effect.Effect<void, Error, any>}
          */
-        function uploadFilesEffect(files) {
+        function uploadFilesEffect(files, run) {
             const runId = Math.random().toString(36).slice(2, 7);
-            const validFiles = files.map((v) => [`${prefix}/${v[0]}`, v[1]]).filter((v) => isValidWebResource(v[0]));
+            const validFiles = files.map((v) => [`${run.prefix}/${v[0]}`, v[1]]).filter((v) => isValidWebResource(v[0]));
             const filenames = validFiles.map((v) => v[0]);
             if (!validFiles.length) return Effect.void;
 
@@ -210,51 +252,48 @@ export const uploadCommand = createCommand({
             // logger (error paths restore FiberRefs captured at the failure
             // origin, so spans/annotations must be ambient at that point).
             const body = Effect.gen(function* () {
-                const api = yield* Effect.provide(DataverseService, DataverseServiceLive);
-                const ui = yield* Effect.provide(TerminalUi, terminalUiLayer(term));
+                const api = yield* DataverseService;
+                const ui = yield* TerminalUi;
                 const line = yield* Effect.sync(() => ui.startLine("Uploading:", filenames.join(",")));
 
                 // Concurrency 3: parallel but bounded — no request stampede.
                 const wrs = yield* Effect.forEach(
                     validFiles,
-                    ([name, content]) => api.upload(name, content, solution),
+                    ([name, content]) => api.upload(name, content, run.solution),
                     { concurrency: 3 },
                 ).pipe(
                     // Errors here are service failures — recolor the line.
                     Effect.tapError(() => Effect.sync(() => line.set("Failed:", "", "#f14c4c"))),
                 );
                 line.set("Uploaded:", "", "#4fc1ff");
-                bus.emit("dataverse:uploaded", { files });
-                if (parsed.publish) {
+                bus.emit("dataverse:uploaded", { files: run.files });
+                if (run.publish) {
                     line.set("Publishing", "", "#e2c08d");
-                    yield* api.publish(wrs, solution).pipe(
+                    yield* api.publish(wrs, run.solution).pipe(
                         Effect.tapError(() => Effect.sync(() => line.set("Failed:", "", "#f14c4c"))),
                     );
                     line.set("Published:", "", "#4ec9b0");
-                    bus.emit("dataverse:published", { files });
+                    bus.emit("dataverse:published", { files: run.files });
                 }
                 yield* Effect.logInfo(`upload batch complete`).pipe(
-                    Effect.annotateLogs({ runId, count: validFiles.length, publish: Boolean(parsed.publish) }),
+                    Effect.annotateLogs({ runId, count: validFiles.length, publish: run.publish }),
                 );
             });
 
             return body.pipe(
                 Effect.withSpan("dataverse.uploadFiles", {
-                    attributes: { runId, count: validFiles.length, publish: Boolean(parsed.publish) },
+                    attributes: { runId, count: validFiles.length, publish: run.publish },
                 }),
                 Effect.withLogSpan("dataverse.uploadFiles"),
                 // Convert to a plain Error so the registry's error path can
                 // display it — the single error report (no duplicate logging).
                 Effect.mapError((err) => new Error(describeError(err))),
-                // This command runs via plain `execute`, whose inner
-                // Effect.runPromise creates a fresh runtime — the terminal
-                // logger must be provided here explicitly.
-                Effect.provide(terminalLoggerLayer(term)),
             );
         }
 
-        // Note: the initial upload is kicked off right after the file list
-        // is gathered (see above). Errors surface through the registry.
+            return undefined;
+            })
+        );
     },
 });
 

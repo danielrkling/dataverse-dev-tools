@@ -59,7 +59,7 @@ const FlattenFsError = (op, path) => (cause) => ({
  * @template A
  * @param {string} op
  * @param {string} path
- * @param {(fs: import("../types/terminal.d.ts").Terminal["fs"]) => Promise<A>} run
+ * @param {(fs: import("../types/services.d.ts").WorkspaceFsService) => Promise<A>} run
  * @returns {Effect.Effect<A, FlattenFsError, any>}
  */
 const fsOp = (op, path, run) =>

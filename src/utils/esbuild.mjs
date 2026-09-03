@@ -126,7 +126,7 @@ export function getLoaderFromContentType(contentType, url) {
 // --- RESOLVE HELPERS ---
 
 /**
- * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} path
  * @returns {Promise<string | null>}
  */
@@ -143,7 +143,7 @@ async function resolveFile(fs, path) {
 }
 
 /**
- * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} dir
  * @returns {Promise<string | null>}
  */
@@ -165,7 +165,7 @@ async function resolveDirectory(fs, dir) {
 }
 
 /**
- * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} specifier
  * @param {string} importerDir
  * @returns {Promise<string | null>}
@@ -248,7 +248,7 @@ function resolveConditionalExport(target, activeConditions) {
 }
 
 /**
- * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  */
 export function fsPlugin(fs) {
     return {
@@ -281,7 +281,7 @@ export function fsPlugin(fs) {
                 { filter: /.*/, namespace: "browser-fs" },
                 async (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => {
                     const contents = await fs.readFile(args.path, { encoding: "utf-8" });
-                    return { contents, loader: "default" };
+                    return { contents: /** @type {string} */ (contents), loader: "default" };
                 },
             );
         },

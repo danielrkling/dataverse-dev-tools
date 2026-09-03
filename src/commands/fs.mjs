@@ -36,7 +36,7 @@ export const FsError = (op, path) => (cause) => ({
  * @template A
  * @param {string} op operation name (used for spans and error messages)
  * @param {string} path target path
- * @param {(fs: import("../types/terminal.d.ts").Terminal["fs"]) => Promise<A>} run
+ * @param {(fs: import("../types/services.d.ts").WorkspaceFsService) => Promise<A>} run
  * @returns {Effect.Effect<A, FsError, any>}
  */
 const fsOp = (op, path, run) =>
@@ -100,7 +100,7 @@ export const lsCommand = createCommand({
   executeEffect: (parsed) => {
     const path = parsed.path || ".";
     return Effect.gen(function* () {
-      const entries = yield* fsOp("readdir", path, (fs) => fs.readdir(path));
+      const entries = yield* fsOp("readdir", path, (fs) => /** @type {Promise<string[]>} */ (fs.readdir(path)));
       const stats = yield* Effect.forEach(
         entries,
         (/** @type {string} */ name) => {
@@ -291,7 +291,7 @@ export const statCommand = createCommand({
             `  Path: ${parsed.path}`,
             `  Type: ${s.isDirectory ? "directory" : "file"}`,
             `  Size: ${s.size} bytes`,
-            `  Modified: ${new Date(s.mtimeMs).toISOString()}`,
+            `  Modified: ${s.mtimeMs ? new Date(s.mtimeMs).toISOString() : "unknown"}`,
           ].join("\n"),
       ),
       withFsSpan("fs.stat", parsed.path),

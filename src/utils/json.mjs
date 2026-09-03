@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 
 /**
- * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} path
  * @returns {Promise<any>}
  */
@@ -37,7 +37,7 @@ export const JsonReadError = (props) => ({
  * {@link JsonReadError} when the file cannot be read or parsed. To keep the
  * legacy "missing config = null" contract, use {@link readJSONOrNullEffect}.
  *
- * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} path
  * @returns {Effect.Effect<any, JsonReadError, never>}
  */
@@ -56,7 +56,7 @@ export function readJSONEffect(fs, path) {
  * {@link readJSON} null-return contract: any read/parse failure yields
  * `null` instead of failing.
  *
- * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} path
  * @returns {Effect.Effect<any, never, never>}
  */

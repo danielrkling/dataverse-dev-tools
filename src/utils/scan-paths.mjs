@@ -16,7 +16,7 @@ export const SCAN_IGNORED = [".git"];
  * Guarantees: no duplicates, parents listed before children, and every
  * entry is classified (dir vs file) via stat() BEFORE being added.
  *
- * @param {import("../services/fs.mjs").WebFileSystem} fs
+ * @param {import("../types/services.d.ts").WorkspaceFsService} fs
  * @param {{ ignore?: string[] }} [options]
  * @returns {Promise<{paths: string[], dirs: Set<string>}>}
  */
@@ -26,7 +26,7 @@ export function scanPaths(fs, options = {}) {
 
 /**
  * Read a file from the workspace ROOT regardless of terminal cwd.
- * @param {import("../services/fs.mjs").WebFileSystem} fs
+ * @param {import("../types/services.d.ts").WorkspaceFsService} fs
  * @param {string} path clean relative path
  * @param {string} [encoding]
  */
@@ -67,7 +67,7 @@ export const ScanReaddirError = (props) => ({
  * you accept interleaved-but-still-parents-first ordering across sibling
  * subtrees.
  *
- * @param {import("../services/fs.mjs").WebFileSystem} fs
+ * @param {import("../types/services.d.ts").WorkspaceFsService} fs
  * @param {{ ignore?: string[], concurrency?: number }} [options]
  * @returns {Effect.Effect<{paths: string[], dirs: Set<string>}, ScanReaddirError, never>}
  */

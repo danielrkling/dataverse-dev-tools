@@ -1,6 +1,7 @@
 import { command, or, object, optional, argument, string, option, integer, constant, map, message } from '@optique/core';
 import { Effect } from "effect";
 import { createCommand } from "../services/commands.mjs";
+import { WorkspaceFs } from "../effects/services.mjs";
 import { GitStatus, GitStatusLive } from "../services/git-status.mjs";
 
 /**
@@ -1105,8 +1106,9 @@ export default createCommand({
         }
 
         if (!['init', 'clone', 'creds', 'proxy'].includes(subcommand)) {
+          const fs = yield* WorkspaceFs;
           const hasGit = yield* Effect.tryPromise({
-            try: () => term.fs.exists('.git'),
+            try: () => fs.exists('.git'),
             catch: (/** @type {unknown} */ cause) => GitError({ operation: 'exists', cause }),
           });
           if (!hasGit) return "Not a git repository. Run 'git init' first.";
@@ -1139,6 +1141,9 @@ export default createCommand({
         Effect.mapError((/** @type {GitError | any} */ e) =>
           friendlyError(`${e.operation}: ${e.message ?? String(e)}`),
         ),
+        // GitStatusLive is provided locally (not via commandLayers) because
+        // services/git-status.mjs imports this module — hoisting it would
+        // create an import cycle.
         Effect.provide(GitStatusLive),
       )
     );
