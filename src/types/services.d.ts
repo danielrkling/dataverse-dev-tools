@@ -37,9 +37,11 @@ export interface WorkspaceFsService {
         mtime?: Date;
         mtimeMs?: number;
     }>;
-    /** Collect [relativePath, content] pairs matching an optional matcher. */
+    /** Collect [relativePath, content] pairs matching an optional matcher.
+     * Paths matching `options.binary` resolve to ArrayBuffer content. */
     getFilesFromDirectory(
         prefix: string,
         match?: (path: string) => boolean,
-    ): Promise<[string, string][]>;
+        options?: { binary?: (path: string) => boolean },
+    ): Promise<[string, string | ArrayBuffer][]>;
 }

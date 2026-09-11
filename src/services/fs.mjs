@@ -594,14 +594,18 @@ export class WebFileSystem {
 
     /**
      * Recursively reads all files from a path and returns their contents as a map.
+     * Text paths resolve to strings; paths matching `options.binary` resolve
+     * to ArrayBuffer (byte-exact — never decode images via file.text()).
      * @param {string} path
      * @param {(path: string)=>boolean} [filter]
-     * @returns {Promise<[string,string][]>}
+     * @param {{ binary?: (path: string) => boolean }} [options]
+     * @returns {Promise<[string,string|ArrayBuffer][]>}
      */
-    async getFilesFromDirectory(path, filter) {
+    async getFilesFromDirectory(path, filter, options = {}) {
+        const isBinary = options.binary ?? (() => false);
         const handle = await this._getHandle(this._resolvePath(path));
 
-        /** @type {Promise<[string,string]>[]} */
+        /** @type {Promise<[string,string|ArrayBuffer]>[]} */
         let files = [];
 
         /**
@@ -614,7 +618,7 @@ export class WebFileSystem {
 
                 if (entry.kind === "file") {
                     if (filter && !filter(newPath)) continue;
-                    files.push(readFile(/** @type {FileSystemFileHandle} */ (entry), newPath));
+                    files.push(readFile(/** @type {FileSystemFileHandle} */ (entry), newPath, isBinary(newPath)));
                 } else if (entry.kind === "directory") {
                     await recursiveRead(/** @type {FileSystemDirectoryHandle} */ (entry), newPath);
                 }
@@ -624,15 +628,16 @@ export class WebFileSystem {
         /**
          * @param {FileSystemFileHandle} handle
          * @param {string} filePath
-         * @returns {Promise<[string,string]>}
+         * @param {boolean} binary
+         * @returns {Promise<[string,string|ArrayBuffer]>}
          */
-        async function readFile(handle, filePath) {
+        async function readFile(handle, filePath, binary) {
             const file = await handle.getFile();
-            const content = await file.text();
+            const content = binary ? await file.arrayBuffer() : await file.text();
             return [filePath, content];
         }
         if (handle.kind === "file") {
-            files.push(readFile(/** @type {FileSystemFileHandle} */ (handle), path));
+            files.push(readFile(/** @type {FileSystemFileHandle} */ (handle), path, isBinary(path)));
         } else if (handle.kind === "directory") {
             await recursiveRead(/** @type {FileSystemDirectoryHandle} */ (handle), path);
         }

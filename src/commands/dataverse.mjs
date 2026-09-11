@@ -14,7 +14,7 @@ import picomatch from "picomatch";
 import * as z from "zod";
 import { Effect } from "effect";
 import { createWatchPipeline } from "../effects/watch-pipeline.mjs";
-import { DataverseService, isValidWebResource } from "../effects/dataverse-service.mjs";
+import { DataverseService, isValidWebResource, isBinaryWebResource } from "../effects/dataverse-service.mjs";
 import { TerminalUi } from "../effects/terminal-ui.mjs";
 import { WorkspaceFs, commandLayers } from "../effects/services.mjs";
 import { createCommand, attachWatchStop } from "../services/commands.mjs";
@@ -149,7 +149,12 @@ export const uploadCommand = createCommand({
 
                 const isMatch = picomatch(files ?? []);
                 const entries = yield* Effect.tryPromise({
-                    try: () => fs.getFilesFromDirectory("", isMatch),
+                    try: () =>
+                        fs.getFilesFromDirectory("", isMatch, {
+                            // Images/fonts must be read as bytes — a UTF-8
+                            // text() decode corrupts png/jpg/ico content.
+                            binary: isBinaryWebResource,
+                        }),
                     catch: (cause) => new Error(`collecting files: ${/** @type {any} */ (cause)?.message ?? cause}`),
                 });
 
@@ -172,14 +177,19 @@ export const uploadCommand = createCommand({
                 Effect.gen(function* () {
                     if (e.type === "deleted") return;
                     watcher.set("building", e.path);
+                    // Binary web resources (png/jpg/ico…) must be read as
+                    // bytes; text files as utf-8 strings.
                     const content = yield* Effect.tryPromise({
-                        try: () => fs.readFile(e.path, { encoding: "utf8" }),                        catch: (cause) => ({
+                        try: () =>
+                            isBinaryWebResource(e.path)
+                                ? fs.readFile(e.path)
+                                : fs.readFile(e.path, { encoding: "utf8" }),                        catch: (cause) => ({
                             _tag: "ReadError",
                             message: `Could not read ${e.path}`,
                             cause,
                         }),
                     });
-                    yield* uploadFilesEffect([[e.path, /** @type {string} */ (content)]], {
+                    yield* uploadFilesEffect([[e.path, /** @type {string | ArrayBuffer} */ (content)]], {
                         files,
                         prefix,
                         solution,
@@ -215,13 +225,18 @@ export const uploadCommand = createCommand({
          * registry's commandLayers — or the watch pipeline's layer — never
          * inline, so there is exactly one layer graph.
          *
-         * @param {[string,string][]} files
+         * @param {[string,string|ArrayBuffer][]} files
          * @param {{ files: any, prefix: string, solution?: string, publish: boolean }} run
          * @returns {Effect.Effect<void, Error, any>}
          */
         function uploadFilesEffect(files, run) {
             const runId = Math.random().toString(36).slice(2, 7);
-            const validFiles = files.map((v) => [`${run.prefix}/${v[0]}`, v[1]]).filter((v) => isValidWebResource(v[0]));
+            /** @type {[string, string | ArrayBuffer][]} */
+            const validFiles = /** @type {[string, string | ArrayBuffer][]} */ (
+                files.map((v) => [`${run.prefix}/${v[0]}`, v[1]]).filter((v) =>
+                    isValidWebResource(/** @type {string} */ (v[0])),
+                )
+            );
             const filenames = validFiles.map((v) => v[0]);
             if (!validFiles.length) return Effect.void;
 
@@ -233,7 +248,9 @@ export const uploadCommand = createCommand({
             // logger (error paths restore FiberRefs captured at the failure
             // origin, so spans/annotations must be ambient at that point).
             const body = Effect.gen(function* () {
-                const api = yield* DataverseService;
+                // GenericTag yields an unhelpfully-narrow inferred service in
+                // checkJs; cast to the impl typedef via any.
+                const api = /** @type {any} */ (yield* DataverseService);
                 const ui = yield* TerminalUi;
                 const group = yield* Effect.sync(() => ui.startGroup("Uploading:", filenames.join(",")));
 

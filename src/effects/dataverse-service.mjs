@@ -112,6 +112,38 @@ function b64EncodeUnicode(str) {
 }
 
 /**
+ * Standard base64 for binary data (images): bytes go through untouched,
+ * unlike b64EncodeUnicode which is a UTF-8 *text* encoder — that path
+ * corrupts every byte >= 0x80.
+ *
+ * @param {ArrayBuffer} buf
+ */
+function b64FromBytes(buf) {
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    const CHUNK = 0x8000; // avoids arg-count limits on String.fromCharCode.apply
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, /** @type {any} */ (bytes.subarray(i, i + CHUNK)));
+    }
+    return btoa(binary);
+}
+
+/** @param {string} name @returns {boolean} */
+export function isBinaryWebResource(name) {
+    return /\.(png|jpe?g|gif|ico|xap|webp|avif|woff2?|ttf|otf|eot|mp3|mp4)$/i.test(name);
+}
+
+/**
+ * Encode web resource content: text keeps the legacy UTF-8-safe encoding,
+ * binary content (ArrayBuffer) is encoded byte-exact.
+ *
+ * @param {string | ArrayBuffer} content
+ */
+function encodeContent(content) {
+    return typeof content === "string" ? b64EncodeUnicode(content) : b64FromBytes(content);
+}
+
+/**
  * @param {string} [solution]
  */
 function getHeaders(solution) {
@@ -217,19 +249,23 @@ const getWebResourcesEffect = (root) =>
 
 /**
  * Create or update a web resource, returning the record for publishing.
+ * `content` is either a text file's string or a binary file's ArrayBuffer
+ * (png/jpg/ico/… — see isBinaryWebResource).
+ *
  * @param {string} name
- * @param {string} text
+ * @param {string | ArrayBuffer} content
  * @param {string} [solution]
  * @returns {Effect.Effect<WebResource, DataverseError, never>}
  */
-const uploadEffect = (name, text, solution) =>
+const uploadEffect = (name, content, solution) =>
     Effect.gen(function* () {
         if (!isValidWebResource(name)) {
             return yield* Effect.fail(InvalidWebResourceError(name));
         }
-        if (!text) {
+        if (!content || (typeof content === "string" && !content)) {
             return yield* Effect.fail(EmptyContentError());
         }
+        const encoded = encodeContent(content);
 
         const cached = cache.get(name);
         if (cached) {
@@ -238,7 +274,7 @@ const uploadEffect = (name, text, solution) =>
                 {
                     headers: getHeaders(solution),
                     method: "PUT",
-                    body: JSON.stringify({ value: b64EncodeUnicode(text) }),
+                    body: JSON.stringify({ value: encoded }),
                 },
                 "putContent",
             ).pipe(Effect.retry(writeRetry));
@@ -256,7 +292,7 @@ const uploadEffect = (name, text, solution) =>
                 headers: getHeaders(solution),
                 method: existing ? "PATCH" : "POST",
                 body: JSON.stringify({
-                    content: b64EncodeUnicode(text),
+                    content: encoded,
                     webresourcetype,
                     name,
                 }),
@@ -319,7 +355,7 @@ const publishEffect = (value, solution) =>
  * @typedef {{
  *     getWebResource: (name: string) => Effect.Effect<WebResource | undefined, DataverseError, never>,
  *     getWebResources: (root: string) => Effect.Effect<WebResource[], DataverseError, never>,
- *     upload: (name: string, text: string, solution?: string) => Effect.Effect<WebResource, DataverseError, never>,
+ *     upload: (name: string, text: string | ArrayBuffer, solution?: string) => Effect.Effect<WebResource, DataverseError, never>,
  *     publish: (webResources: WebResource[], solution?: string) => Effect.Effect<void, DataverseError, never>,
  * }} DataverseServiceImpl
  */

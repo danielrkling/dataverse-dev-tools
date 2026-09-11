@@ -531,7 +531,7 @@ export default createCommand({
                 });
                 const resolvedEntryPoints =
                     matched.length > 0
-                        ? matched.map((/** @type {[string, string]} */ [p]) => `/${p}`)
+                        ? matched.map((/** @type {[string, string | ArrayBuffer]} */ [p]) => `/${p}`)
                         : epPatterns.map((/** @type {string} */ p) => (p.startsWith("/") ? p : `/${p}`));
 
                 const buildOptions = {
