@@ -90,6 +90,9 @@ export class WebTerminal extends LitElement {
             .watcher[data-state="error"] .dot { background: ${theme.error}; }
             .watcher-label { color: ${theme.info}; }
             .watcher-detail { color: ${theme.textDim}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .watcher .stop-btn { all: unset; flex-shrink: 0; margin-left: auto; color: ${theme.textDim}; cursor: pointer; font-size: 0.9em; padding: 0 2px; border-radius: 3px; }
+            .watcher .stop-btn:hover { background: ${theme.bgControl}; color: ${theme.error}; }
+            .watcher .stop-btn:disabled { opacity: 0.4; cursor: default; background: none; }
             @keyframes watcher-pulse { 50% { opacity: 0.35; } }
         `,
     ];
@@ -238,29 +241,26 @@ export class WebTerminal extends LitElement {
         return this.log(content, { class: "log-success" });
     }
 
-    /** Clear all terminal output (and any pinned watcher rows). */
+    /** Clear the terminal output. Pinned watcher rows are deliberately
+     *  kept — they belong to running watch pipelines, not to scrollback. */
     clear() {
         const output = /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#output"));
         output.innerHTML = "";
-        const watchers = /** @type {HTMLElement} */ (this.renderRoot.querySelector("#watchers"));
-        if (watchers) {
-            watchers.replaceChildren();
-            watchers.hidden = true;
-        }
     }
 
     /**
      * Upsert a pinned watcher status row (the strip above the input).
      * One row per watcher id; calling again with the same id reuses it.
+     * Call `setStop` to arm the row's stop button (watch mode).
      *
      * @param {string} id stable watcher identity (e.g. "esbuild-watch")
      * @param {string} label human-readable name shown after the dot
-     * @returns {{ set: (state: "building"|"ok"|"error"|"stopped", detail?: string) => void, remove: () => void }}
+     * @returns {{ set: (state: "building"|"ok"|"error"|"stopped", detail?: string) => void, setStop: (cb: () => void | Promise<void>) => void, remove: () => void }}
      */
     watcher(id, label) {
         const holder = /** @type {HTMLElement} */ (this.renderRoot.querySelector("#watchers"));
         if (!holder) {
-            return { set() {}, remove() {} };
+            return { set() {}, setStop() {}, remove() {} };
         }
         let row = /** @type {HTMLElement} */ (holder.querySelector(`.watcher[data-id="${CSS.escape(id)}"]`));
         if (!row) {
@@ -287,6 +287,25 @@ export class WebTerminal extends LitElement {
                 dot.title = state;
                 detailEl.textContent = detail;
                 detailEl.title = detail;
+            },
+            /**
+             * Arm the row's ⏹ stop button; the row is removed after the
+             * callback (pipeline unwind) completes.
+             * @param {() => void | Promise<void>} onStop
+             */
+            setStop(onStop) {
+                if (row.querySelector(".stop-btn")) return;
+                const btn = document.createElement("button");
+                btn.className = "stop-btn";
+                btn.title = "Stop watching";
+                btn.textContent = "⏹";
+                btn.addEventListener("click", async () => {
+                    btn.disabled = true;
+                    await onStop();
+                    row.remove();
+                    if (!holder.children.length) holder.hidden = true;
+                });
+                row.append(btn);
             },
             remove() {
                 row.remove();

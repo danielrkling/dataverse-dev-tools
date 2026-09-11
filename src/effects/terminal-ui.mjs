@@ -32,6 +32,7 @@ import { Context, Layer } from "effect";
  * A pinned watcher strip row (always visible above the terminal input).
  * @typedef {{
  *     set: (state: "building"|"ok"|"error"|"stopped", detail?: string) => void,
+ *     setStop: (onStop: () => void | Promise<void>) => void,
  *     remove: () => void,
  * }} Watcher
  */
@@ -127,7 +128,7 @@ export function terminalUiLayer(term) {
          * @returns {Watcher}
          */
         startWatcher(id, label) {
-            return term.watcher?.(id, label) ?? { set() {}, remove() {} };
+            return term.watcher?.(id, label) ?? { set() {}, setStop() {}, remove() {} };
         },
     }));
 }

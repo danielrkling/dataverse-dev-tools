@@ -1,6 +1,6 @@
 import { dirname, join } from "../utils/path.mjs";
 import * as z from "zod";
-import { createCommand, FsError, friendlyError, zodIssuesMessage, readJsonConfigEffect, createStopWatchButton } from "../services/commands.mjs";
+import { createCommand, FsError, friendlyError, zodIssuesMessage, readJsonConfigEffect, attachWatchStop } from "../services/commands.mjs";
 import { object, optional, message, option, string, multiple, map } from "@optique/core";
 import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
@@ -531,7 +531,7 @@ export default createCommand({
                     const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
                         pipeline.push(/** @type {any} */ (e).detail);
                     });
-                    createStopWatchButton({ term, pipeline, unsub, onStopped: () => watcher.remove() });
+                    attachWatchStop(watcher, { pipeline, unsub });
 
                     term.info("Watching for changes...");
                     return undefined;

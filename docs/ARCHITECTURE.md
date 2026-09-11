@@ -52,7 +52,8 @@ src/
     services.mjs           # Context tags (WorkspaceFs/TerminalSink/DataverseApi/TerminalUi)
                            #   + commandLayers(term) — the layer composition commands get
     watch-pipeline.mjs     # bus → filter → debounce → semaphore-serialized handler → drain;
-                           #   single debounce point, echo suppression, stop button
+                           #   single debounce point, echo suppression; stopped via
+                           #   the watcher row's ⏹ button (attachWatchStop)
     logger.mjs             # Effect logging routed to the terminal sink; log-level control
     echo-guard.mjs         # suppresses fs:changed echoes for self-inflicted writes
     dataverse-service.mjs  # Dataverse Web API as an Effect service (timeouts, retries, typed errors)

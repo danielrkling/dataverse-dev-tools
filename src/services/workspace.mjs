@@ -207,6 +207,8 @@ export const workspace = {
                     workspace.fs = fs;
                     window.fs = fs; // legacy global, kept for command compat
                     activeTerminal = terminal ?? null;
+                    // Reflect the active workspace in the browser tab.
+                    document.title = `IDE - ${fs.rootName}`;
                 });
 
                 if (terminal) {

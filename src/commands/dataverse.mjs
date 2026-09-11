@@ -17,7 +17,7 @@ import { createWatchPipeline } from "../effects/watch-pipeline.mjs";
 import { DataverseService, isValidWebResource } from "../effects/dataverse-service.mjs";
 import { TerminalUi } from "../effects/terminal-ui.mjs";
 import { WorkspaceFs, commandLayers } from "../effects/services.mjs";
-import { createCommand, createStopWatchButton } from "../services/commands.mjs";
+import { createCommand, attachWatchStop } from "../services/commands.mjs";
 import {bus} from "../services/bus.mjs"
 
 export const dataverseConfigSchema = z.object({
@@ -203,7 +203,7 @@ export const uploadCommand = createCommand({
             const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
                 pipeline.push(/** @type {any} */ (e).detail);
             });
-            createStopWatchButton({ term, pipeline, unsub, onStopped: () => watcher.remove() });
+            attachWatchStop(watcher, { pipeline, unsub });
         }
 
         /**

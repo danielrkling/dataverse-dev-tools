@@ -17,7 +17,7 @@ import {
     flag,
     withDefault,
 } from "@optique/core";
-import { createCommand, FsError, friendlyError, readJsonConfigEffect, zodIssuesMessage, createStopWatchButton } from "../services/commands.mjs";
+import { createCommand, FsError, friendlyError, readJsonConfigEffect, zodIssuesMessage, attachWatchStop } from "../services/commands.mjs";
 import { WorkspaceFs } from "../effects/services.mjs";
 import { TerminalUi } from "../effects/terminal-ui.mjs";
 import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
@@ -652,12 +652,10 @@ export default createCommand({
                     const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
                         pipeline.push(/** @type {any} */ (e).detail);
                     });
-                    createStopWatchButton({
-                        term,
+                    attachWatchStop(watcher, {
                         pipeline,
                         unsub,
                         onDispose: () => context.dispose(),
-                        onStopped: () => watcher.remove(),
                     });
                     return undefined;
                 } else {

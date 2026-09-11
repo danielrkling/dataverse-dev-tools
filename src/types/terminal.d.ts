@@ -35,6 +35,8 @@ export interface Terminal {
     /** Upsert a pinned watcher status row (strip above the input). */
     watcher(id: string, label: string): {
         set(state: "building" | "ok" | "error" | "stopped", detail?: string): void;
+        /** Arm the row's ⏹ stop button; row is removed after the callback completes. */
+        setStop(onStop: () => void | Promise<void>): void;
         remove(): void;
     };
 }

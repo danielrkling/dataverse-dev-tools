@@ -213,30 +213,29 @@ export function zodIssuesMessage(error) {
  *        teardown (e.g. dispose an esbuild watch context).
  */
 /**
- * Append a "⏹ stop watching" button that unwinds a watch pipeline.
+ * Arm a pinned watcher row's ⏹ stop button: the click unwinds the watch
+ * pipeline (disposables first, then the fiber) and runs onStopped when the
+ * fiber is done — the terminal removes the row itself afterwards.
  *
+ * @param {{ setStop: (cb: () => void | Promise<void>) => void, remove: () => void, set: (state: "building"|"ok"|"error"|"stopped", detail?: string) => void }} watcher
+ *        handle from TerminalUi.startWatcher
  * @param {{
- *     term: any,
  *     pipeline: { push: (event: any) => void, stop: () => Promise<void> },
  *     unsub: () => void,
  *     onDispose?: () => void,
- *     onStopped?: () => void,   // runs after the pipeline fiber is done
+ *     onStopped?: () => void,
  * }} options
  */
-export function createStopWatchButton({ term, pipeline, unsub, onDispose, onStopped }) {
-    const stopBtn = document.createElement("button");
-    stopBtn.textContent = "⏹ stop watching";
-    stopBtn.addEventListener("click", async () => {
+export function attachWatchStop(watcher, { pipeline, unsub, onDispose, onStopped }) {
+    watcher.setStop(async () => {
         onDispose?.();
         unsub();
-        stopBtn.disabled = true;
         // Wait for the fiber so a rebuild in flight can't touch the UI
         // (e.g. flip a watcher row) after the button already resolved.
         await pipeline.stop();
-        stopBtn.remove();
+        watcher.set("stopped");
         onStopped?.();
     });
-    term.log(stopBtn);
 }
 
 /**
