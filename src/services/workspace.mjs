@@ -258,19 +258,19 @@ export const workspace = {
 };
 
 // ---------------------------------------------------------------------------
-// Persistent handle storage (IndexedDB) as Effects + legacy Promise exports
+// Persistent workspace storage (Single store: handle + history)
 // ---------------------------------------------------------------------------
 
 const DB_NAME = "filesystem-db";
-const HANDLE_STORE = "handles";
-const HISTORY_STORE = "history";
-const DB_VERSION = 2;
+const WORKSPACE_STORE = "workspaces"; // Unified store name (or "handles")
+const DB_VERSION = 3; // Bumped to 3 to trigger onupgradeneeded across all browsers
 
 /**
- * @typedef {Object} StoredHandle
- * @property {string} id
- * @property {FileSystemDirectoryHandle} handle
- * @property {number} savedAt
+ * @typedef {Object} WorkspaceRecord
+ * @property {string} id - root folder name / key
+ * @property {FileSystemDirectoryHandle} [handle]
+ * @property {string[]} [history]
+ * @property {number} [savedAt]
  */
 
 /**
@@ -284,14 +284,9 @@ function openDBEffect() {
 
                 request.onupgradeneeded = () => {
                     const db = request.result;
-
-                    if (!db.objectStoreNames.contains(HANDLE_STORE)) {
-                        db.createObjectStore(HANDLE_STORE, {
-                            keyPath: "id",
-                        });
-                    }
-                    if (!db.objectStoreNames.contains(HISTORY_STORE)) {
-                        db.createObjectStore(HISTORY_STORE, { keyPath: "key" });
+                    // Create single unified store with keyPath "id"
+                    if (!db.objectStoreNames.contains(WORKSPACE_STORE)) {
+                        db.createObjectStore(WORKSPACE_STORE, { keyPath: "id" });
                     }
                 };
 
@@ -314,9 +309,40 @@ function requestEffect(db, req) {
                 req.onsuccess = () => resolve(req.result);
                 req.onerror = () => reject(req.error);
             }),
-        catch: (cause) => HandleStoreError({ operation: db.objectStoreNames[0] ?? "request", cause }),
+        catch: (cause) => HandleStoreError({ operation: "request", cause }),
     });
 }
+
+/**
+ * Upsert fields for a workspace entry without overwriting other existing fields.
+ * @param {string} id
+ * @param {Partial<WorkspaceRecord>} updates
+ */
+function updateWorkspaceRecordEffect(id, updates) {
+    return Effect.gen(function* () {
+        const db = yield* openDBEffect();
+        yield* Effect.tryPromise({
+            try: () =>
+                new Promise((resolve, reject) => {
+                    const tx = db.transaction(WORKSPACE_STORE, "readwrite");
+                    const store = tx.objectStore(WORKSPACE_STORE);
+                    const getReq = store.get(id);
+
+                    getReq.onsuccess = () => {
+                        const existing = getReq.result || { id };
+                        const merged = { ...existing, ...updates, id };
+                        store.put(merged);
+                    };
+
+                    tx.oncomplete = () => resolve(undefined);
+                    tx.onerror = () => reject(tx.error);
+                }),
+            catch: (cause) => HandleStoreError({ operation: "updateWorkspaceRecord", id, cause }),
+        });
+    }).pipe(Effect.asVoid);
+}
+
+// --- Handle Operations ---
 
 /**
  * @param {string} id
@@ -324,21 +350,7 @@ function requestEffect(db, req) {
  * @returns {Effect.Effect<void, HandleStoreError, never>}
  */
 export function saveHandleEffect(id, handle) {
-    return Effect.gen(function* () {
-        const db = yield* openDBEffect();
-        yield* Effect.tryPromise({
-            try: () =>
-                /** @type {Promise<void>} */ (
-                    new Promise((resolve, reject) => {
-                        const tx = db.transaction(HANDLE_STORE, "readwrite");
-                        tx.objectStore(HANDLE_STORE).put({ id, handle, savedAt: Date.now() });
-                        tx.oncomplete = () => resolve();
-                        tx.onerror = () => reject(tx.error);
-                    })
-                ),
-            catch: (cause) => HandleStoreError({ operation: "saveHandle", id, cause }),
-        });
-    }).pipe(Effect.asVoid);
+    return updateWorkspaceRecordEffect(id, { handle, savedAt: Date.now() });
 }
 
 /**
@@ -348,19 +360,21 @@ export function saveHandleEffect(id, handle) {
 export function getHandleEffect(id) {
     return Effect.gen(function* () {
         const db = yield* openDBEffect();
-        const tx = db.transaction(HANDLE_STORE, "readonly");
-        const req = tx.objectStore(HANDLE_STORE).get(id);
+        const tx = db.transaction(WORKSPACE_STORE, "readonly");
+        const req = tx.objectStore(WORKSPACE_STORE).get(id);
         const result = yield* requestEffect(db, req);
-        return /** @type {any} */ (result)?.handle ?? null;
+        return /** @type {WorkspaceRecord} */ (result)?.handle ?? null;
     });
 }
 
-/** @returns {Effect.Effect<StoredHandle[], HandleStoreError, never>} */
+/** @returns {Effect.Effect<WorkspaceRecord[], HandleStoreError, never>} */
 export function listHandlesEffect() {
     return Effect.gen(function* () {
         const db = yield* openDBEffect();
-        const tx = db.transaction(HANDLE_STORE, "readonly");
-        return yield* requestEffect(db, tx.objectStore(HANDLE_STORE).getAll());
+        const tx = db.transaction(WORKSPACE_STORE, "readonly");
+        const all = yield* requestEffect(db, tx.objectStore(WORKSPACE_STORE).getAll());
+        // Filter to records that have a directory handle saved
+        return (all || []).filter((/** @type {{ handle?: unknown }} */ r) => r.handle != null);
     });
 }
 
@@ -373,48 +387,63 @@ export function deleteHandleEffect(id) {
         const db = yield* openDBEffect();
         yield* Effect.tryPromise({
             try: () =>
-                /** @type {Promise<void>} */ (
-                    new Promise((resolve, reject) => {
-                        const tx = db.transaction(HANDLE_STORE, "readwrite");
-                        tx.objectStore(HANDLE_STORE).delete(id);
-                        tx.oncomplete = () => resolve();
-                        tx.onerror = () => reject(tx.error);
-                    })
-                ),
+                new Promise((resolve, reject) => {
+                    const tx = db.transaction(WORKSPACE_STORE, "readwrite");
+                    tx.objectStore(WORKSPACE_STORE).delete(id);
+                    tx.oncomplete = () => resolve(undefined);
+                    tx.onerror = () => reject(tx.error);
+                }),
             catch: (cause) => HandleStoreError({ operation: "deleteHandle", id, cause }),
         });
     }).pipe(Effect.asVoid);
 }
 
-// Legacy Promise exports (components/file-tree.mjs consumes listHandles and
-// deleteHandle; openRecent uses getHandle internally).
+// --- History Operations ---
 
 /**
  * @param {string} id
- * @param {FileSystemDirectoryHandle} handle
- * @returns {Promise<void>}
+ * @param {string[]} history
+ * @returns {Effect.Effect<void, HandleStoreError, never>}
  */
-export function saveHandle(id, handle) {
-    return Effect.runPromise(saveHandleEffect(id, handle));
-}
-
-/**
- * @param {string} id
- * @returns {Promise<FileSystemDirectoryHandle | null>}
- */
-export function getHandle(id) {
-    return Effect.runPromise(getHandleEffect(id));
-}
-
-/** @returns {Promise<StoredHandle[]>} */
-export function listHandles() {
-    return Effect.runPromise(listHandlesEffect());
+export function saveCommandHistoryEffect(id, history) {
+    return updateWorkspaceRecordEffect(id, { history });
 }
 
 /**
  * @param {string} id
- * @returns {Promise<void>}
+ * @returns {Effect.Effect<string[], HandleStoreError, never>}
  */
-export function deleteHandle(id) {
-    return Effect.runPromise(deleteHandleEffect(id));
+export function loadCommandHistoryEffect(id) {
+    return Effect.gen(function* () {
+        const db = yield* openDBEffect();
+        const tx = db.transaction(WORKSPACE_STORE, "readonly");
+        const req = tx.objectStore(WORKSPACE_STORE).get(id);
+        const result = yield* requestEffect(db, req);
+        return /** @type {WorkspaceRecord} */ (result)?.history ?? [];
+    });
 }
+
+/**
+ * @param {string} id
+ * @returns {Effect.Effect<void, HandleStoreError, never>}
+ */
+export function clearCommandHistoryEffect(id) {
+    return updateWorkspaceRecordEffect(id, { history: [] });
+}
+
+// --- Promise Helpers (for legacy/non-Effect callers) ---
+
+/** @param {string} id @param {FileSystemDirectoryHandle} handle */
+export const saveHandle = (id, handle) => Effect.runPromise(saveHandleEffect(id, handle));
+/** @param {string} id */
+export const getHandle = (id) => Effect.runPromise(getHandleEffect(id));
+export const listHandles = () => Effect.runPromise(listHandlesEffect());
+/** @param {string} id */
+export const deleteHandle = (id) => Effect.runPromise(deleteHandleEffect(id));
+
+/** @param {string} id @param {string[]} history */
+export const saveCommandHistory = (id, history) => Effect.runPromise(saveCommandHistoryEffect(id, history));
+/** @param {string} id */
+export const loadCommandHistory = (id) => Effect.runPromise(loadCommandHistoryEffect(id));
+/** @param {string} id */
+export const clearCommandHistory = (id) => Effect.runPromise(clearCommandHistoryEffect(id));

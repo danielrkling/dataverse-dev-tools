@@ -1,7 +1,7 @@
 import { command, or, object, optional, argument, string, option, integer, map, message } from '@optique/core';
 import { Effect, Duration } from "effect";
-import { createCommand } from "../services/commands.mjs";
-import { makeGitFs } from "./git.mjs";
+import { createCommand, friendlyError } from "../services/commands.mjs";
+import { makeGitFs } from "../services/git-fs.mjs";
 
 // ---------------------------------------------------------------------------
 // Typed errors (JSDoc-friendly _tag factories — see effects/dataverse-service.mjs)
@@ -344,18 +344,6 @@ function formatSize(bytes) {
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
-
-/**
- * Build an Error carrying a single friendly line (no stack) — Cause.pretty
- * in the registry then renders exactly one line per command failure.
- * @param {string} message
- * @returns {Error}
- */
-function friendlyError(message) {
-  const err = new Error(message);
-  delete err.stack;
-  return err;
-}
 
 /**
  * Lifts a local async operation (workspace fs / crypto / dynamic import) into

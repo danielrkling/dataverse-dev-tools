@@ -1,5 +1,3 @@
-import { Effect } from "effect";
-
 /**
  * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} path
@@ -12,56 +10,6 @@ export async function readJSON(fs, path) {
   } catch {
     return null;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Effect variants (typed errors instead of the null-return contract above)
-// ---------------------------------------------------------------------------
-
-/** @typedef {{ _tag: "JsonReadError", path: string, cause: unknown }} JsonReadError */
-
-/**
- * Factory for the typed failure of {@link readJSONEffect}. Covers both fs
- * read failures and JSON.parse failures (inspect `cause` to distinguish).
- *
- * @param {{ path: string, cause: unknown }} props
- * @returns {JsonReadError}
- */
-export const JsonReadError = (props) => ({
-  _tag: /** @type {const} */ ("JsonReadError"),
-  ...props,
-});
-
-/**
- * Effect version of {@link readJSON} with typed errors: fails with
- * {@link JsonReadError} when the file cannot be read or parsed. To keep the
- * legacy "missing config = null" contract, use {@link readJSONOrNullEffect}.
- *
- * @param {import('../types/services.d.ts').WorkspaceFsService} fs
- * @param {string} path
- * @returns {Effect.Effect<any, JsonReadError, never>}
- */
-export function readJSONEffect(fs, path) {
-  return Effect.tryPromise({
-    try: async () => {
-      const raw = await fs.readFile(path, { encoding: "utf8" });
-      return JSON.parse(/** @type {string} */ (raw));
-    },
-    catch: (cause) => JsonReadError({ path, cause }),
-  });
-}
-
-/**
- * Convenience sibling of {@link readJSONEffect} that mirrors the original
- * {@link readJSON} null-return contract: any read/parse failure yields
- * `null` instead of failing.
- *
- * @param {import('../types/services.d.ts').WorkspaceFsService} fs
- * @param {string} path
- * @returns {Effect.Effect<any, never, never>}
- */
-export function readJSONOrNullEffect(fs, path) {
-  return Effect.catchAll(readJSONEffect(fs, path), () => Effect.succeed(null));
 }
 
 /**

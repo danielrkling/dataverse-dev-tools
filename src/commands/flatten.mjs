@@ -1,6 +1,5 @@
-import { createCommand } from "../services/commands.mjs";
+import { createCommand, makeFsError, makeFsOp, withFsSpan } from "../services/commands.mjs";
 import { Effect } from "effect";
-import { WorkspaceFs } from "../effects/services.mjs";
 import { extname } from "../utils/path.mjs";
 import { object, optional, argument, string, option, message } from "@optique/core";
 
@@ -46,12 +45,7 @@ const EXT_TO_LANG = {
  * @param {string} path
  * @returns {(cause: unknown) => FlattenFsError}
  */
-const FlattenFsError = (op, path) => (cause) => ({
-    _tag: /** @type {const} */ ("FlattenFsError"),
-    op,
-    path,
-    cause,
-});
+const FlattenFsError = makeFsError("FlattenFsError");
 
 /**
  * Run an fs operation against the WorkspaceFs service with a typed error.
@@ -62,44 +56,10 @@ const FlattenFsError = (op, path) => (cause) => ({
  * @param {(fs: import("../types/services.d.ts").WorkspaceFsService) => Promise<A>} run
  * @returns {Effect.Effect<A, FlattenFsError, any>}
  */
-const fsOp = (op, path, run) =>
-    Effect.flatMap(WorkspaceFs, (fs) =>
-        Effect.tryPromise({
-            try: () => run(fs),
-            catch: FlattenFsError(op, path),
-        }),
-    );
+const fsOp = makeFsOp(FlattenFsError);
 
-/**
- * Describe a cause on a single line.
- * @param {unknown} cause
- */
-const describeCause = (cause) => {
-    const msg =
-        cause instanceof Error
-            ? cause.message
-            : /** @type {any} */ (cause)?.message ?? String(cause);
-    return msg || "unknown error";
-};
-
-/**
- * Per-command span + friendly error mapping for the registry's output.
- *
- * @template A
- * @param {string} name span name, e.g. "flatten.run"
- * @param {Record<string, string>} attributes
- * @returns {(effect: Effect.Effect<A, FlattenFsError, any>) => Effect.Effect<A, Error>}
- */
-const withCommandSpan = (name, attributes) => (effect) =>
-    /** @type {Effect.Effect<A, Error>} */ (
-      effect.pipe(
-        Effect.withSpan(name, { attributes }),
-        Effect.withLogSpan(name),
-        Effect.mapError(
-          (e) => new Error(`${e.op} '${e.path}': ${describeCause(e.cause)}`),
-        ),
-      )
-    );
+/** Per-command span + friendly error mapping for the registry's output. */
+const withCommandSpan = withFsSpan;
 
 export const flatten = createCommand({
     name: "flatten",

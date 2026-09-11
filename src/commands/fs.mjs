@@ -1,4 +1,4 @@
-import { createCommand } from "../services/commands.mjs";
+import { createCommand, makeFsError, makeFsOp, withFsSpan as withFsSpanAttrs } from "../services/commands.mjs";
 import { Effect } from "effect";
 import { WorkspaceFs } from "../effects/services.mjs";
 import {
@@ -22,12 +22,7 @@ import {
  * @param {string} path
  * @returns {(cause: unknown) => FsError}
  */
-export const FsError = (op, path) => (cause) => ({
-  _tag: /** @type {const} */ ("FsError"),
-  op,
-  path,
-  cause,
-});
+export const FsError = makeFsError("FsError");
 
 /**
  * Run a filesystem operation against the WorkspaceFs service, tagging any
@@ -39,25 +34,7 @@ export const FsError = (op, path) => (cause) => ({
  * @param {(fs: import("../types/services.d.ts").WorkspaceFsService) => Promise<A>} run
  * @returns {Effect.Effect<A, FsError, any>}
  */
-const fsOp = (op, path, run) =>
-  Effect.flatMap(WorkspaceFs, (fs) =>
-    Effect.tryPromise({
-      try: () => run(fs),
-      catch: FsError(op, path),
-    }),
-  );
-
-/**
- * Describe an fs failure cause for the terminal (one line, no stack noise).
- * @param {unknown} cause
- */
-const describeCause = (cause) => {
-  const msg =
-    cause instanceof Error
-      ? cause.message
-      : /** @type {any} */ (cause)?.message ?? String(cause);
-  return msg || "unknown error";
-};
+const fsOp = makeFsOp(FsError);
 
 /**
  * Final pipeline for an fs command: per-command span (with the mandatory
@@ -69,16 +46,7 @@ const describeCause = (cause) => {
  * @param {string} path attribute path
  * @returns {(effect: Effect.Effect<A, FsError, any>) => Effect.Effect<A, Error>}
  */
-const withFsSpan = (name, path) => (effect) => {
-  const out = effect.pipe(
-    Effect.withSpan(name, { attributes: { path } }),
-    Effect.withLogSpan(name),
-    Effect.mapError(
-      (e) => new Error(`${e.op} '${e.path}': ${describeCause(e.cause)}`),
-    ),
-  );
-  return /** @type {Effect.Effect<A, Error>} */ (out);
-};
+const withFsSpan = (name, path) => withFsSpanAttrs(name, { path });
 
 export const lsCommand = createCommand({
   name: "ls",

@@ -17,9 +17,9 @@ import {
     flag,
     withDefault,
 } from "@optique/core";
-import { createCommand } from "../services/commands.mjs";
+import { createCommand, FsError, friendlyError, readJsonConfigEffect, zodIssuesMessage, createStopWatchButton } from "../services/commands.mjs";
 import { WorkspaceFs } from "../effects/services.mjs";
-import { FsError } from "./fs.mjs";
+import { TerminalUi } from "../effects/terminal-ui.mjs";
 import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 import { dropUndefined } from "../utils/json.mjs";
@@ -403,53 +403,44 @@ function describeError(e) {
 }
 
 /**
- * Friendly single-line error for the registry's Cause.pretty output
- * (stack stripped so the terminal shows one line, not a trace).
- * @param {string} message
- * @returns {Error}
+ * Render esbuild's structured diagnostics (the `errors` array the wasm API
+ * rejects with) as red terminal lines. Falls back to the cause's message.
+ *
+ * @param {any} term terminal sink
+ * @param {unknown} cause the raw esbuild failure inside a {@link BuildError}
+ * @returns {string} short first-line summary (for the watcher strip detail)
  */
-function friendlyError(message) {
-    const e = new Error(message);
-    /** @type {any} */ (e).stack = null;
-    return e;
+function logBuildErrors(term, cause) {
+    const errors = /** @type {any} */ (cause)?.errors;
+    if (Array.isArray(errors) && errors.length) {
+        for (const m of errors) {
+            const loc = m.location
+                ? ` (${m.location.file}:${m.location.line}:${m.location.column})`
+                : "";
+            term.error(`✗ ${m.text}${loc}`);
+        }
+        const first = errors[0];
+        return `${first?.text ?? "build failed"}${
+            first?.location ? ` (${first.location.file}:${first.location.line})` : ""
+        }`;
+    }
+    const msg = describeBuildCause(cause);
+    term.error(`✗ ${msg}`);
+    return msg;
 }
 
-/**
- * Parse JSON text as an Effect with a typed config error.
- *
- * @param {string} content
- * @param {string} configPath
- * @returns {Effect.Effect<any, FsError>}
+/** Adapter so helpers written for a StatusGroup can log to plain lines.
+ * @param {any} term terminal sink
  */
-function parseJSONEffect(content, configPath) {
-    return Effect.try({
-        try: () => JSON.parse(content),
-        catch: (cause) => FsError("parse", configPath)(cause),
+function logToTerm(term) {
+    return /** @type {import('../effects/terminal-ui.mjs').StatusGroup} */ ({
+        /** @param {string} text */
+        log(text) {
+            term.info(text);
+        },
     });
 }
 
-/**
- * Load and parse the config file. Missing file (no explicit --config) yields
- * `{}`; any other failure surfaces as a typed {@link FsError}.
- *
- * @param {string} configPath
- * @param {boolean} required
- * @returns {Effect.Effect<any, FsError, any>}
- */
-function loadConfigEffect(configPath, required) {
-    return Effect.gen(function* () {
-        const fs = yield* WorkspaceFs;
-        const content = yield* Effect.tryPromise({
-            try: () => fs.readFile(configPath, { encoding: "utf8" }),
-            catch: FsError("readFile", configPath),
-        });
-        return yield* parseJSONEffect(/** @type {string} */ (content), configPath);
-    }).pipe(
-        required
-            ? Effect.mapError((e) => e)
-            : Effect.catchAll(() => Effect.succeed({})),
-    );
-}
 
 export default createCommand({
     name: "esbuild",
@@ -499,7 +490,7 @@ export default createCommand({
                 // --- config loading + validation (early returns keep the
                 // old behaviour: friendly terminal error, no crash) ---
                 const required = Boolean(parsed.config);
-                const rawConfigResult = yield* Effect.either(loadConfigEffect(configPath, required));
+                const rawConfigResult = yield* Effect.either(readJsonConfigEffect(configPath, { required }));
                 if (rawConfigResult._tag === "Left") {
                     if (required) {
                         term.error(`${configPath}: ${describeError(rawConfigResult.left)}`);
@@ -511,7 +502,7 @@ export default createCommand({
 
                 const configResult = esbuildConfigSchema.safeParse(rawConfig);
                 if (!configResult.success) {
-                    term.error(`${configPath}: ${configResult.error.issues.map((i) => i.message).join(", ")}`);
+                    term.error(`${configPath}: ${zodIssuesMessage(configResult.error)}`);
                     return undefined;
                 }
                 const validatedConfig = configResult.data;
@@ -522,7 +513,7 @@ export default createCommand({
                     ...dropUndefined(cliFields),
                 });
                 if (!mergedResult.success) {
-                    term.error(`Config merge: ${mergedResult.error.issues.map((i) => i.message).join(", ")}`);
+                    term.error(`Config merge: ${zodIssuesMessage(mergedResult.error)}`);
                     return undefined;
                 }
                 const merged = mergedResult.data;
@@ -532,6 +523,7 @@ export default createCommand({
 
                 // --- entry point resolution ---
                 const fs = yield* WorkspaceFs;
+                const ui = yield* TerminalUi;
                 const isMatch = picomatch((/** @type {string[]} */ (epPatterns)).map((p) => p.replace(/^\.\//, "")));
                 const matched = yield* Effect.tryPromise({
                     try: () => fs.getFilesFromDirectory("", isMatch),
@@ -552,10 +544,13 @@ export default createCommand({
                 /**
                  * Write build outputs — serialized (concurrency 1) so output
                  * order matches esbuild's and echoes are recorded per file.
+                 * Per-file "wrote" lines go into the group's collapsed body;
+                 * the summary line is updated by the caller.
                  * @param {import('esbuild-wasm').BuildResult} result
+                 * @param {import('../effects/terminal-ui.mjs').StatusGroup} group
                  * @returns {Effect.Effect<void, FsError>}
                  */
-                const writeOutputs = (result) =>
+                const writeOutputs = (result, group) =>
                     Effect.forEach(
                         result.outputFiles ?? [],
                         (/** @type {import('esbuild-wasm').OutputFile} */ output) =>
@@ -565,7 +560,7 @@ export default createCommand({
                             }).pipe(
                                 Effect.tap(() =>
                                     Effect.sync(() =>
-                                        term.success(`Wrote ${output.path} (${output.contents.length} bytes)`),
+                                        group.log(`✓ wrote ${output.path} (${output.contents.length} bytes)`),
                                     ),
                                 ),
                             ),
@@ -581,6 +576,10 @@ export default createCommand({
                     });
 
                     let filesToWatch = /** @type {string[]} */ ([]);
+                    // Pinned status row (terminal strip): one per watcher id,
+                    // updated in place by every rebuild.
+                    const watcher = ui.startWatcher("esbuild-watch", "esbuild --watch");
+                    watcher.set("building", resolvedEntryPoints.join(", "));
 
                     /**
                      * Rebuild + write outputs as an Effect. Serialized and
@@ -591,32 +590,56 @@ export default createCommand({
                     const rebuildEffect = (e) =>
                         Effect.gen(function* () {
                             yield* Effect.logDebug(`rebuild triggered by ${e.type} ${e.path}`);
+                            const t0 = performance.now();
+                            watcher.set("building", e.path);
+                            term.info(`▶ Rebuilding on ${e.type} ${e.path}`);
                             const result = yield* Effect.tryPromise({
                                 try: () => context.rebuild(),
                                 catch: BuildError("rebuild"),
-                            });
-                            filesToWatch = Object.keys(result.metafile?.inputs ?? {}).map((v) => v.split(":")[1]);
-                            yield* writeOutputs(result);
-                            recordWrites((result.outputFiles ?? []).map((o) => o.path));
-                            yield* Effect.logInfo(
-                                `Rebuilt ${result.outputFiles?.length ?? 0} output file(s) in response to ${e.path}`,
+                            }).pipe(
+                                Effect.tapError((/** @type {any} */ cause) => Effect.sync(() => {
+                                    const first = logBuildErrors(term, cause.cause);
+                                    term.error(`✗ Rebuild failed — ${e.path}`);
+                                    watcher.set("error", first);
+                                })),
                             );
+                            filesToWatch = Object.keys(result.metafile?.inputs ?? {}).map((v) => v.split(":")[1]);
+                            // Per-file "wrote" lines go straight to the
+                            // terminal as plain logs (no collapsible card on
+                            // the watch hot path).
+                            yield* writeOutputs(result, logToTerm(term));
+                            recordWrites((result.outputFiles ?? []).map((o) => o.path));
+                            const count = result.outputFiles?.length ?? 0;
+                            const elapsed = Math.round(performance.now() - t0);
+                            term.success(`✓ Rebuilt ${count} file(s) · ${elapsed}ms`);
+                            watcher.set("ok", `${count} file(s) · ${elapsed}ms`);
+                            yield* Effect.logDebug(`rebuilt ${count} output file(s) in response to ${e.path}`);
                         }).pipe(
                             Effect.withSpan("esbuild.rebuild", { attributes: { trigger: e.path } }),
-                            Effect.withLogSpan("esbuild.rebuild"),
                         );
 
                     // Initial rebuild under the dev span.
+                    const group = yield* Effect.sync(() => ui.startGroup("Building:", resolvedEntryPoints.join(", ")));
                     const result = yield* Effect.tryPromise({
                         try: () => context.rebuild(),
                         catch: BuildError("rebuild"),
-                    });
+                    }).pipe(
+                        Effect.tapError((/** @type {any} */ cause) => Effect.sync(() => {
+                            group.set("Failed:", "", "#f14c4c");
+                            group.fail();
+                            const first = logBuildErrors(term, cause.cause);
+                            watcher.set("error", first);
+                        })),
+                    );
                     filesToWatch = Object.keys(result.metafile?.inputs ?? {}).map((v) => v.split(":")[1]);
-                    yield* writeOutputs(result).pipe(
+                    yield* writeOutputs(result, group).pipe(
                         Effect.withSpan("esbuild.dev", { attributes: { mode: "watch" } }),
-                        Effect.withLogSpan("esbuild.dev"),
                         Effect.tap(() => Effect.sync(() => recordWrites((result.outputFiles ?? []).map((o) => o.path)))),
                     );
+                    group.set("Built:", "", "#4ec9b0");
+                    group.detail(`${result.outputFiles?.length ?? 0} file(s)`);
+                    watcher.set("ok", `${result.outputFiles?.length ?? 0} file(s)`);
+                    yield* Effect.logInfo(`watching for changes (${filesToWatch.length} source file(s))`);
 
                     const pipeline = createWatchPipeline({
                         name: "esbuild-watch",
@@ -629,33 +652,39 @@ export default createCommand({
                     const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
                         pipeline.push(/** @type {any} */ (e).detail);
                     });
-                    const stopBtn = document.createElement("button");
-                    stopBtn.textContent = "⏹ stop watching";
-                    stopBtn.addEventListener("click", () => {
-                        context.dispose();
-                        unsub();
-                        pipeline.stop();
-                        stopBtn.remove();
+                    createStopWatchButton({
+                        term,
+                        pipeline,
+                        unsub,
+                        onDispose: () => context.dispose(),
+                        onStopped: () => watcher.remove(),
                     });
-                    term.log(stopBtn);
                     return undefined;
                 } else {
                     const esb = yield* getEsbuildEffect;
                     const { analyze, ..._buildOptions } = buildOptions;
+                    const group = yield* Effect.sync(() => ui.startGroup("Building:", resolvedEntryPoints.join(", ")));
                     const result = yield* Effect.tryPromise({
                         try: () => esb.build(_buildOptions),
                         catch: BuildError("build"),
-                    });
-                    yield* writeOutputs(result).pipe(
+                    }).pipe(
+                        Effect.tapError((/** @type {any} */ err) => Effect.sync(() => {
+                            group.set("Failed:", "", "#f14c4c");
+                            group.fail();
+                            logBuildErrors(term, err.cause);
+                        })),
+                    );
+                    yield* writeOutputs(result, group).pipe(
                         Effect.withSpan("esbuild.build", {
                             attributes: { entries: String(resolvedEntryPoints.length) },
                         }),
-                        Effect.withLogSpan("esbuild.build"),
                     );
                     recordWrites((result.outputFiles ?? []).map((o) => o.path));
+                    group.set("Built:", "", "#4ec9b0");
+                    group.detail(`${result.outputFiles?.length ?? 0} file(s)`);
                     if (result.metafile) {
-                        term.info(
-                            `Metafile: ${Object.keys(result.metafile.inputs).length} inputs, ${Object.keys(result.metafile.outputs).length} outputs`,
+                        group.log(
+                            `metafile: ${Object.keys(result.metafile.inputs).length} inputs, ${Object.keys(result.metafile.outputs).length} outputs`,
                         );
                     }
                     return undefined;

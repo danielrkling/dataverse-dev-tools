@@ -1,12 +1,12 @@
 import { dirname, join } from "../utils/path.mjs";
 import * as z from "zod";
-import { createCommand } from "../services/commands.mjs";
+import { createCommand, FsError, friendlyError, zodIssuesMessage, readJsonConfigEffect, createStopWatchButton } from "../services/commands.mjs";
 import { object, optional, message, option, string, multiple, map } from "@optique/core";
 import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 import { Effect } from "effect";
 import { WorkspaceFs } from "../effects/services.mjs";
-import { FsError } from "./fs.mjs";
+import { TerminalUi } from "../effects/terminal-ui.mjs";
 import { createWatchPipeline } from "../effects/watch-pipeline.mjs";
 import { bus } from "../services/bus.mjs";
 
@@ -54,18 +54,6 @@ const TailwindError = (op) => (cause) => ({
  */
 function describeError(e) {
     return `${e.op || e._tag}: ${describeBuildCause(e.cause)}`;
-}
-
-/**
- * Friendly single-line error for the registry's Cause.pretty output
- * (stack stripped so the terminal shows one line, not a trace).
- * @param {string} message
- * @returns {Error}
- */
-function friendlyError(message) {
-    const e = new Error(message);
-    /** @type {any} */ (e).stack = null;
-    return e;
 }
 
 /** @type {((css: string, opts: any) => any) | null} */
@@ -298,12 +286,19 @@ function extractClassesEffect(fs, globs) {
 }
 
 /**
+ * Last built class-list signature per output path — used to skip rebuilds
+ * when the scanned classes (and CSS input) are unchanged.
+ * @type {Map<string, string>}
+ */
+const lastBuildSignature = new Map();
+
+/**
  * Full tailwind build flow as an Effect (span `tailwind.build`, typed
  * {@link TailwindError} failures mapped to friendly Errors).
  *
  * @param {{ files?: string[], input?: string | string[], importCSS?: string, output?: string, plugins?: string[] }} config
  * @param {import('../services/fs.mjs').WebFileSystem} fs
- * @returns {Effect.Effect<{output: string, bytes: number, classes: number}, Error>}
+ * @returns {Effect.Effect<{output: string, bytes: number, classes: number, skipped?: boolean}, Error>}
  */
 function runBuildEffect(config, fs) {
     return Effect.gen(function* () {
@@ -323,11 +318,19 @@ function runBuildEffect(config, fs) {
                 ? config.files
                 : ["./src/**/*.{html,js,ts,jsx,tsx,mjs}"];
         const classes = yield* extractClassesEffect(fs, globs);
+
+        // Early exit: if the class list and CSS input are unchanged since the
+        // last build for this output, skip compile + write entirely.
+        const output = config.output || "./dist/tailwind.css";
+        const signature = `${cssInput}\u0000${[...classes].sort().join("\u0001")}`;
+        if (lastBuildSignature.get(output) === signature) {
+            return { output, bytes: -1, classes: classes.length, skipped: true };
+        }
+
         const result = yield* Effect.tryPromise({
             try: () => Promise.resolve(compiler.build(classes)),
             catch: TailwindError("build"),
         });
-        const output = config.output || "./dist/tailwind.css";
         const dir = dirname(output);
         if (dir) {
             yield* Effect.tryPromise({
@@ -339,10 +342,10 @@ function runBuildEffect(config, fs) {
             try: () => fs.writeFile(output, result),
             catch: TailwindError("write"),
         });
+        lastBuildSignature.set(output, signature);
         return { output, bytes: result.length, classes: classes.length };
     }).pipe(
         Effect.withSpan("tailwind.build", { attributes: { output: config.output || "./dist/tailwind.css" } }),
-        Effect.withLogSpan("tailwind.build"),
         Effect.mapError(
             (/** @type {TailwindError} */ e) => friendlyError(describeError(e)),
         ),
@@ -416,6 +419,7 @@ export default createCommand({
         return /** @type {Effect.Effect<undefined, Error>} */ (
             Effect.gen(function* () {
                 const fs = yield* WorkspaceFs;
+                const ui = yield* TerminalUi;
 
                 // --- `tailwind --init`: scaffold the default config file ---
                 if (parsed.init) {
@@ -442,17 +446,7 @@ export default createCommand({
                 /** @type {any} */
                 let rawConfig = {};
                 const readResult = yield* Effect.either(
-                    Effect.tryPromise({
-                        try: () => fs.readFile(configPath, { encoding: "utf8" }),
-                        catch: FsError("readFile", configPath),
-                    }).pipe(
-                        Effect.flatMap((content) =>
-                            Effect.try({
-                                try: () => JSON.parse(/** @type {string} */ (content)),
-                                catch: FsError("parse", configPath),
-                            }),
-                        ),
-                    ),
+                    readJsonConfigEffect(configPath, { required }),
                 );
                 if (readResult._tag === "Left") {
                     if (required) {
@@ -465,7 +459,7 @@ export default createCommand({
 
                 const configResult = tailwindConfigSchema.safeParse(rawConfig);
                 if (!configResult.success) {
-                    term.error(`${configPath}: ${configResult.error.issues.map((i) => i.message).join(", ")}`);
+                    term.error(`${configPath}: ${zodIssuesMessage(configResult.error)}`);
                     return undefined;
                 }
                 const validatedConfig = configResult.data;
@@ -476,7 +470,7 @@ export default createCommand({
                     ...cliFields,
                 });
                 if (!mergedResult.success) {
-                    term.error(`Config merge: ${mergedResult.error.issues.map((i) => i.message).join(", ")}`);
+                    term.error(`Config merge: ${zodIssuesMessage(mergedResult.error)}`);
                     return undefined;
                 }
                 const config = mergedResult.data;
@@ -484,8 +478,26 @@ export default createCommand({
                 const sub = parsed.watch ? "watch" : "build";
 
                 if (sub === "watch") {
-                    const first = yield* runBuildEffect(config, term.fs);
-                    term.success(`Built ${first.output} (${first.bytes} bytes, ${first.classes} classes)`);
+                    const watcher = ui.startWatcher("tailwind-watch", "tailwind --watch");
+                    watcher.set("building", config.output || "./dist/tailwind.css");
+                    const group = yield* Effect.sync(() => ui.startGroup("Building:", config.output || "./dist/tailwind.css"));
+                    const first = yield* runBuildEffect(config, term.fs).pipe(
+                        Effect.tapError((/** @type {Error} */ e) => Effect.sync(() => {
+                            group.set("Failed:", "", "#f14c4c");
+                            group.fail();
+                            term.error(e.message);
+                            watcher.set("error", e.message);
+                        })),
+                    );
+                    if (first.skipped) {
+                        group.set("Up to date:", "", "#8b949e");
+                        group.detail(first.output);
+                        watcher.set("ok", first.output);
+                    } else {
+                        group.set("Built:", "", "#4ec9b0");
+                        group.detail(`${first.classes} classes, ${first.bytes} bytes`);
+                        watcher.set("ok", `${first.classes} classes`);
+                    }
 
                     const isMatch = picomatch((config.files ?? []).map((/** @type {string} */ g) => g.replace(/^\.\//, "")));
 
@@ -494,33 +506,47 @@ export default createCommand({
                         debounceMs: 200,
                         match: isMatch,
                         handler: () =>
-                            runBuildEffect(config, term.fs).pipe(
-                                Effect.tap((r) =>
-                                    Effect.sync(() =>
-                                        term.info(`Rebuilt ${r.output} (${r.bytes} bytes, ${r.classes} classes)`),
-                                    ),
-                                ),
-                            ),
+                            Effect.gen(function* () {
+                                const t0 = performance.now();
+                                watcher.set("building", config.output || "./dist/tailwind.css");
+                                term.info(`▶ Rebuilding: ${config.output || "./dist/tailwind.css"}`);
+                                const r = yield* runBuildEffect(config, term.fs).pipe(
+                                    Effect.tapError((/** @type {Error} */ e) => Effect.sync(() => {
+                                        term.error(`✗ Rebuild failed — ${e.message}`);
+                                        watcher.set("error", e.message);
+                                    })),
+                                );
+                                const elapsed = Math.round(performance.now() - t0);
+                                if (r.skipped) {
+                                    term.info(`✓ Up to date: ${r.output} · ${elapsed}ms`);
+                                    watcher.set("ok", `up to date · ${elapsed}ms`);
+                                } else {
+                                    term.success(`✓ Rebuilt: ${r.classes} classes, ${r.bytes} bytes · ${elapsed}ms`);
+                                    watcher.set("ok", `${r.classes} classes · ${elapsed}ms`);
+                                }
+                            }),
                         term,
                     });
 
                     const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
                         pipeline.push(/** @type {any} */ (e).detail);
                     });
-                    const stopBtn = document.createElement("button");
-                    stopBtn.textContent = "⏹ stop watching";
-                    stopBtn.addEventListener("click", () => {
-                        unsub();
-                        pipeline.stop();
-                        stopBtn.remove();
-                    });
-                    term.log(stopBtn);
+                    createStopWatchButton({ term, pipeline, unsub, onStopped: () => watcher.remove() });
 
                     term.info("Watching for changes...");
                     return undefined;
                 } else {
-                    const { output, bytes, classes } = yield* runBuildEffect(config, term.fs);
-                    term.success(`Wrote ${output} (${bytes} bytes, ${classes} classes)`);
+                    const group = yield* Effect.sync(() => ui.startGroup("Building:", config.output || "./dist/tailwind.css"));
+                    const build = yield* runBuildEffect(config, term.fs).pipe(
+                        Effect.tapError(() => Effect.sync(() => { group.set("Failed:", "", "#f14c4c"); group.fail(); })),
+                    );
+                    if (build.skipped) {
+                        group.set("Up to date:", "", "#8b949e");
+                        group.detail(build.output);
+                    } else {
+                        group.set("Wrote:", "", "#4ec9b0");
+                        group.detail(`${build.classes} classes, ${build.bytes} bytes`);
+                    }
                     return undefined;
                 }
             }).pipe(

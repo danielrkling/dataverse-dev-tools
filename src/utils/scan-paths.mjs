@@ -24,16 +24,6 @@ export function scanPaths(fs, options = {}) {
     return Effect.runPromise(scanPathsEffect(fs, options));
 }
 
-/**
- * Read a file from the workspace ROOT regardless of terminal cwd.
- * @param {import("../types/services.d.ts").WorkspaceFsService} fs
- * @param {string} path clean relative path
- * @param {string} [encoding]
- */
-export function readRootFile(fs, path, encoding = "utf8") {
-    return fs.readFile(`/${path}`, /** @type {any} */ (encoding));
-}
-
 // ---------------------------------------------------------------------------
 // Effect-native variant
 // ---------------------------------------------------------------------------

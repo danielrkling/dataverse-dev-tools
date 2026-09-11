@@ -6,7 +6,7 @@
  * terminal sink and mirrors them to `console`. The minimum level is a
  * module-level setting controlled by the `log-level` terminal command.
  */
-import { Effect, Logger, LogLevel, Duration, Layer } from "effect";
+import { Effect, Logger, LogLevel, Layer } from "effect";
 
 /**
  * @typedef {"trace" | "debug" | "info" | "warn" | "error" | "fatal"} LevelName
@@ -115,6 +115,3 @@ export function terminalLoggerLayer(term) {
 export function withTerminalLogger(effect, term) {
     return Effect.provide(effect, terminalLoggerLayer(term));
 }
-
-/** Convenience re-export so commands don't import `Duration` separately. */
-export { Duration };

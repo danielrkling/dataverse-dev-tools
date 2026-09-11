@@ -14,7 +14,7 @@
  * New code can `yield* GitStatus` instead, provided via GitStatusLive.
  */
 import { Context, Effect, Layer, Ref } from "effect";
-import { makeGitFs, statusLabel } from "../commands/git.mjs";
+import { makeGitFs, statusLabel } from "./git-fs.mjs";
 
 // ---------------------------------------------------------------------------
 // Typed errors (JSDoc-friendly _tag factories — see effects/dataverse-service.mjs)
@@ -326,7 +326,7 @@ export function discardFileChanges(fs, path) {
 // ---------------------------------------------------------------------------
 
 /**
- * Map a two-letter XY label (commands/git.mjs statusLabel) to the tree's
+ * Map a two-letter XY label (services/git-fs.mjs statusLabel) to the tree's
  * GitStatus union. The tree renders "A"/"M"/"D"/"U" badges and propagates
  * "contains changes" to ancestor directories itself.
  * @param {string | null} label

@@ -41,7 +41,6 @@ interface FileSystemDirectoryHandle {
 
 // Custom events dispatched by WebFileSystem on the terminal root element.
 interface HTMLElementEventMap {
-  "fs:init": CustomEvent<unknown>;
   "fs:modified": CustomEvent<{ path?: string }>;
 }
 

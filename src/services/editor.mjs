@@ -574,31 +574,6 @@ function joinPosix(dir, rel) {
 }
 
 /**
- * Extract module specifiers from import/export/require statements.
- * @param {string} source
- * @returns {string[]}
- */
-export function extractImportSpecifiers(source) {
-    /** @type {Set<string>} */
-    const found = new Set();
-    const patterns = [
-        /from\s*["']([^"']+)["']/g,
-        /\bimport\s*\(\s*["']([^"']+)["']/g,
-        /\brequire\s*\(\s*["']([^"']+)["']/g,
-        /\bimport\s+["']([^"']+)["']/g,
-    ];
-    for (const re of patterns) {
-        for (const m of source.matchAll(re)) {
-            const spec = m[1];
-            if (spec && !spec.startsWith(".") && !spec.startsWith("/") && !/^[a-z]+:/i.test(spec)) {
-                found.add(spec);
-            }
-        }
-    }
-    return [...found];
-}
-
-/**
  * Reduce an import specifier to its package name ("zod", "@scope/pkg").
  * @param {string} specifier
  * @returns {string | null}

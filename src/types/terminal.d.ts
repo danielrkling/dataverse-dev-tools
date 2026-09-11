@@ -12,22 +12,10 @@ import type { CommandRegistry } from "../services/commands.mjs";
 /** Attributes applied to the wrapper element of a logged line. */
 export type LogAttributes = Record<string, string>;
 
-/** A single live, mutable status line backed by a DOM element. */
-export interface StatusLine {
-    /** Replace the status label and optionally recolor it. */
-    set(label: string, cssClass?: string, color?: string): void;
-    /** Update the right-hand detail text. */
-    detail(text: string, color?: string): void;
-    /** Remove the line from the output. */
-    remove(): void;
-}
-
 /** The output sink + execution context handed to command `execute`/`executeEffect`. */
 export interface Terminal {
     /** Log a line. Strings are HTML-escaped; elements are appended as-is. */
     log(content: string | HTMLElement, attributes?: LogAttributes): HTMLDivElement | null;
-    /** Log trusted, pre-built markup the app itself generated. */
-    html(markup: string, attributes?: LogAttributes): HTMLDivElement | null;
     /** Informational (blue) line. */
     info(content: string | HTMLElement): HTMLDivElement | null;
     /** Error (red) line. */
@@ -44,6 +32,9 @@ export interface Terminal {
     prompt: string;
     /** Execute a command line as if typed by the user. */
     processCommand(text: string): Promise<void>;
-    /** Create a live, mutable status line in the output. */
-    startLine?(label: string, detail?: string, color?: string): StatusLine;
+    /** Upsert a pinned watcher status row (strip above the input). */
+    watcher(id: string, label: string): {
+        set(state: "building" | "ok" | "error" | "stopped", detail?: string): void;
+        remove(): void;
+    };
 }

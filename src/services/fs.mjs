@@ -540,78 +540,6 @@ export class WebFileSystem {
     }
 
     /**
-     * Watches a directory for file changes using FileSystemObserver.
-     * @param {string} path
-     * @param {{ recursive?: boolean, debounce: number }} options
-     * @param {(path: string, type: "modified" | "deleted") => void} callback
-     * @returns {Promise<{disconnect: () => void}>}
-     */
-    async watch(path, options, callback) {
-        const absPath = this._resolvePath(path);
-        const handle = await this._getHandle(absPath);
-
-        /** @type {Map<string, ReturnType<typeof setTimeout>>} */
-        const timeoutMap = new Map();
-
-        /**
-         * @param {string} absPath
-         * @param {"modified" | "deleted"} type
-         */
-        function debounceCallback(absPath, type) {
-            const t = timeoutMap.get(absPath);
-            clearTimeout(t);
-            const id = setTimeout(() => {
-                callback(absPath, type);
-                timeoutMap.delete(absPath);
-            }, options.debounce);
-            timeoutMap.set(absPath, id);
-        }
-
-        /** @param {any[]} records */
-        const observerCallback = async (records) => {
-            for (const record of records) {
-                const absPath = [path, ...record.relativePathComponents].join("/");
-                const name = record.relativePathComponents.at(-1);
-                if (name === "desktop.ini" || name.endsWith(".crswap")) {
-                    continue;
-                }
-                if (record.type === "moved") {
-                    const oldPath = record.relativePathMovedFrom.join("/");
-                    debounceCallback(absPath, "modified");
-                }
-                if (record.type === "disappeared") {
-                    debounceCallback(absPath, "deleted");
-                }
-
-                if (record.type === "appeared" || record.type === "modified") {
-                    try {
-                        if (record.changedHandle.kind === "directory") {
-                            continue;
-                        } else {
-                            debounceCallback(absPath, "modified");
-                            // const file = await record.changedHandle.getFile();
-                            // const content = await file.text();
-                            // if (content !== vfs.readFileSync(path)) vfs.writeFileSync(path, content);
-                        }
-                    } catch (e) {
-                        console.error(`Could not read file: ${absPath}`, e);
-                    }
-                }
-            }
-        };
-
-        const observer = new FileSystemObserver(observerCallback);
-        await observer.observe(/** @type {FileSystemDirectoryHandle} */ (handle), {
-            recursive: true,
-        });
-        return {
-            disconnect: () => {
-                observer.disconnect();
-            },
-        };
-    }
-
-    /**
      * Writes data to a file.
      * @param {string} path The path of the file to write to.
      * @param {string|ArrayBuffer|Blob|ArrayBufferView} data The data to write.
@@ -640,13 +568,8 @@ export class WebFileSystem {
     /**
      * Changes the current working directory.
      * @param {string} path The path to change to (can be relative or absolute).
-     * @returns {Promise<string>}
-     * @throws {Error} If the path is not a directory or does not exist.
-     */
-    /**
-     * Changes the current working directory.
-     * @param {string} path The path to change to (can be relative or absolute).
      * @returns {Promise<string>} The new absolute working directory path.
+     * @throws {Error} If the path is not a directory or does not exist.
      */
     async cd(path) {
         const newCwd = this._resolvePath(path);

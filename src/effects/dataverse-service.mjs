@@ -143,13 +143,17 @@ const cache = new Map();
  */
 function request(path, init, operation) {
     return Effect.tryPromise({
-        // The executor's AbortSignal is aborted when the fiber is interrupted
-        // (including by Effect.timeout below) — this cancels the in-flight
-        // fetch instead of leaving it running in the background.
         try: async (signal) => {
             const res = await fetch(path, { ...init, signal });
             if (!res.ok) throw HttpError({ operation, path, status: res.status });
-            return res.json();
+            
+            // 204 No Content or empty bodies return null / undefined
+            if (res.status === 204) return null;
+            
+            const text = await res.text();
+            if (!text || !text.trim()) return null;
+            
+            return JSON.parse(text);
         },
         catch: (cause) =>
             /** @type {any} */ (cause)?._tag === "HttpError"
@@ -161,6 +165,7 @@ function request(path, init, operation) {
         Effect.timeout(Duration.seconds(30)),
     );
 }
+
 
 /**
  * Retry policy for write operations (Dataverse API flakiness):
@@ -270,7 +275,7 @@ const uploadEffect = (name, text, solution) =>
             );
         }
         cache.set(name, created);
-        yield* Effect.logInfo(`uploaded ${name}`).pipe(
+        yield* Effect.logDebug(`uploaded ${name}`).pipe(
             Effect.annotateLogs({
                 webresourceid: created.webresourceid,
                 method: existing ? "PATCH" : "POST",
@@ -301,7 +306,7 @@ const publishEffect = (value, solution) =>
                     .join("")}</webresources></importexportxml>`,
             }),
         }, "publish").pipe(Effect.retry(writeRetry));
-        yield* Effect.logInfo(`published ${ids.length} webresource(s)`).pipe(
+        yield* Effect.logDebug(`published ${ids.length} webresource(s)`).pipe(
             Effect.annotateLogs({ count: ids.length }),
         );
     });

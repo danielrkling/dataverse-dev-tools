@@ -5,7 +5,7 @@ test('registry git add/commit completes', async ({ page }) => {
     page.on('console', (m) => console.log('[console]', m.type(), m.text().slice(0, 200)));
     page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 300)));
 
-    await page.goto('http://localhost:8001/');
+    await page.goto('/');
 
     const result = await page.evaluate(async () => {
         const { WebFileSystem } = await import('/src/services/fs.mjs');

@@ -17,7 +17,7 @@ import { createWatchPipeline } from "../effects/watch-pipeline.mjs";
 import { DataverseService, isValidWebResource } from "../effects/dataverse-service.mjs";
 import { TerminalUi } from "../effects/terminal-ui.mjs";
 import { WorkspaceFs, commandLayers } from "../effects/services.mjs";
-import { createCommand } from "../services/commands.mjs";
+import { createCommand, createStopWatchButton } from "../services/commands.mjs";
 import {bus} from "../services/bus.mjs"
 
 export const dataverseConfigSchema = z.object({
@@ -29,23 +29,8 @@ export const dataverseConfigSchema = z.object({
 });
 
 /**
- * Read and validate a dataverse config file (Promise API — used by preview).
- * @param {any} term
- * @param {string} path
- * @returns {Promise<import("zod").infer<typeof dataverseConfigSchema>>}
- */
-async function readConfig(term, path) {
-    let raw;
-    try {
-        raw = JSON.parse(await term.fs.readFile(path, { encoding: "utf-8" }));
-    } catch (/** @type {any} */ e) {
-        throw new Error(`Error reading ${path}:\n${e instanceof Error ? e.message : e}`);
-    }
-    return validateConfig(raw, path);
-}
-
-/**
- * Effect variant over the WorkspaceFs service (used by upload's run flow).
+ * Read and validate a dataverse config file against the WorkspaceFs
+ * service (used by upload and preview).
  * @param {import("../types/services.d.ts").WorkspaceFsService} fs
  * @param {string} path
  * @returns {Effect.Effect<import("zod").infer<typeof dataverseConfigSchema>, Error>}
@@ -172,6 +157,9 @@ export const uploadCommand = createCommand({
                 yield* uploadFilesEffect(entries, { files, prefix, solution, publish: parsed.publish });
 
                 if (parsed.watch) {
+                const ui = yield* TerminalUi;
+                const watcher = ui.startWatcher("dataverse-watch", "dataverse --watch");
+
             /**
              * Upload a single changed file as an Effect. Content is read
              * *inside* the pipeline (after debouncing), so the latest
@@ -183,6 +171,7 @@ export const uploadCommand = createCommand({
             const uploadEffect = (e) =>
                 Effect.gen(function* () {
                     if (e.type === "deleted") return;
+                    watcher.set("building", e.path);
                     const content = yield* Effect.tryPromise({
                         try: () => fs.readFile(e.path, { encoding: "utf8" }),                        catch: (cause) => ({
                             _tag: "ReadError",
@@ -196,10 +185,9 @@ export const uploadCommand = createCommand({
                         solution,
                         publish: parsed.publish,
                     });
-                    yield* Effect.logInfo(`watch upload complete for ${e.path}`).pipe(
-                        Effect.annotateLogs({ type: e.type }),
-                    );
+                    watcher.set("ok", e.path);
                 }).pipe(
+                    Effect.tapError(() => Effect.sync(() => watcher.set("error", e.path))),
                     Effect.withSpan("dataverse.watch-upload", { attributes: { path: e.path } }),
                 );
 
@@ -215,14 +203,7 @@ export const uploadCommand = createCommand({
             const unsub = bus.on("fs:changed", (/** @type {CustomEvent} */ e) => {
                 pipeline.push(/** @type {any} */ (e).detail);
             });
-            const stopBtn = document.createElement("button");
-            stopBtn.textContent = "⏹ stop watching";
-            stopBtn.addEventListener("click", () => {
-                unsub();
-                pipeline.stop();
-                stopBtn.remove();
-            });
-            term.log(stopBtn);
+            createStopWatchButton({ term, pipeline, unsub, onStopped: () => watcher.remove() });
         }
 
         /**
@@ -254,37 +235,39 @@ export const uploadCommand = createCommand({
             const body = Effect.gen(function* () {
                 const api = yield* DataverseService;
                 const ui = yield* TerminalUi;
-                const line = yield* Effect.sync(() => ui.startLine("Uploading:", filenames.join(",")));
+                const group = yield* Effect.sync(() => ui.startGroup("Uploading:", filenames.join(",")));
 
                 // Concurrency 3: parallel but bounded — no request stampede.
                 const wrs = yield* Effect.forEach(
                     validFiles,
-                    ([name, content]) => api.upload(name, content, run.solution),
+                    ([name, content]) =>
+                        api.upload(name, content, run.solution).pipe(
+                            Effect.tap(() => Effect.sync(() => group.log(`✓ uploaded ${name}`))),
+                        ),
                     { concurrency: 3 },
                 ).pipe(
                     // Errors here are service failures — recolor the line.
-                    Effect.tapError(() => Effect.sync(() => line.set("Failed:", "", "#f14c4c"))),
+                    Effect.tapError(() => Effect.sync(() => { group.set("Failed:", "", "#f14c4c"); group.fail(); })),
                 );
-                line.set("Uploaded:", "", "#4fc1ff");
+                group.set("Uploaded:", "", "#4fc1ff");
+                group.detail(`${filenames.length} file(s)`);
                 bus.emit("dataverse:uploaded", { files: run.files });
                 if (run.publish) {
-                    line.set("Publishing", "", "#e2c08d");
+                    group.set("Publishing", "", "#e2c08d");
                     yield* api.publish(wrs, run.solution).pipe(
-                        Effect.tapError(() => Effect.sync(() => line.set("Failed:", "", "#f14c4c"))),
+                        Effect.tapError(() => Effect.sync(() => { group.set("Failed:", "", "#f14c4c"); group.fail(); })),
                     );
-                    line.set("Published:", "", "#4ec9b0");
+                    group.set("Published:", "", "#4ec9b0");
+                    group.detail(`${filenames.length} file(s), published`);
+                    group.log(`✓ published ${wrs.length} webresource(s)`);
                     bus.emit("dataverse:published", { files: run.files });
                 }
-                yield* Effect.logInfo(`upload batch complete`).pipe(
-                    Effect.annotateLogs({ runId, count: validFiles.length, publish: run.publish }),
-                );
             });
 
             return body.pipe(
                 Effect.withSpan("dataverse.uploadFiles", {
                     attributes: { runId, count: validFiles.length, publish: run.publish },
                 }),
-                Effect.withLogSpan("dataverse.uploadFiles"),
                 // Convert to a plain Error so the registry's error path can
                 // display it — the single error report (no duplicate logging).
                 Effect.mapError((err) => new Error(describeError(err))),
@@ -318,33 +301,35 @@ export const previewCommand = createCommand({
     description: message`Preview a web resource in a new tab`,
     usage: message`preview [path]`,
     brief: message`Preview a web resource in a new tab`,
-    execute: async (parsed, term) => {
-        let { preview } = parsed;
+    executeEffect: (parsed, term) =>
+        Effect.gen(function* () {
+            let { preview } = parsed;
 
-        if (!preview) {
-            preview = (await readConfig(term, parsed.config)).preview;
-        }
+            if (!preview) {
+                const fs = yield* WorkspaceFs;
+                preview = (yield* readConfigEffect(fs, parsed.config)).preview;
+            }
 
-        if (!preview) return "Could not determine preview path.";
-        const url = `${location.origin}/WebResources/${preview}`;
-        const win = window.open(url);
-        if (!win) return `Blocked popup — could not open ${url}`;
+            if (!preview) return "Could not determine preview path.";
+            const url = `${location.origin}/WebResources/${preview}`;
+            const win = window.open(url);
+            if (!win) return `Blocked popup — could not open ${url}`;
 
-        /** Reload the preview window whenever one of these events fires. */
-        const reloadOn = (/** @type {"dataverse:uploaded" | "dataverse:published"} */ eventName) => {
-            const unsub = bus.on(eventName, () => {
-                try {
-                    win.location.reload();
-                } catch {
-                    unsub();
-                }
-            });
-        };
-        if (parsed.onUpload) reloadOn("dataverse:uploaded");
-        if (parsed.onPublish) reloadOn("dataverse:published");
+            /** Reload the preview window whenever one of these events fires. */
+            const reloadOn = (/** @type {"dataverse:uploaded" | "dataverse:published"} */ eventName) => {
+                const unsub = bus.on(eventName, () => {
+                    try {
+                        win.location.reload();
+                    } catch {
+                        unsub();
+                    }
+                });
+            };
+            if (parsed.onUpload) reloadOn("dataverse:uploaded");
+            if (parsed.onPublish) reloadOn("dataverse:published");
 
-        return `Opening ${url}`;
-    },
+            return `Opening ${url}`;
+        }).pipe(Effect.withSpan("dataverse.preview"), Effect.withLogSpan("dataverse.preview")),
 });
 
 export const cacheCommand = createCommand({
@@ -359,29 +344,30 @@ export const cacheCommand = createCommand({
     description: message`Get the cached URL of a web resource`,
     usage: message`cache [path]`,
     brief: message`Get the cached URL of a web resource`,
-    execute: async (parsed, term) => {
-        let { path } = parsed;
+    executeEffect: (parsed, term) =>
+        Effect.sync(() => {
+            const { path } = parsed;
 
-        // 1. Get the current date at midnight UTC to keep the token consistent throughout the day
-        const currentDate = new Date();
-        currentDate.setUTCHours(0, 0, 0, 0);
-        const millisecondsSinceEpoch = currentDate.getTime();
+            // 1. Get the current date at midnight UTC to keep the token consistent throughout the day
+            const currentDate = new Date();
+            currentDate.setUTCHours(0, 0, 0, 0);
+            const millisecondsSinceEpoch = currentDate.getTime();
 
-        // 2. .NET Epoch offset in milliseconds (January 1, 0001 to January 1, 1970)
-        const dotNetMillisecondsAt_1970_01_01 = 62135596800000;
-        const ticksPerMillisecond = 10000;
+            // 2. .NET Epoch offset in milliseconds (January 1, 0001 to January 1, 1970)
+            const dotNetMillisecondsAt_1970_01_01 = 62135596800000;
+            const ticksPerMillisecond = 10000;
 
-        // 3. Convert Javascript milliseconds to .NET ticks
-        const totalMilliseconds = millisecondsSinceEpoch + dotNetMillisecondsAt_1970_01_01;
-        const cachingTokenTicks = totalMilliseconds * ticksPerMillisecond;
+            // 3. Convert Javascript milliseconds to .NET ticks
+            const totalMilliseconds = millisecondsSinceEpoch + dotNetMillisecondsAt_1970_01_01;
+            const cachingTokenTicks = totalMilliseconds * ticksPerMillisecond;
 
 
-        const a = document.createElement("a")
+            const a = document.createElement("a")
 
-        const url = `${location.origin}/%7B${cachingTokenTicks}%7D/WebResources/${path ?? ""}`
-        a.href = url
-        a.textContent = url
+            const url = `${location.origin}/%7B${cachingTokenTicks}%7D/WebResources/${path ?? ""}`
+            a.href = url
+            a.textContent = url
 
-        return a
-    },
+            return a
+        }),
 });

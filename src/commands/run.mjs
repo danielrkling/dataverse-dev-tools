@@ -235,7 +235,7 @@ self.process = {
  * @param {string} bundleCode IIFE bundle (self-contained, no imports).
  * @param {string[]} argv
  */
-export function buildWorkerSource(bundleCode, argv) {
+function buildWorkerSource(bundleCode, argv) {
     return (
         WORKER_PRELUDE.replace("__RUN_ARGV__", JSON.stringify(argv)) +
         `

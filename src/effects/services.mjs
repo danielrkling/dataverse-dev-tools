@@ -31,8 +31,7 @@ export const WorkspaceFs = /** @type {any} */ (Context.GenericTag("WorkspaceFs")
  * Build all context layers for a command execution from the `term` object.
  * This is THE layer graph for command runs — if a service needs to reach a
  * command, provide it here (exception: GitStatusLive stays local to git.mjs
- * because services/git-status.mjs imports commands/git.mjs, and adding it
- * here would create an import cycle).
+ * to keep that command's layer wiring explicit).
  *
  * @param {any} term terminal sink / execution context
  * @returns {Layer.Layer<any, never, never>} merged context layers

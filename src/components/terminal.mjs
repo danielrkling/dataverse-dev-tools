@@ -76,12 +76,28 @@ export class WebTerminal extends LitElement {
             [data-disabled-hint] { margin-bottom: 0.5rem; }
             .log-error { color: ${theme.error}; }
             .log-success { color: ${theme.success}; }
+            :host summary:focus,
+            :host summary:focus-visible { outline: none; }
+
+            /* Pinned watcher status strip (#2): one row per active watcher,
+               always visible above the input without scrolling. */
+            #watchers { flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; border-top: 1px solid #333; padding: 6px 0 0; margin-top: 0.5rem; }
+            #watchers[hidden] { display: none; }
+            .watcher { display: flex; align-items: center; gap: 0.5rem; font-size: 0.92em; }
+            .watcher .dot { width: 8px; height: 8px; border-radius: 50%; background: #666; flex-shrink: 0; }
+            .watcher[data-state="building"] .dot { background: ${theme.accent}; animation: watcher-pulse 1s ease-in-out infinite; }
+            .watcher[data-state="ok"] .dot { background: ${theme.success}; }
+            .watcher[data-state="error"] .dot { background: ${theme.error}; }
+            .watcher-label { color: ${theme.info}; }
+            .watcher-detail { color: ${theme.textDim}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            @keyframes watcher-pulse { 50% { opacity: 0.35; } }
         `,
     ];
 
     render() {
         return litHtml`
             <div id="output"></div>
+            <div id="watchers" hidden></div>
             <div class="input-line">
                 <span class="prompt"><span id="prompt">${this.prompt}</span>&gt</span>
                 <input
@@ -106,10 +122,15 @@ export class WebTerminal extends LitElement {
 
             const path = e.composedPath();
 
+            // Only real interactive controls keep the input unfocused. Note
+            // <summary> is deliberately NOT in this list: clicking a
+            // collapsible group toggles it AND returns focus to the input
+            // (summary elements are natively focusable, so a broader
+            // tabIndex-based check here used to steal focus from the prompt).
             const clickedFocusable = path.some(
                 (el) =>
                     el instanceof HTMLElement &&
-                    (el.matches("button, input, textarea, select, a[href]") || el.tabIndex >= 0),
+                    el.matches("button, input, textarea, select, a[href]"),
             );
 
             if (!clickedFocusable) {
@@ -191,17 +212,6 @@ export class WebTerminal extends LitElement {
     }
 
     /**
-     * Log trusted, pre-built HTML. Only use this for markup the app itself
-     * generated — never interpolate user input or file contents into it.
-     * @param {string} markup
-     * @param {Record<string, string>} [attributes]
-     * @returns {HTMLDivElement}
-     */
-    html(markup, attributes = {}) {
-        return this.log(/** @type {any} */ (document.createRange().createContextualFragment(markup)), attributes);
-    }
-
-    /**
      * Log an informational message (blue).
      * @param {string|HTMLElement} content
      * @returns {HTMLDivElement}
@@ -228,10 +238,61 @@ export class WebTerminal extends LitElement {
         return this.log(content, { class: "log-success" });
     }
 
-    /** Clear all terminal output */
+    /** Clear all terminal output (and any pinned watcher rows). */
     clear() {
         const output = /** @type {HTMLDivElement} */ (this.renderRoot.querySelector("#output"));
         output.innerHTML = "";
+        const watchers = /** @type {HTMLElement} */ (this.renderRoot.querySelector("#watchers"));
+        if (watchers) {
+            watchers.replaceChildren();
+            watchers.hidden = true;
+        }
+    }
+
+    /**
+     * Upsert a pinned watcher status row (the strip above the input).
+     * One row per watcher id; calling again with the same id reuses it.
+     *
+     * @param {string} id stable watcher identity (e.g. "esbuild-watch")
+     * @param {string} label human-readable name shown after the dot
+     * @returns {{ set: (state: "building"|"ok"|"error"|"stopped", detail?: string) => void, remove: () => void }}
+     */
+    watcher(id, label) {
+        const holder = /** @type {HTMLElement} */ (this.renderRoot.querySelector("#watchers"));
+        if (!holder) {
+            return { set() {}, remove() {} };
+        }
+        let row = /** @type {HTMLElement} */ (holder.querySelector(`.watcher[data-id="${CSS.escape(id)}"]`));
+        if (!row) {
+            row = document.createElement("div");
+            row.className = "watcher";
+            row.dataset.id = id;
+            const dot = document.createElement("span");
+            dot.className = "dot";
+            const name = document.createElement("span");
+            name.className = "watcher-label";
+            name.textContent = label;
+            const detail = document.createElement("span");
+            detail.className = "watcher-detail";
+            row.append(dot, name, detail);
+            holder.append(row);
+            holder.hidden = false;
+        }
+        const dot = /** @type {HTMLElement} */ (row.querySelector(".dot"));
+        const detailEl = /** @type {HTMLElement} */ (row.querySelector(".watcher-detail"));
+        return {
+            /** @param {string} state @param {string} [detail] */
+            set(state, detail = "") {
+                row.dataset.state = state;
+                dot.title = state;
+                detailEl.textContent = detail;
+                detailEl.title = detail;
+            },
+            remove() {
+                row.remove();
+                if (!holder.children.length) holder.hidden = true;
+            },
+        };
     }
 
     /**

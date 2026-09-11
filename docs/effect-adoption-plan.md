@@ -1,5 +1,11 @@
 # Effect Adoption Plan
 
+> **Status: adopted with deviations.** Effect is in use, but with a few
+> deviations from this plan: we adopted Effect **v3** (not the v4 RC), the
+> code stayed **JSDoc-first `.mjs`** (no `.ts` files were needed), runtime
+> layer composition lives in `src/effects/services.mjs` (`commandLayers`),
+> the AI tools layer (Phase 5) was removed as unused.
+
 > Incremental plan to adopt Effect in the browser IDE: first for the
 > watch/rebuild/upload pipelines (concurrency, debouncing, cancellation),
 > then logging, then the command runtime and AI tools.

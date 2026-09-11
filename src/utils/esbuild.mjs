@@ -76,33 +76,6 @@ export function getEsbuild() {
     return Effect.runPromise(getEsbuildEffect);
 }
 
-/**
- * Transform source with esbuild-wasm as an Effect (typed {@link BuildError}).
- *
- * @param {string | Uint8Array} input
- * @param {import('esbuild-wasm').TransformOptions} [options]
- * @returns {Effect.Effect<import('esbuild-wasm').TransformResult, BuildError>}
- */
-export function transformEffect(input, options) {
-    return Effect.flatMap(getEsbuildEffect, (esb) =>
-        Effect.tryPromise({
-            try: () => esb.transform(input, options),
-            catch: BuildError("transform"),
-        }),
-    );
-}
-
-/**
- * Thin Promise wrapper over {@link transformEffect} for non-Effect callers.
- *
- * @param {string | Uint8Array} input
- * @param {import('esbuild-wasm').TransformOptions} [options]
- * @returns {Promise<import('esbuild-wasm').TransformResult>}
- */
-export function transform(input, options) {
-    return Effect.runPromise(transformEffect(input, options));
-}
-
 // --- RESOLVE HELPERS ---
 
 /**

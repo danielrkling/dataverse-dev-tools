@@ -41,11 +41,3 @@ export function isEcho(path) {
     }
     return true;
 }
-
-/** Periodic cleanup so the map cannot grow unboundedly. */
-export function pruneEchoes() {
-    const now = Date.now();
-    for (const [path, expiry] of echoes) {
-        if (now > expiry) echoes.delete(path);
-    }
-}

@@ -29,18 +29,39 @@ Events on the bus:
 - `workspace:open` `{ fs }` — a folder became the active workspace
 - `fs:changed` `{ path, type: 'modified'|'deleted'|'moved' }` — external changes
 - `editor:open` `{ path }` — something asked the editor to open a file
+- `editor:diff` `{ path, content }` — something asked the editor to open a diff view
+- `dataverse:uploaded` / `dataverse:published` `{ files }` — upload pipeline progress (preview listens to these)
+- `npm:install` / `npm:uninstall` — package installs started/finished
 
 ## Module layout
 
 ```
 src/
   main.mjs                 # entry: registers elements + commands (index.html loads this)
-  services/
+  services/                # stateful singletons, fs/git plumbing, command registry;
+                           #   plain Promise or thin Effect facades over state
     fs.mjs                 # WebFileSystem: File System Access API wrapper (OPFS/picker/handles)
     workspace.mjs          # "which folder is open" singleton + handle persistence (IndexedDB)
     editor.mjs             # editorState: docs, tabs, dirty flags; Monaco model registry + hydration
     bus.mjs                # tiny pub/sub used by everything above
-    dataverse.mjs          # Dataverse WebResource REST API client (upload/publish)
+    commands.mjs           # terminal command registry: argv parsing (&&/&), Effect dispatch,
+                           #   createCommand(), shared fs helpers (FsError/fsOp/readJsonConfigEffect)
+    git-fs.mjs             # isomorphic-git fs adapter + statusLabel (shared, avoids import cycle)
+    git-status.mjs         # git status / HEAD content (Effect service + legacy Promise exports)
+  effects/                 # Effect Layers, service tags, watch pipeline, typed errors
+    services.mjs           # Context tags (WorkspaceFs/TerminalSink/DataverseApi/TerminalUi)
+                           #   + commandLayers(term) — the layer composition commands get
+    watch-pipeline.mjs     # bus → filter → debounce → semaphore-serialized handler → drain;
+                           #   single debounce point, echo suppression, stop button
+    logger.mjs             # Effect logging routed to the terminal sink; log-level control
+    echo-guard.mjs         # suppresses fs:changed echoes for self-inflicted writes
+    dataverse-service.mjs  # Dataverse Web API as an Effect service (timeouts, retries, typed errors)
+    terminal-ui.mjs        # TerminalUi service: live (mutable) widgets —
+                           #   collapsible status groups (startGroup); passing a
+                           #   stable `id` reuses ONE card per watcher and
+                           #   re-anchors it to the bottom of the output;
+                           #   startWatcher pins a live row in the terminal's
+                           #   watcher strip above the input (state dot + detail)
   components/
     file-tree.mjs          # sidebar tree (thin adapter over @pierre/trees, CDN import map)
     editor-pane.mjs        # Monaco host + tab strip (light DOM — see note below)
@@ -48,21 +69,26 @@ src/
                            #   delegates command execution to services/commands.mjs
   (layout lives in index.html: Web Awesome wa-split-panel markup + styles;
    no shell element — panels are plain light DOM)
-  terminal.mjs             # REMOVED from src/ root — now components/terminal.mjs
-  services/
-    ...
-    commands.mjs           # terminal command registry: argv parsing (&&/&), exec, createCommand()
-  commands/                # terminal commands; each is (args, terminal) => Promise
-                           #   built with createCommand() from services/commands.mjs
-    builtin.mjs            # help/clear/echo
+  commands/                # terminal commands, built with createCommand() from
+                           #   services/commands.mjs — all run via `executeEffect`
+    builtin.mjs            # help/echo/clear/log-level
     fs.mjs                 # ls/cat/cd/mv/rm/pwd/stat/mkdir
     esbuild.mjs            # bundle via esbuild-wasm (loaded from CDN at runtime)
     tailwind.mjs           # tailwind CLI emulation (CDN standalone build)
-    dataverse.mjs          # upload/preview/publish web resources
+    dataverse.mjs          # upload/preview/cache web resources
     git.mjs, gitlab.mjs    # git via isomorphic-git (vite external, CDN import map)
-    npm.mjs, flatten.mjs, history.mjs, open.mjs
-  utils/                   # pure helpers: path, json, debounce, history, icons, scan-paths, esbuild
+    npm.mjs, flatten.mjs, history.mjs, run.mjs
+  utils/                   # pure helpers: path, json, history (re-export shim of
+                           #   services/workspace.mjs), scan-paths, esbuild, node-shims
 ```
+
+> **services/ vs effects/**: `services/` holds stateful singletons and
+> fs/git plumbing plus the command registry — plain Promise code, or thin
+> Effect facades for compatibility. `effects/` holds Effect Layers, the
+> Context service tags, the watch pipeline, and typed errors. Commands are
+> built on `executeEffect` and receive their layers via
+> `effects/services.mjs` → `commandLayers(term)`; they declare
+> requirements and never provide services themselves.
 
 Note: `editor-pane` is deliberately rendered in **light DOM** — Monaco injects
 its stylesheet into `document.head`, which cannot reach inside a shadow root.

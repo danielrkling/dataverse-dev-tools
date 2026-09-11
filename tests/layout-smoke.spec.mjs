@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("web awesome split panel + font awesome icons render", async ({ page }) => {
+test("split panel + file tree toolbar icons render", async ({ page }) => {
     await page.goto("/");
 
     // Web Awesome split panel should be defined and present in the shell.
@@ -16,12 +16,12 @@ test("web awesome split panel + font awesome icons render", async ({ page }) => 
     await expect(page.locator("#pane-editor")).toHaveCount(1);
     await expect(page.locator("#pane-terminal")).toHaveCount(1);
 
-    // File-tree action buttons should be Web Awesome buttons with Font Awesome SVG icons.
+    // File-tree action buttons are native buttons with inline SVG icons.
     const sidebar = page.locator("file-tree");
     const newFolderBtn = sidebar.locator("#new-folder");
     await expect(newFolderBtn).toBeVisible({ timeout: 15000 });
-    await expect(newFolderBtn).toHaveJSProperty("localName", "wa-button");
-    const iconCount = await newFolderBtn.locator("wa-icon").count();
+    await expect(newFolderBtn).toHaveJSProperty("localName", "button");
+    const iconCount = await newFolderBtn.locator("svg").count();
     expect(iconCount).toBe(1);
 
     // The sidebar should show its action list before a folder is opened.

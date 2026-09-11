@@ -212,7 +212,7 @@ function filterFiles(files, tsOnly) {
 
 /**
  * @param {string} v
- * @returns {{ major: number, minor: number, patch: number } | null}
+ * @returns {{ major: number, minor: number, patch: number, pre: string[] | null } | null}
  */
 function parseSemver(v) {
     const m = v.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
@@ -225,8 +225,8 @@ function parseSemver(v) {
  * Semver prerelease precedence: a release outranks any prerelease of the
  * same triple; prerelease identifiers compare numerically when both numeric,
  * lexically otherwise; a shorter identifier list loses.
- * @param {string[] | null} a
- * @param {string[] | null} b
+ * @param {string[] | null | undefined} a
+ * @param {string[] | null | undefined} b
  * @returns {number}
  */
 function comparePre(a, b) {
@@ -313,7 +313,7 @@ function pickBestVersion(versions, range) {
     // Prereleases are only candidates when the range itself names one
     // (mirrors npm: `latest` never resolves to a prerelease).
     const allowPre = /-/.test(range);
-    /** @type {Array<{ major: number, minor: number, patch: number, pre?: string[] | null }>} */
+    /** @type {Array<{ major: number, minor: number, patch: number, pre: string[] | null }>} */
     const parsed = [];
     for (const v of versions) {
         if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)) continue;

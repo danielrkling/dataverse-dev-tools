@@ -40,7 +40,11 @@ const STUBS = {
     fsevents: ["watch", "stopWatching", "setEncoding"],
 };
 
-/** @returns {string} */
+/**
+ * @param {string} mod
+ * @param {string[]} names
+ * @returns {string}
+ */
 function stubShimSource(mod, names) {
     const fns = names
         .map((n) => `export const ${n} = (...a) => { throw new Error("node:${mod}.${n}() is not available in the browser"); };`)
@@ -94,7 +98,7 @@ export function nodeShimPlugin() {
             build.onLoad(
                 { filter: /.*/, namespace: "node-stub" },
                 (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => ({
-                    contents: stubShimSource(args.path, STUBS[args.path]),
+                    contents: stubShimSource(args.path, STUBS[/** @type {keyof typeof STUBS} */ (args.path)]),
                     loader: "js",
                 }),
             );

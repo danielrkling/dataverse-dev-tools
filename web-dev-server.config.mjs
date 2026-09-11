@@ -8,7 +8,9 @@
 export default {
     // Root is the project dir so index.html and src/ resolve naturally.
     rootDir: ".",
-    open: true,
+    // Playwright (playwright.config.mjs) expects the dev server here.
+    port: 5173,
+    open: false,
     // .mjs must be served with a JS MIME type for module scripts.
     mimeTypes: {
         "**/*.mjs": "text/javascript",
