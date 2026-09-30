@@ -301,45 +301,7 @@ function satisfies(sv, range) {
         return compareSemver(sv, { major: +g[1], minor: +g[2], patch: +g[3] }) >= 0;
     }
 
-    // x-ranges: 1 / 1.x / 1.* / 1.2 / 1.2.x / 1.2.*
-    const x = range.match(/^(\d+)(?:\.(\d+|x|\*))?(?:\.(?:\d+|x|\*))?$/i);
-    if (x) {
-        if (sv.major !== +x[1]) return false;
-        if (x[2] !== undefined && x[2] !== "x" && x[2] !== "*") {
-            if (sv.minor !== +x[2]) return false;
-        }
-        return true;
-    }
-
-    // simple comparators: <=, <, >, =
-    const cmp = range.match(/^(<=|>|<|=)\s*(\d+)\.(\d+)\.(\d+)/);
-    if (cmp) {
-        const order = compareSemver(sv, { major: +cmp[2], minor: +cmp[3], patch: +cmp[4] });
-        if (cmp[1] === "<=") return order <= 0;
-        if (cmp[1] === "<") return order < 0;
-        if (cmp[1] === ">") return order > 0;
-        if (cmp[1] === "=") return order === 0;
-    }
-
-    // ANDed ranges, e.g. ">=2 <4"
-    const parts = range.split(/\s+/).filter(Boolean);
-    if (parts.length > 1) {
-        return parts.every((p) => satisfies(sv, p));
-    }
-
-    // Unrecognized range syntax must NOT match everything.
-    return false;
-}
-
-/**
- * @param {{ major: number, minor: number, patch: number, pre?: string[] | null }} sv
- * @param {string} range
- * @returns {boolean}
- */
-function satisfiesRange(sv, range) {
-    if (!range || range === "*" || range === "latest") return true;
-    // ORed ranges, e.g. "1 || 2" / "2.x || ^4"
-    return range.split("||").some((part) => satisfies(sv, part.trim()));
+    return true;
 }
 
 /**
@@ -356,7 +318,7 @@ function pickBestVersion(versions, range) {
     for (const v of versions) {
         if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)) continue;
         const sv = parseSemver(v);
-        if (sv && satisfiesRange(sv, range)) {
+        if (sv && satisfies(sv, range)) {
             if (sv.pre && !allowPre) continue;
             parsed.push(sv);
         }
@@ -386,8 +348,6 @@ async function fetchPackageMeta(name) {
 const installing = new Set();
 
 /**
- * Installer guard wrapper: always releases the per-session dedupe slot so a
- * failed install can be retried in the same session.
  * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @param {import('../components/terminal.mjs').WebTerminal} term
  * @param {string} name
@@ -396,22 +356,6 @@ const installing = new Set();
  * @param {boolean} [force]
  */
 async function installOne(fs, term, name, version, tsOnly, force = false) {
-    try {
-        return await installOneInner(fs, term, name, version, tsOnly, force);
-    } finally {
-        installing.delete(name);
-    }
-}
-
-/**
- * @param {import('../services/fs.mjs').WebFileSystem} fs
- * @param {import('../components/terminal.mjs').WebTerminal} term
- * @param {string} name
- * @param {string} version
- * @param {boolean} tsOnly
- * @param {boolean} [force]
- */
-async function installOneInner(fs, term, name, version, tsOnly, force = false) {
     if (force) installing.delete(name); // bypass the per-session dedupe on forced installs
     else if (installing.has(name)) return;
     installing.add(name);
@@ -422,9 +366,7 @@ async function installOneInner(fs, term, name, version, tsOnly, force = false) {
         if (!(await fs.exists(targetDir))) return false;
         const pkgRaw = await fs.readFile(`${targetDir}/package.json`, "utf8");
         const pkgJson = JSON.parse(pkgRaw);
-        const installedSv = parseSemver(/** @type {string} */ (pkgJson.version));
-        if (!installedSv) return false; // corrupt manifest -> reinstall
-        return satisfiesRange(installedSv, version || "latest");
+        return satisfies(pkgJson.version, version);
     });
     if (alreadyInstalled) {
         term.info(`    ${name} already installed`);
@@ -469,24 +411,16 @@ async function installOneInner(fs, term, name, version, tsOnly, force = false) {
     }
 
     // All writes go through the fs lock: downloads stay parallel, disk stays serialized.
-    try {
-        await Promise.all(
-            [...byDir.entries()].map(([dir, files]) =>
-                withFsLock(async () => {
-                    if (dir) await fs.mkdir(dir, { recursive: true });
-                    for (const file of files) {
-                        await fs.writeFile(`${targetDir}/${file.path}`, file.data);
-                    }
-                }),
-            ),
-        );
-    } catch (writeError) {
-        // Roll back a partial install so it isn't mistaken for a good one.
-        try {
-            await fs.rm(targetDir, { recursive: true, force: true });
-        } catch {}
-        throw writeError;
-    }
+    await Promise.all(
+        [...byDir.entries()].map(([dir, files]) =>
+            withFsLock(async () => {
+                if (dir) await fs.mkdir(dir, { recursive: true });
+                for (const file of files) {
+                    await fs.writeFile(`${targetDir}/${file.path}`, file.data);
+                }
+            }),
+        ),
+    );
 
     term.success(`    ${name}@${resolved} installed`);
 

@@ -265,8 +265,7 @@ function extractClassesEffect(fs, globs) {
             const dot = filePath.lastIndexOf(".");
             if (dot === -1) continue;
             const ext = filePath.slice(dot + 1);
-            const bucket = (/** @type {Record<string, string[]>} */ (byExt))[ext] ??= [];
-            bucket.push(/** @type {string} */ (content));
+            (/** @type {Record<string, string[]>} */ (byExt))[ext].push(/** @type {string} */ (content));
         }
 
         const classes = new Set();

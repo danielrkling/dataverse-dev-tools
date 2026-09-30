@@ -91,12 +91,16 @@ export const flatten = createCommand({
             const entries = yield* fsOp("getFilesFromDirectory", path, (fs) =>
                 fs.getFilesFromDirectory(path),
             );
-            const files = /** @type {[string, string][]} */ (entries).sort();
+            const files = /** @type {[string, string][]} */ (entries)
+                .filter(([file]) => {
+                    const name = file.split("/").pop() || file;
+                    return !name.startsWith("#") && !name.startsWith(".") && !/(^|\/)node_modules\//.test(file);
+                })
+                .sort();
 
             const folderName =
                 dir === "."
-                    ? "project"
-                    : dir.split("/").filter(Boolean).pop() || "project";
+                    ? /** @type {string} */ (yield* fsOp("rootName", path, (fs) => Promise.resolve(fs.rootName))) : dir.split("/").filter(Boolean).pop() || "project";
             const ts = new Date().toISOString().slice(0, 19).replace(/[:.]/g, "-");
             const outFile = cliOut || `${dir}/#${folderName}_${ts}.md`;
             const lines = [`# Project Files`, `Generated: ${ts}`, "", ""];
