@@ -4,9 +4,7 @@
  */
 import { css, unsafeCSS } from "lit";
 
-/** Convert a hex string to a safe CSS value.
- * @param {string} v
- */
+/** VS Code–style dark palette used across components (as safe CSS values). */
 const hex = (v) => unsafeCSS(v);
 export const theme = {
     bg: hex("#1e1e1e"),
