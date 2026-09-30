@@ -7,7 +7,7 @@ test.describe('WebFileSystem extension laundering', () => {
 
   test('writeFile stores .js as .js.$$.mjs on disk', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__launder_write');
 
       await fs.writeFile('/foo.js', 'export const a = 1;');
@@ -28,7 +28,7 @@ test.describe('WebFileSystem extension laundering', () => {
 
   test('readFile resolves plain .js path to laundered file', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__launder_read');
 
       await fs.writeFile('/foo.js', 'export const a = 1;');
@@ -41,7 +41,7 @@ test.describe('WebFileSystem extension laundering', () => {
 
   test('stat and exists work with plain .js path', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__launder_stat');
 
       await fs.writeFile('/foo.js', 'x');
@@ -55,7 +55,7 @@ test.describe('WebFileSystem extension laundering', () => {
 
   test('plain .js file on disk wins over laundered twin', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__launder_plain');
 
       // Simulate a pre-existing plain .js file (e.g. from an older install).
@@ -78,7 +78,7 @@ test.describe('WebFileSystem extension laundering', () => {
 
   test('unlink removes the laundered file via plain path', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__launder_unlink');
 
       await fs.writeFile('/foo.js', 'x');
@@ -91,7 +91,7 @@ test.describe('WebFileSystem extension laundering', () => {
 
   test('rename writes the target laundered', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__launder_rename');
 
       await fs.writeFile('/a.js', 'moved');
@@ -110,7 +110,7 @@ test.describe('WebFileSystem extension laundering', () => {
 
   test('laundering can be disabled per instance', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__launder_off');
       fs.launderExtensions = false;
 
