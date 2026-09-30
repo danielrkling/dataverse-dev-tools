@@ -157,14 +157,26 @@ function compareSemver(a, b) {
  * @param {string} range
  * @returns {boolean}
  */
-function satisfies(sv, range) {
+function satisfiesOne(sv, range) {
   if (!range || range === "*" || range === "latest") return true;
 
-  if (/^\d+\.\d+\.\d+$/.test(range)) {
-    const p = range.split(".");
-    return sv.major === +p[0] && sv.minor === +p[1] && sv.patch === +p[2];
+  // Exact version, including prerelease tags: 1.2.3 or 1.2.3-beta.1
+  const exact = range.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (exact) {
+    return sv.major === +exact[1] && sv.minor === +exact[2] && sv.patch === +exact[3];
   }
 
+  // x-ranges: 1 / 1.x / 1.* / 1.2 / 1.2.x / 1.2.*
+  const x = range.match(/^(\d+)(?:\.(\d+|x|\*))?(?:\.(?:\d+|x|\*))?$/i);
+  if (x) {
+    if (sv.major !== +x[1]) return false;
+    if (x[2] !== undefined && x[2] !== "x" && x[2] !== "*") {
+      if (sv.minor !== +x[2]) return false;
+    }
+    return true;
+  }
+
+  // caret / tilde
   const c = range.match(/^\^(\d+)\.(\d+)\.(\d+)/);
   if (c) {
     const cm = +c[1],
@@ -183,12 +195,37 @@ function satisfies(sv, range) {
     return sv.major === +t[1] && sv.minor === +t[2] && sv.patch >= +t[3];
   }
 
-  const g = range.match(/^>=(\d+)\.(\d+)\.(\d+)/);
-  if (g) {
-    return compareSemver(sv, { major: +g[1], minor: +g[2], patch: +g[3] }) >= 0;
+  // simple comparators: >=, >, <=, <, =
+  const cmp = range.match(/^(>=|<=|>|<|=)\s*(\d+)\.(\d+)\.(\d+)/);
+  if (cmp) {
+    const order = compareSemver(sv, { major: +cmp[2], minor: +cmp[3], patch: +cmp[4] });
+    switch (cmp[1]) {
+      case ">=": return order >= 0;
+      case ">": return order > 0;
+      case "<=": return order <= 0;
+      case "<": return order < 0;
+      case "=": return order === 0;
+    }
   }
 
-  return true;
+  // ANDed ranges, e.g. ">=2 <4"
+  const parts = range.split(/\s+/).filter(Boolean);
+  if (parts.length > 1) {
+    return parts.every((p) => satisfiesOne(sv, p));
+  }
+
+  return false;
+}
+
+/**
+ * @param {{ major: number, minor: number, patch: number }} sv
+ * @param {string} range
+ * @returns {boolean}
+ */
+function satisfies(sv, range) {
+  if (!range || range === "*" || range === "latest") return true;
+  // ORed ranges, e.g. "1 || 2"
+  return range.split("||").some((part) => satisfiesOne(sv, part.trim()));
 }
 
 /**
@@ -239,46 +276,75 @@ const installing = new Set();
 async function installOne(fs, term, name, version, tsOnly) {
   if (installing.has(name)) return;
   installing.add(name);
+  try {
+    const requested = version || "latest";
+    const targetDir = `node_modules/${name}`;
 
-  const targetDir = `node_modules/${name}`;
-  if (await fs.exists(targetDir)) {
-    term.info(`    ${name} already installed`);
-    return;
-  }
-
-  const meta = await fetchPackageMeta(name);
-  const versions = Object.keys(meta.versions || {});
-  const resolved = pickBestVersion(versions, version || "latest");
-  if (!resolved) {
-    throw new Error(`No version of ${name} matches ${version}`);
-  }
-  const pkg = meta.versions[resolved];
-
-  term.log(`  ↓ ${name}@${resolved}`);
-
-  const res = await fetch(pkg.dist.tarball);
-  if (!res.ok) throw new Error(`Download failed for ${name}@${resolved}`);
-
-  const tarBuffer = await decompressGzip(await res.arrayBuffer());
-  const files = extractTar(tarBuffer);
-  const filtered = filterFiles(files, tsOnly);
-
-  for (const file of filtered) {
-    const fp = `${targetDir}/${file.path}`;
-    const dir = dirname(fp);
-    if (dir) await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(fp, file.data);
-  }
-
-  term.success(`    ${name}@${resolved} installed`);
-
-  const deps = pkg.dependencies || {};
-  for (const [depName, depRange] of Object.entries(deps)) {
-    try {
-      await installOne(fs, term, depName, depRange, tsOnly);
-    } catch (e) {
-      term.error(`    Failed to install ${depName}: ${e.message}`);
+    // Consider the package installed only when its manifest is intact and the
+    // installed version satisfies the requested range. Partial installs
+    // (missing package.json from a failed run) are reinstalled.
+    let existingVersion;
+    if (await fs.exists(targetDir)) {
+      const pkgJson = await readJSON(fs, `${targetDir}/package.json`);
+      if (pkgJson?.version) {
+        const sv = parseSemver(pkgJson.version);
+        existingVersion = /** @type {string} */ (pkgJson.version);
+        if (sv && satisfies(sv, requested)) {
+          term.info(`    ${name}@${existingVersion} already installed`);
+          return existingVersion;
+        }
+        term.info(`    ${name}@${existingVersion} does not satisfy ${requested}, reinstalling`);
+      } else {
+        term.info(`    ${name} appears incomplete, reinstalling`);
+      }
     }
+
+    const meta = await fetchPackageMeta(name);
+    const versions = Object.keys(meta.versions || {});
+    const resolved = pickBestVersion(versions, requested);
+    if (!resolved) {
+      throw new Error(`No version of ${name} matches ${requested}`);
+    }
+    const pkg = meta.versions[resolved];
+
+    term.log(`  ↓ ${name}@${resolved}`);
+
+    const res = await fetch(pkg.dist.tarball);
+    if (!res.ok) throw new Error(`Download failed for ${name}@${resolved}`);
+
+    const tarBuffer = await decompressGzip(await res.arrayBuffer());
+    const files = extractTar(tarBuffer);
+    const filtered = filterFiles(files, tsOnly);
+
+    try {
+      for (const file of filtered) {
+        const fp = `${targetDir}/${file.path}`;
+        const dir = dirname(fp);
+        if (dir) await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(fp, file.data);
+      }
+    } catch (writeError) {
+      // Roll back a partial install so it isn't mistaken for a good one.
+      try {
+        await fs.rmdir(targetDir, { recursive: true });
+      } catch {}
+      throw writeError;
+    }
+
+    term.success(`    ${name}@${resolved} installed`);
+
+    const deps = pkg.dependencies || {};
+    for (const [depName, depRange] of Object.entries(deps)) {
+      try {
+        await installOne(fs, term, depName, depRange, tsOnly);
+      } catch (e) {
+        term.error(`    Failed to install ${depName}: ${e.message}`);
+      }
+    }
+
+    return resolved;
+  } finally {
+    installing.delete(name);
   }
 }
 
@@ -361,10 +427,7 @@ export const npmCommand = createCommand({
       if (spec) {
         const { name, version } = parsePackageSpec(spec);
         try {
-          await installOne(fs, term, name, version, tsOnly);
-          const meta = await fetchPackageMeta(name);
-          const versions = Object.keys(meta.versions || {});
-          const resolved = pickBestVersion(versions, version || "latest");
+          const resolved = (/** @type {string|undefined} */ (await installOne(fs, term, name, version, tsOnly))) || "";
           if (resolved) {
             await updatePackageJson(fs, name, resolved, dev);
             const target = dev ? "devDependencies" : "dependencies";
