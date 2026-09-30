@@ -1,5 +1,3 @@
-import { launderPath, unsplicePath, unlaunderPath } from "./utils/launder.mjs";
-
 export class WebFSError extends Error {
     /**
      * @param {string} message
@@ -27,14 +25,6 @@ export class WebFileSystem {
         this.rootHandle = rootHandle;
         this.rootName = rootHandle.name; // Stores the name of the root directory for display
         this.cwd = "/"; // Current Working Directory, initialized to root
-
-        /**
-         * When true (default), `.js` files are written as `.js.$$.mjs` and
-         * reads fall back to that spelling. Keeps OneDrive from raising
-         * sync errors for JavaScript files. Disable for plain behavior.
-         * @type {boolean}
-         */
-        this.launderExtensions = true;
 
         this.promises = {
             mkdir: this.mkdir.bind(this),
@@ -65,6 +55,18 @@ export class WebFileSystem {
         const root = await navigator.storage.getDirectory();
         const dir = await root.getDirectoryHandle(dirName, { create: true });
         return new WebFileSystem(dir);
+    }
+
+    /**
+     * A filesystem view anchored at the workspace ROOT, independent of the
+     * terminal's current working directory. Panels (tree/editor) should use
+     * this so their operations always address the same tree the user sees.
+     * @returns {WebFileSystem}
+     */
+    get root() {
+        const view = Object.create(this);
+        Object.defineProperty(view, "cwd", { value: "/", writable: false });
+        return /** @type {WebFileSystem} */ (view);
     }
 
     /**
@@ -221,7 +223,7 @@ export class WebFileSystem {
      */
     async exists(path) {
         try {
-            await this._statCandidates(path);
+            await this._getHandle(this._resolvePath(path));
             return true;
         } catch {
             return false;
@@ -259,37 +261,6 @@ export class WebFileSystem {
         return this.stat(path);
     }
 
-    /**
-     * Extension laundering: OneDrive flags `.js` files with sync errors even
-     * though writes succeed. When laundering is enabled, `.js` files are
-     * transparently stored as `foo.js.$$.mjs`. Reads fall back to the
-     * laundered name when the plain name does not exist, so callers always
-     * work with plain `.js` paths.
-     */
-
-    /**
-     * Converts an absolute path to its on-disk (laundered) spelling for writes.
-     * @private
-     * @param {string} absPath
-     * @returns {string}
-     */
-    _writePathFor(absPath) {
-        if (!this.launderExtensions) return absPath;
-        return launderPath(absPath);
-    }
-
-    /**
-     * Returns candidate spellings for reading a path: the plain path first,
-     * then the laundered variant if different.
-     * @private
-     * @param {string} absPath
-     * @returns {string[]}
-     */
-    _readCandidatesFor(absPath) {
-        if (!this.launderExtensions) return [absPath];
-        const laundered = launderPath(absPath);
-        return laundered === absPath ? [absPath] : [absPath, laundered];
-    }
     /**
      * Creates a directory.
      * @param {string} path The path of the directory to create.
@@ -330,10 +301,11 @@ export class WebFileSystem {
     /**
      * Reads the contents of a directory.
      * @param {string} [path=''] The path of the directory to read (defaults to CWD).
-     * @returns {Promise<string[]>} An array of names of the entries in the directory.
+     * @returns {Promise<string[] | [string, string][]>} Entry names, or
+     *          [name, "file" | "directory"] tuples when { types: true }.
      * @throws {Error} If the path is not a directory or does not exist.
      */
-    async readdir(path = ".") {
+    async readdir(path = ".", options = /** @type {any} */ ({})) {
         const absPath = this._resolvePath(path);
         const dirHandle = await this._getHandle(absPath);
 
@@ -341,12 +313,20 @@ export class WebFileSystem {
             throw new WebFSError(`Not a directory: ${absPath}`, "ENOTDIR");
         }
 
-        const files = [];
         const dirHandle_ = /** @type {FileSystemDirectoryHandle} */ (dirHandle);
+        // {types:true} returns [name, kind][] straight from the handles —
+        // avoids a stat() round-trip per entry in bulk scans.
+        if (options.types) {
+            /** @type {[string, string][]} */
+            const entries = [];
+            for await (const entry of dirHandle_.values()) {
+                entries.push([entry.name, entry.kind]);
+            }
+            return entries;
+        }
+        const files = [];
         for await (const entry of dirHandle_.values()) {
-            // Expose logical names: on-disk laundered names (`foo.js.$$.mjs`)
-            // are reported as their plain spelling (`foo.js`).
-            files.push(unlaunderPath(entry.name));
+            files.push(entry.name);
         }
         return files;
     }
@@ -375,35 +355,11 @@ export class WebFileSystem {
     async readFile(path, options = /** @type {any} */ ({})) {
         const absPath = this._resolvePath(path);
 
-        /** @type {FileSystemHandle} */
-        let fileHandle;
-        /** @type {string} */
-        let usedPath;
         try {
-            usedPath = absPath;
-            fileHandle = await this._getHandle(absPath);
-        } catch (e) {
-            if (e.code !== "ENOTDIR") {
-                const candidates = this._readCandidatesFor(absPath).filter((p) => p !== absPath);
-                for (const candidate of candidates) {
-                    try {
-                        usedPath = candidate;
-                        fileHandle = await this._getHandle(candidate);
-                        break;
-                    } catch (e2) {}
-                }
-                if (!fileHandle) {
-                    e.message = `No such file: ${absPath}`;
-                    throw e;
-                }
-            } else {
-                throw e;
-            }
-        }
+            const fileHandle = await this._getHandle(absPath);
 
-        try {
             if (fileHandle.kind !== "file") {
-                throw new WebFSError(`Not a file: ${usedPath}`, "EISDIR");
+                throw new WebFSError(`Not a file: ${absPath}`, "EISDIR");
             }
 
             const file = await /** @type {FileSystemFileHandle} */ (fileHandle).getFile();
@@ -451,37 +407,14 @@ export class WebFileSystem {
      */
     async rename(oldPath, newPath) {
         const absOldPath = this._resolvePath(oldPath);
-        const absNewPath = this._writePathFor(this._resolvePath(newPath));
+        const absNewPath = this._resolvePath(newPath);
 
-        // The source may exist under its laundered spelling; resolve it like a read.
-        let absOldUsed = absOldPath;
-        try {
-            await this._getHandle(absOldPath);
-        } catch (e) {
-            if (e.code !== "ENOTDIR") {
-                const candidates = this._readCandidatesFor(absOldPath).filter((p) => p !== absOldPath);
-                let found = false;
-                for (const candidate of candidates) {
-                    try {
-                        await this._getHandle(candidate);
-                        absOldUsed = candidate;
-                        found = true;
-                        break;
-                    } catch (e2) {}
-                }
-                if (!found) {
-                    throw new WebFSError(`No such file or directory: ${absOldPath}`, "ENOENT");
-                }
-            } else {
-                throw e;
-            }
-        }
-        const oldHandle = await this._getHandle(absOldUsed);
+        const oldHandle = await this._getHandle(absOldPath);
 
         if (oldHandle.kind === "file") {
-            const content = await this.readFile(absOldUsed);
+            const content = await this.readFile(absOldPath);
             await this.writeFile(absNewPath, content);
-            await this.unlink(absOldUsed);
+            await this.unlink(absOldPath);
         } else if (oldHandle.kind === "directory") {
             // Renaming directories is complex with File System Access API
             // as it requires recursively copying contents. For simplicity,
@@ -508,9 +441,25 @@ export class WebFileSystem {
         });
     }
 
-    /** @param {...*} args */
-    async rm(...args) {
-        throw new Error("Not Implemented");
+    /**
+     * Removes a file or directory, mirroring node's fs.rm.
+     * @param {string} path
+     * @param {{ recursive?: boolean, force?: boolean }} options
+     * @returns {Promise<void>}
+     */
+    async rm(path, options = {}) {
+        let info;
+        try {
+            info = await this.stat(path);
+        } catch (e) {
+            if (options.force) return;
+            throw e;
+        }
+        if (info.isDirectory) {
+            await this.rmdir(path, { recursive: !!options.recursive });
+        } else {
+            await this.unlink(path);
+        }
     }
 
     /**
@@ -519,32 +468,8 @@ export class WebFileSystem {
      * @returns {Promise<{type: string, size: number, mtimeMs: number, ctimeMs: number, isFile: boolean, isDirectory: boolean, isSymbolicLink: boolean}>}
      * @throws {Error} If the path does not exist.
      */
-    /**
-     * Tries stat on the plain path, then on laundered spellings.
-     * @private
-     * @param {string} path Raw (unresolved) path.
-     * @returns {Promise<object>}
-     */
-    async _statCandidates(path) {
+    async stat(path) {
         const absPath = this._resolvePath(path);
-        const candidates = this._readCandidatesFor(absPath);
-        let lastError = /** @type {any} */ (null);
-        for (const candidate of candidates) {
-            try {
-                return await this._statRaw(candidate);
-            } catch (e) {
-                lastError = e;
-            }
-        }
-        throw lastError || new WebFSError(`No such file or directory: ${absPath}`, "ENOENT");
-    }
-
-    /**
-     * Plain stat with no laundering fallback.
-     * @private
-     * @param {string} absPath Resolved absolute path.
-     */
-    async _statRaw(absPath) {
         if (absPath === "/") {
             // Special case for the root directory
             return {
@@ -578,16 +503,6 @@ export class WebFileSystem {
         }
     }
 
-    /**
-     * Gets file or directory status information.
-     * @param {string} path The path to query.
-     * @returns {Promise<{type: string, size: number, mtimeMs: number, ctimeMs: number, isFile: boolean, isDirectory: boolean, isSymbolicLink: boolean}>}
-     * @throws {Error} If the path does not exist.
-     */
-    async stat(path) {
-        return this._statCandidates(path);
-    }
-
     /** @param {...*} args */
     async statfs(...args) {
         throw new Error("Not Implemented");
@@ -604,7 +519,7 @@ export class WebFileSystem {
     }
 
     /**
-     * Removes a file. Accepts plain spellings; falls back to laundered ones.
+     * Removes a file.
      * @param {string} path The path of the file to remove.
      * @returns {Promise<void>}
      */
@@ -613,96 +528,15 @@ export class WebFileSystem {
         if (absPath === "/") {
             throw new Error("Cannot unlink the root directory.");
         }
-        const candidates = this._readCandidatesFor(absPath);
-        let lastError = /** @type {any} */ (null);
-        for (const candidate of candidates) {
-            try {
-                const { parentDir, name } = await this._resolvePathForMutation(candidate);
-                await parentDir.removeEntry(name, { recursive: true });
-                return;
-            } catch (e) {
-                lastError = e;
-            }
-        }
-        throw lastError || new WebFSError(`No such file: ${absPath}`, "ENOENT");
+        const { parentDir, name } = await this._resolvePathForMutation(absPath); // Helper to get parent and name
+        await parentDir.removeEntry(name, {
+            recursive: true,
+        });
     }
 
     /** @param {...*} args */
     async utimes(...args) {
         throw new Error("Not Implemented");
-    }
-
-    /**
-     * Watches a directory for file changes using FileSystemObserver.
-     * @param {string} path
-     * @param {{ recursive?: boolean, debounce: number }} options
-     * @param {(path: string, type: "modified" | "deleted") => void} callback
-     * @returns {Promise<{disconnect: () => void}>}
-     */
-    async watch(path, options, callback) {
-        const absPath = this._resolvePath(path);
-        const handle = await this._getHandle(absPath);
-
-        /** @type {Map<string, ReturnType<typeof setTimeout>>} */
-        const timeoutMap = new Map();
-
-        /**
-         * @param {string} absPath
-         * @param {"modified" | "deleted"} type
-         */
-        function debounceCallback(absPath, type) {
-            const logicalPath = unsplicePath(absPath);
-            const t = timeoutMap.get(logicalPath);
-            clearTimeout(t);
-            const id = setTimeout(() => {
-                callback(logicalPath, type);
-                timeoutMap.delete(logicalPath);
-            }, options.debounce);
-            timeoutMap.set(logicalPath, id);
-        }
-
-        /** @param {any[]} records */
-        const observerCallback = async (records) => {
-            for (const record of records) {
-                const absPath = [path, ...record.relativePathComponents].join("/");
-                const name = record.relativePathComponents.at(-1);
-                if (name === "desktop.ini" || name.endsWith(".crswap")) {
-                    continue;
-                }
-                if (record.type === "moved") {
-                    const oldPath = record.relativePathMovedFrom.join("/");
-                    debounceCallback(absPath, "modified");
-                }
-                if (record.type === "disappeared") {
-                    debounceCallback(absPath, "deleted");
-                }
-
-                if (record.type === "appeared" || record.type === "modified") {
-                    try {
-                        if (record.changedHandle.kind === "directory") {
-                            continue;
-                        } else {
-                            debounceCallback(absPath, "modified");
-                            // const file = await record.changedHandle.getFile();
-                            // const content = await file.text();
-                            // if (content !== vfs.readFileSync(path)) vfs.writeFileSync(path, content);
-                        }
-                    } catch (e) {
-                        console.error(`Could not read file: ${absPath}`, e);
-                    }
-                }
-            }
-        };
-
-        const observer = new FileSystemObserver(observerCallback);
-        await observer.observe(/** @type {FileSystemDirectoryHandle} */ (handle), {
-            recursive: true,
-        });
-        return {
-            disconnect: () => {
-                observer.disconnect();
-            },
-        };
     }
 
     /**
@@ -713,7 +547,7 @@ export class WebFileSystem {
      * @returns {Promise<void>}
      */
     async writeFile(path, data, options = {}) {
-        const absPath = this._writePathFor(this._resolvePath(path));
+        const absPath = this._resolvePath(path);
         const parts = absPath.split("/").filter(Boolean);
         const fileName = parts.pop();
         if (!fileName) throw new Error("Invalid file path.");
@@ -727,7 +561,6 @@ export class WebFileSystem {
             create: true,
         });
         const writable = await fileHandle.createWritable();
-        //@ts-expect-error
         await writable.write(data);
         await writable.close();
     }
@@ -735,13 +568,8 @@ export class WebFileSystem {
     /**
      * Changes the current working directory.
      * @param {string} path The path to change to (can be relative or absolute).
-     * @returns {Promise<string>}
-     * @throws {Error} If the path is not a directory or does not exist.
-     */
-    /**
-     * Changes the current working directory.
-     * @param {string} path The path to change to (can be relative or absolute).
      * @returns {Promise<string>} The new absolute working directory path.
+     * @throws {Error} If the path is not a directory or does not exist.
      */
     async cd(path) {
         const newCwd = this._resolvePath(path);
@@ -766,14 +594,18 @@ export class WebFileSystem {
 
     /**
      * Recursively reads all files from a path and returns their contents as a map.
+     * Text paths resolve to strings; paths matching `options.binary` resolve
+     * to ArrayBuffer (byte-exact — never decode images via file.text()).
      * @param {string} path
      * @param {(path: string)=>boolean} [filter]
-     * @returns {Promise<[string,string][]>}
+     * @param {{ binary?: (path: string) => boolean }} [options]
+     * @returns {Promise<[string,string|ArrayBuffer][]>}
      */
-    async getFilesFromDirectory(path, filter) {
+    async getFilesFromDirectory(path, filter, options = {}) {
+        const isBinary = options.binary ?? (() => false);
         const handle = await this._getHandle(this._resolvePath(path));
 
-        /** @type {Promise<[string,string]>[]} */
+        /** @type {Promise<[string,string|ArrayBuffer]>[]} */
         let files = [];
 
         /**
@@ -786,7 +618,7 @@ export class WebFileSystem {
 
                 if (entry.kind === "file") {
                     if (filter && !filter(newPath)) continue;
-                    files.push(readFile(/** @type {FileSystemFileHandle} */ (entry), newPath));
+                    files.push(readFile(/** @type {FileSystemFileHandle} */ (entry), newPath, isBinary(newPath)));
                 } else if (entry.kind === "directory") {
                     await recursiveRead(/** @type {FileSystemDirectoryHandle} */ (entry), newPath);
                 }
@@ -796,15 +628,16 @@ export class WebFileSystem {
         /**
          * @param {FileSystemFileHandle} handle
          * @param {string} filePath
-         * @returns {Promise<[string,string]>}
+         * @param {boolean} binary
+         * @returns {Promise<[string,string|ArrayBuffer]>}
          */
-        async function readFile(handle, filePath) {
+        async function readFile(handle, filePath, binary) {
             const file = await handle.getFile();
-            const content = await file.text();
+            const content = binary ? await file.arrayBuffer() : await file.text();
             return [filePath, content];
         }
         if (handle.kind === "file") {
-            files.push(readFile(/** @type {FileSystemFileHandle} */ (handle), path));
+            files.push(readFile(/** @type {FileSystemFileHandle} */ (handle), path, isBinary(path)));
         } else if (handle.kind === "directory") {
             await recursiveRead(/** @type {FileSystemDirectoryHandle} */ (handle), path);
         }

@@ -1,8 +1,9 @@
-import { WebFileSystem } from "../fs.mjs";
+import { WebFileSystem } from "../services/fs.mjs";
 import { dirname, join, EXTENSIONS } from "../utils/path.mjs";
 import { readJSON } from "../utils/json.mjs";
 import { object, optional, option, string, passThrough, message } from "@optique/core";
-import { createCommand } from "../terminal.mjs";
+import { createCommand } from "../services/commands.mjs";
+import { Effect } from "effect";
 
 // ---- esbuild-wasm (lazy loaded) ----
 const ESBUILD_CDN = "https://unpkg.com/esbuild-wasm@0.28.1/esm/browser.min.js";
@@ -10,17 +11,69 @@ const ESBUILD_CDN = "https://unpkg.com/esbuild-wasm@0.28.1/esm/browser.min.js";
 /** @type {typeof import('esbuild-wasm') | null} */
 let esbuild = null;
 
-/** @returns {Promise<typeof import('esbuild-wasm')>} */
-export async function getEsbuild() {
-    if (!esbuild) {
-        esbuild = await import(ESBUILD_CDN);
-        if (!esbuild) throw new Error(`Error loading esbuild`);
-        await esbuild.initialize({
-            worker: true,
-            wasmURL: "https://unpkg.com/esbuild-wasm@0.28.1/esbuild.wasm",
-        });
-    }
-    return /** @type {typeof import('esbuild-wasm')} */ (esbuild);
+/**
+ * Typed build failure — carries the esbuild operation so error mapping can
+ * produce a single friendly line.
+ * @typedef {{ _tag: "BuildError", op: string, cause: unknown }} BuildError
+ */
+
+/**
+ * Error factory for {@link BuildError}.
+ * @param {string} op
+ * @returns {(cause: unknown) => BuildError}
+ */
+export const BuildError = (op) => (cause) => ({
+    _tag: /** @type {const} */ ("BuildError"),
+    op,
+    cause,
+});
+
+/**
+ * Describe a cause on a single line (no stack noise).
+ * @param {unknown} cause
+ * @returns {string}
+ */
+export function describeBuildCause(cause) {
+    const msg =
+        cause instanceof Error
+            ? cause.message
+            : /** @type {any} */ (cause)?.message ?? String(cause);
+    return msg || "unknown error";
+}
+
+/** Lazily initializes esbuild-wasm as an Effect with a typed {@link BuildError}. */
+const esbuildInitEffect = Effect.tryPromise({
+    try: async () => {
+        if (!esbuild) {
+            esbuild = await import(ESBUILD_CDN);
+            if (!esbuild) throw new Error(`Error loading esbuild`);
+            await esbuild.initialize({
+                worker: true,
+                wasmURL: "https://unpkg.com/esbuild-wasm@0.28.1/esbuild.wasm",
+            });
+        }
+        return /** @type {typeof import('esbuild-wasm')} */ (esbuild);
+    },
+    catch: BuildError("init"),
+});
+
+/**
+ * Memoized esbuild-wasm init (Effect.cached — init runs at most once and its
+ * result is shared by every subsequent use).
+ *
+ * @type {Effect.Effect<typeof import('esbuild-wasm'), BuildError>}
+ */
+export const getEsbuildEffect = /** @type {any} */ (
+    Effect.runSync(Effect.cached(esbuildInitEffect))
+);
+
+/**
+ * Thin Promise wrapper over {@link getEsbuildEffect} for non-Effect callers.
+ *
+ * @returns {Promise<typeof import('esbuild-wasm')>}
+ */
+export function getEsbuild() {
+    return Effect.runPromise(getEsbuildEffect);
 }
 
 // --- RESOLVE HELPERS ---
@@ -46,7 +99,7 @@ export function getLoaderFromContentType(contentType, url) {
 // --- RESOLVE HELPERS ---
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} path
  * @returns {Promise<string | null>}
  */
@@ -63,13 +116,13 @@ async function resolveFile(fs, path) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} dir
  * @returns {Promise<string | null>}
  */
 async function resolveDirectory(fs, dir) {
     const pkg = join(dir, "package.json");
-    if (await fs.stat(pkg)) {
+    if (await fs.exists(pkg)) {
         const json = await readJSON(fs, pkg);
         if (json) {
             const entry = json.module ?? json.main;
@@ -85,7 +138,7 @@ async function resolveDirectory(fs, dir) {
 }
 
 /**
- * @param {import('../fs.mjs').WebFileSystem} fs
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} specifier
  * @param {string} importerDir
  * @returns {Promise<string | null>}
@@ -93,21 +146,39 @@ async function resolveDirectory(fs, dir) {
 async function resolveNodeModule(fs, specifier, importerDir) {
     const parts = specifier.split("/");
     const packageName = specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
-    const subpath = specifier.startsWith("@") ? parts.slice(2).join("/") : parts.slice(1).join("/");
+    const subpath = specifier.startsWith("@")
+        ? parts.length > 2
+            ? "./" + parts.slice(2).join("/")
+            : "."
+        : parts.length > 1
+          ? "./" + parts.slice(1).join("/")
+          : ".";
+
     let current = importerDir;
 
     while (true) {
         const root = join(current, "node_modules", packageName);
-        if (await fs.stat(join(root, "package.json"))) {
+
+        if (await fs.exists(join(root, "package.json"))) {
             const pkg = await readJSON(fs, join(root, "package.json"));
             if (!pkg) return null;
 
-            if (subpath) {
-                return (
-                    (await resolveFile(fs, join(root, subpath))) ?? (await resolveDirectory(fs, join(root, subpath)))
-                );
+            if (pkg.exports) {
+                const exportTarget = pkg.exports[subpath];
+
+                if (exportTarget) {
+                    const resolvedPath = resolveConditionalExport(exportTarget,["browser","import","default"])
+
+                    if (resolvedPath) {
+                        const finalPath = join(root, resolvedPath);
+                        // Try resolving as a file first, then as a directory (for cases like "./dist/")
+                        const resolved = (await resolveFile(fs, finalPath)) ?? (await resolveDirectory(fs, finalPath));
+                        if (resolved) return resolved;
+                    }
+                }
             }
 
+            // Resolve the main entry point if no subpath
             const entry = pkg.module ?? pkg.browser ?? pkg.main ?? "index";
             return (await resolveFile(fs, join(root, entry))) ?? (await resolveDirectory(fs, join(root, entry)));
         }
@@ -120,15 +191,82 @@ async function resolveNodeModule(fs, specifier, importerDir) {
     return null;
 }
 
-// --- ESBUILD PLUGINS ---
 
+/**
+ * Recursively resolves a path from a conditional exports object.
+ * @param {string | Record<string, any>} target The current object or path string.
+ * @param {string[]} activeConditions The conditions to match (e.g., ['browser', 'import']).
+ * @returns {string | null} The resolved path string or null.
+ */
+function resolveConditionalExport(target, activeConditions) {
+    if (typeof target === 'string') {
+        // Base case: we've found a path string.
+        return target;
+    }
+
+    if (typeof target === 'object' && target !== null && !Array.isArray(target)) {
+        // It's a conditional object. We must check our active conditions.
+        for (const condition of activeConditions) {
+            if (target.hasOwnProperty(condition)) {
+                // Recursively call with the nested target.
+                const result = resolveConditionalExport(target[condition], activeConditions);
+                // Return the first valid path found.
+                if (result) return result;
+            }
+        }
+    }
+
+    // No valid path found for the active conditions.
+    return null;
+}
+
+/**
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
+ */
+export function fsPlugin(fs) {
+    return {
+        name: "browser-fs",
+        /** @param {import('esbuild-wasm').PluginBuild} build */
+        setup(build) {
+            build.onResolve({ filter: /.*/ }, async (/** @type {import('esbuild-wasm').OnResolveArgs} */ args) => {
+                if (build.initialOptions.external?.includes(args.path)) {
+                    return { path: args.path, external: true };
+                }
+
+                const importerDir = args.kind === "entry-point" ? "" : dirname(args.importer);
+                let resolved;
+
+                if (args.path.startsWith(".") || args.path.startsWith("/")) {
+                    const fullPath = join(importerDir, args.path);
+                    resolved = (await resolveFile(fs, fullPath)) ?? (await resolveDirectory(fs, fullPath));
+                } else {
+                    resolved = await resolveNodeModule(fs, args.path, importerDir);
+                }
+
+                if (!resolved) {
+                    return { errors: [{ text: `Cannot resolve '${args.path}'` }] };
+                }
+
+                return { path: resolved, namespace: "browser-fs" };
+            });
+
+            build.onLoad(
+                { filter: /.*/, namespace: "browser-fs" },
+                async (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => {
+                    const contents = await fs.readFile(args.path, { encoding: "utf-8" });
+                    return { contents: /** @type {string} */ (contents), loader: "default" };
+                },
+            );
+        },
+    };
+}
 
 export function aliasPlugin() {
     return {
         name: "alias-plugin",
         /** @param {import('esbuild-wasm').PluginBuild} build */
         setup(build) {
-            const aliases = build.initialOptions.alias ?? {}
+            const aliases = build.initialOptions.alias ?? {};
             build.onResolve({ filter: /.*/ }, (/** @type {import('esbuild-wasm').OnResolveArgs} */ args) => {
                 if (build.initialOptions.external?.includes(args.path)) {
                     return { path: args.path, external: true };
@@ -185,80 +323,3 @@ export function httpPlugin() {
         },
     };
 }
-
-/**
- * @param {import('../fs.mjs').WebFileSystem} fs
- */
-export function fsPlugin(fs) {
-
-    return {
-        name: "browser-fs",
-        /** @param {import('esbuild-wasm').PluginBuild} build */
-        setup(build) {
-            build.onResolve({ filter: /.*/ }, async (/** @type {import('esbuild-wasm').OnResolveArgs} */ args) => {
-                if (build.initialOptions.external?.includes(args.path)) {
-                    return { path: args.path, external: true };
-                }
-
-                const importerDir = args.kind === "entry-point" ? "" : dirname(args.importer);
-                let resolved;
-
-                if (args.path.startsWith(".") || args.path.startsWith("/")) {
-                    const fullPath = join(importerDir, args.path);
-                    resolved = (await resolveFile(fs, fullPath)) ?? (await resolveDirectory(fs, fullPath));
-                } else {
-                    resolved = await resolveNodeModule(fs, args.path, importerDir);
-                }
-
-                if (!resolved) {
-                    return { errors: [{ text: `Cannot resolve '${args.path}'` }] };
-                }
-
-                return { path: resolved, namespace: "browser-fs" };
-            });
-
-            build.onLoad(
-                { filter: /.*/, namespace: "browser-fs" },
-                async (/** @type {import('esbuild-wasm').OnLoadArgs} */ args) => {
-                    const contents = await fs.readFile(args.path, { encoding: "utf-8" });
-                    return { contents, loader: "default" };
-                },
-            );
-        },
-    };
-}
-
-// --- STATE AND CORE BUNDLING ---
-
-const defaultConfig = {
-    bundle: true,
-    minify: false,
-    format: "esm",
-};
-
-/**
- * @param {Record<string, any>} config
- * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {Set<string>} [trackedFiles]
- */
-function buildOptions(config, fs, trackedFiles) {
-    return {
-        ...defaultConfig,
-        ...config,
-        write: false,
-        plugins: [aliasPlugin(), httpPlugin(), fsPlugin(fs)],
-    };
-}
-
-/**
- * @param {import('../fs.mjs').WebFileSystem} fs
- * @param {import('esbuild-wasm').BuildResult} result
- * @returns {Promise<import('esbuild-wasm').OutputFile[]>}
- */
-async function writeOutputs(fs, result) {
-    for (const file of result.outputFiles || []) {
-        await fs.writeFile(file.path, file.contents);
-    }
-    return result.outputFiles || [];
-}
-

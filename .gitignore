@@ -1,4 +1,7 @@
 node_modules/
 .env
-sample-project/
-sample-project
+dist/
+test-results/
+playwright-report/
+playwright.config.local.mjs
+

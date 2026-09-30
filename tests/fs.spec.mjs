@@ -7,7 +7,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('fromOPFS creates a working file system', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__dataverse');
 
       await fs.writeFile('/hello.txt', 'Hello OPFS!');
@@ -20,7 +20,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('writeFile and readFile roundtrip', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__roundtrip');
 
       await fs.writeFile('/test.json', JSON.stringify({ a: 1, b: [2, 3] }));
@@ -33,7 +33,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('readdir lists directory contents', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__readdir');
 
       await fs.writeFile('/a.txt', 'a');
@@ -50,7 +50,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('mkdir creates directories', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__mkdir');
 
       await fs.mkdir('/a/b/c', { recursive: true });
@@ -63,7 +63,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('unlink removes a file', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__unlink');
 
       await fs.writeFile('/toremove.txt', 'delete me');
@@ -82,7 +82,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('rmdir removes a directory', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__rmdir');
 
       await fs.mkdir('/emptydir');
@@ -101,7 +101,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('stat returns file metadata', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__stat');
 
       await fs.writeFile('/stats.txt', '12345');
@@ -125,7 +125,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('stat returns directory info', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__statdir');
 
       await fs.mkdir('/mydir');
@@ -139,7 +139,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('cd changes working directory', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__cd');
 
       await fs.mkdir('/subdir');
@@ -152,7 +152,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('exists returns true for existing files', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__exists');
 
       await fs.writeFile('/present.txt', 'here');
@@ -166,7 +166,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('readFile binary returns ArrayBuffer', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__binary');
 
       await fs.writeFile('/data.bin', new Uint8Array([0, 1, 2, 255]));
@@ -180,7 +180,7 @@ test.describe('WebFileSystem on OPFS', () => {
 
   test('rename moves a file', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const { WebFileSystem } = await import('/src/fs.mjs');
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
       const fs = await WebFileSystem.fromOPFS('__test__rename');
 
       await fs.writeFile('/original.txt', 'moved content');

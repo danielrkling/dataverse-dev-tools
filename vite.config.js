@@ -5,7 +5,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
-      external: ['isomorphic-git'],
+      external: ['isomorphic-git', /^https:/],
     },
   },
   server: {
