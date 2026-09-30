@@ -168,23 +168,40 @@ const cache = new Map();
 /**
  * Typed fetch wrapper: decodes JSON, maps HTTP failures to HttpError.
  *
+ * Honours Dataverse throttling: a 429's `Retry-After` header is waited out
+ * then retried (up to 3 times) instead of failing immediately.
+ *
  * @param {string} path request path (for errors/logs)
  * @param {RequestInit} init
  * @param {string} operation label used in errors and logs
+ * @param {{ tolerate404?: boolean, timeoutMs?: number, attempt?: number }} [opts]
  * @returns {Effect.Effect<any, any, never>}
  */
-function request(path, init, operation) {
+function request(path, init, operation, opts = {}) {
     return Effect.tryPromise({
         try: async (signal) => {
             const res = await fetch(path, { ...init, signal });
+
+            // 404 tolerated on "locate" reads (metadata existence checks).
+            if (res.status === 404 && opts.tolerate404) return undefined;
+
+            if (res.status === 429) {
+                // Throttled — the effect-level retry below sleeps out the
+                // server's Retry-After window and re-runs this request.
+                throw /** @type {any} */ (Object.assign(
+                    HttpError({ operation, path, status: 429 }),
+                    { retryAfter: Number(res.headers.get("Retry-After")) || 2, errorBody: await res.text().catch(() => "") },
+                ));
+            }
+
             if (!res.ok) throw HttpError({ operation, path, status: res.status });
-            
+
             // 204 No Content or empty bodies return null / undefined
             if (res.status === 204) return null;
-            
+
             const text = await res.text();
             if (!text || !text.trim()) return null;
-            
+
             return JSON.parse(text);
         },
         catch: (cause) =>
@@ -192,9 +209,18 @@ function request(path, init, operation) {
                 ? /** @type {HttpError} */ (cause)
                 : DecodeError({ path, cause }),
     }).pipe(
+        Effect.catchIf(
+            /** @param {any} e */
+            (e) => e?._tag === "HttpError" && e.status === 429 && (opts.attempt ?? 0) < 3,
+            /** @param {any} e */
+            (e) =>
+                Effect.sleep(Duration.millis(Math.max(2, e.retryAfter ?? 2) * 1000 + 250 * ((opts.attempt ?? 0) + 1))).pipe(
+                    Effect.flatMap(() => request(path, init, operation, { ...opts, attempt: (opts.attempt ?? 0) + 1 })),
+                ),
+        ),
         Effect.withSpan(`dataverse.${operation}`, { attributes: { path } }),
         Effect.withLogSpan(`dataverse.${operation}`),
-        Effect.timeout(Duration.seconds(30)),
+        Effect.timeout(Duration.millis(opts.timeoutMs ?? 30_000)),
     );
 }
 
@@ -246,6 +272,292 @@ const getWebResourcesEffect = (root) =>
             }),
         ),
     );
+
+// ---------------------------------------------------------------------------
+// Metadata operations (tables, columns, keys, N:N relationships)
+// ---------------------------------------------------------------------------
+
+/** Localized display label wrapper for metadata payloads. LanguageCode is
+ *  required by the Web API ("LanguageId should not be null" otherwise);
+ *  English base-language (1033) is used unless overridden via odata fields. */
+export function localizedLabel(/** @type {string} */ label) {
+    return { LocalizedLabels: [{ Label: label, LanguageCode: 1033 }] };
+}
+
+/**
+ * Tolerant metadata GET: returns `undefined` on 404 (locate-before-create
+ * pattern); other errors propagate as typed {@link HttpError}s.
+ *
+ * @param {string} path
+ */
+const metadataGetEffect = (path) =>
+    /** Tolerant metadata read routed through the shared request plumbing
+     *  (404 → undefined, Retry-After-aware 429 handling, 60s cap).
+     * @param {string} path
+     */
+    request(path, { headers: getHeaders() }, "metadataGet", { tolerate404: true, timeoutMs: 60_000 });
+
+/**
+ * Generic OData entity query.
+ *
+ * @param {string} entitySet
+ * @param {{ select?: string[], filter?: string, top?: number, orderBy?: string, expand?: string }} opts
+ * @returns {Effect.Effect<any[], any>}
+ */
+const queryEffect = (entitySet, { select, filter, top, orderBy, expand }) => {
+    const clauses = [];
+    if (select?.length) clauses.push(`$select=${select.map(encodeURIComponent).join(",")}`);
+    if (filter) clauses.push(`$filter=${encodeURIComponent(filter)}`);
+    if (orderBy) clauses.push(`$orderby=${encodeURIComponent(orderBy)}`);
+    if (expand) clauses.push(`$expand=${encodeURIComponent(expand)}`);
+    if (top != null) clauses.push(`$top=${top}`);
+    const qs = clauses.length ? `?${clauses.join("&")}` : "";
+    return request(`/api/data/v9.2/${entitySet}${qs}`, { headers: getHeaders() }, "query").pipe(
+        Effect.map((body) => /** @type {any[]} */ (body?.value ?? [])),
+    );
+};
+
+/** Create a table. Body: EntityMetadata JSON (see buildEntityBody).
+ * @param {any} body @param {string} [solution]
+ */
+const createEntityEffect = (body, solution) =>
+    request("/api/data/v9.2/EntityDefinitions", {
+        headers: getHeaders(solution),
+        method: "POST",
+        body: JSON.stringify(body),
+    }, "createEntity").pipe(Effect.retry(writeRetry), Effect.timeout(Duration.seconds(60)));
+
+/** Update table metadata (partial PUT with @odata.type).
+ * @param {string} logicalName @param {any} body @param {string} [solution]
+ */
+const updateEntityEffect = (logicalName, body, solution) =>
+    request(`/api/data/v9.2/EntityDefinitions(LogicalName='${logicalName}')`, {
+        headers: getHeaders(solution),
+        method: "PUT",
+        body: JSON.stringify({ "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata", ...body }),
+    }, "updateEntity").pipe(Effect.retry(writeRetry), Effect.timeout(Duration.seconds(60)));
+
+/** Create a column. Body: AttributeMetadata JSON (see buildAttributeBody).
+ * @param {string} tableLogical @param {any} body @param {string} [solution]
+ */
+const createAttributeEffect = (tableLogical, body, solution) =>
+    request(`/api/data/v9.2/EntityDefinitions(LogicalName='${tableLogical}')/Attributes`, {
+        headers: getHeaders(solution),
+        method: "POST",
+        body: JSON.stringify(body),
+    }, "createAttribute").pipe(Effect.retry(writeRetry), Effect.timeout(Duration.seconds(60)));
+
+/** Update a column (partial PUT with @odata.type).
+ * @param {string} tableLogical @param {string} columnLogical @param {any} body @param {string} [solution]
+ */
+const updateAttributeEffect = (tableLogical, columnLogical, body, solution) =>
+    request(
+        `/api/data/v9.2/EntityDefinitions(LogicalName='${tableLogical}')/Attributes(LogicalName='${columnLogical}')`,
+        {
+            headers: getHeaders(solution),
+            method: "PUT",
+            body: JSON.stringify({ "@odata.type": body["@odata.type"], ...body }),
+        },
+        "updateAttribute",
+    ).pipe(Effect.retry(writeRetry), Effect.timeout(Duration.seconds(60)));
+
+/** Create an alternate key.
+ * @param {string} tableLogical @param {any} body @param {string} [solution]
+ */
+const createAlternateKeyEffect = (tableLogical, body, solution) =>
+    request(`/api/data/v9.2/EntityDefinitions(LogicalName='${tableLogical}')/AlternateKeys`, {
+        headers: getHeaders(solution),
+        method: "POST",
+        body: JSON.stringify(body),
+    }, "createAlternateKey").pipe(Effect.retry(writeRetry), Effect.timeout(Duration.seconds(60)));
+
+/** Create an N:N relationship (RelationshipDefinitions endpoint).
+ * @param {any} body @param {string} [solution]
+ */
+const createManyToManyEffect = (body, solution) =>
+    request("/api/data/v9.2/RelationshipDefinitions", {
+        headers: getHeaders(solution),
+        method: "POST",
+        body: JSON.stringify(body),
+    }, "createManyToMany").pipe(Effect.retry(writeRetry), Effect.timeout(Duration.seconds(60)));
+
+/** Look up a relationship by schema name (404-tolerant → undefined).
+ * @param {string} schemaName
+ */
+const getRelationshipEffect = (schemaName) =>
+    request(
+        `/api/data/v9.2/RelationshipDefinitions?$select=schemaname&$filter=schemaname eq '${schemaName}'&$top=1`,
+        { headers: getHeaders() },
+        "getRelationship",
+    ).pipe(
+        Effect.map((body) => /** @type {any} */ (body?.value?.[0] ?? undefined)),
+        Effect.catchIf(
+            (/** @type {any} */ e) => e?._tag === "HttpError" && e.status === 404,
+            () => Effect.succeed(/** @type {any} */ (undefined)),
+        ),
+    );
+
+// ---------------------------------------------------------------------------
+// Metadata body builders (semantics of the `dv schema` JSON)
+// ---------------------------------------------------------------------------
+
+/** Entity metadata lookup — locate-before-create pattern (404 → undefined).
+ * @param {string} logicalName
+ */
+const getEntityMetadataEffect = (logicalName) =>
+    metadataGetEffect(
+        `/api/data/v9.2/EntityDefinitions(LogicalName='${logicalName}')?$select=MetadataId,SchemaName,DisplayName`,
+    );
+
+/** Column metadata lookup — locate-before-create pattern (404 → undefined).
+ * @param {string} tableLogical @param {string} columnLogical
+ */
+const getColumnMetadataEffect = (tableLogical, columnLogical) =>
+    metadataGetEffect(
+        `/api/data/v9.2/EntityDefinitions(LogicalName='${tableLogical}')/Attributes(LogicalName='${columnLogical}')?$select=MetadataId,LogicalName,SchemaName`,
+    );
+
+/** Full table definition (with related metadata collections) for `schema export`.
+ * @param {string} logicalName
+ * @param {string} [expand] raw OData $expand clause
+ */
+const getEntityDefinitionEffect = (logicalName, expand) =>
+    metadataGetEffect(
+        `/api/data/v9.2/EntityDefinitions(LogicalName='${logicalName}')` +
+        `?$select=SchemaName,LogicalName,LogicalCollectionName,EntitySetName,DisplayName,Description,OwnershipType,PrimaryNameAttribute` +
+        (expand ? `&$expand=${expand}` : ""),
+    );
+
+const ATTRIBUTE_TYPES = {
+    string: "StringAttributeMetadata",
+    memo: "MemoAttributeMetadata",
+    integer: "IntegerAttributeMetadata",
+    decimal: "DecimalAttributeMetadata",
+    double: "DoubleAttributeMetadata",
+    money: "MoneyAttributeMetadata",
+    boolean: "BooleanAttributeMetadata",
+    lookup: "LookupAttributeMetadata",
+    choice: "PicklistAttributeMetadata",
+    datetime: "DateTimeAttributeMetadata",
+};
+
+/**
+ * Map a schema-JSON column into an AttributeMetadata request body. Unknown
+ * properties flow through via the column's `odata` passthrough.
+ *
+ * @param {{ logicalName: string, displayName: string, description?: string, type: string,
+ *           required?: boolean, maxLength?: number, options?: {value: number|string, label: string}[],
+ *           relationship?: { schemaName: string, to: string }, odata?: Record<string, unknown> }} col
+ * @returns {Record<string, unknown>} AttributeMetadata create/update body
+ */
+export function buildAttributeBody(col) {
+    const typeName = (/** @type {Record<string, string>} */ (ATTRIBUTE_TYPES))[col.type];
+    if (!typeName) throw new Error(`unknown column type: ${col.type}`);
+    /** @type {Record<string, unknown>} */
+    const body = {
+        "@odata.type": `#Microsoft.Dynamics.CRM.${typeName}`,
+        SchemaName: col.logicalName,
+        DisplayName: localizedLabel(col.displayName),
+    };
+    if (col.description) body.Description = localizedLabel(col.description);
+    body.RequiredLevel = { Value: col.required ? "ApplicationRequired" : "None" };
+    if (col.maxLength != null && col.type === "string") body.MaxLength = col.maxLength;
+
+    if (col.type === "choice") {
+        body.OptionSet = {
+            OptionSetType: "Picklist",
+            Options: (col.options ?? []).map((o) => ({ Value: o.value, Label: localizedLabel(o.label) })),
+        };
+    }
+    if (col.type === "boolean") {
+        body.OptionSet = {
+            "@odata.type": "#Microsoft.Dynamics.CRM.BooleanOptionSet",
+            TrueOption: { Value: true, Label: localizedLabel("True") },
+            FalseOption: { Value: false, Label: localizedLabel("False") },
+        };
+    }
+    if (col.type === "datetime") {
+        body.Format = "DateTime";
+    }
+    if (col.type === "lookup" && col.relationship) {
+        body.Targets = [col.relationship.to];
+        body.OneToManyRelationships = [{
+            SchemaName: col.relationship.schemaName,
+            ReferencedEntity: col.relationship.to,
+        }];
+    }
+    return /** @type {Record<string, unknown>} */ ({ ...body, ...(col.odata ?? {}) });
+}
+
+/**
+ * EntityMetadata create body.
+ * @param {{ schemaName: string, displayName: string, pluralDisplay?: string,
+ *           collectionName?: string, entitySetName?: string, ownership?: string,
+ *           description?: string, odata?: Record<string, unknown> }} t
+ * @returns {Record<string, unknown>}
+ */
+export function buildEntityBody(t) {
+    const schema = t.schemaName;
+    const logical = schema.toLowerCase();
+    /** @type {Record<string, unknown>} */
+    const body = {
+        "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata",
+        SchemaName: schema,
+        LogicalName: logical,
+        LogicalCollectionName: t.collectionName ?? `${logical}s`,
+        EntitySetName: t.entitySetName ?? t.collectionName ?? `${logical}s`,
+        DisplayName: localizedLabel(t.displayName),
+        DisplayCollectionName: localizedLabel(t.pluralDisplay ?? `${t.displayName}s`),
+        OwnershipType: t.ownership ?? "UserOwned",
+    };
+    if (t.description) body.Description = localizedLabel(t.description);
+    return /** @type {Record<string, unknown>} */ ({ ...body, ...(t.odata ?? {}) });
+}
+
+/**
+ * N:N relationship body. `intersect` (intersect-entity logical name) defaults
+ * to `<entity1>_<entity2>`.
+ *
+ * @param {{
+ *     schemaName: string, with: string, from: string, intersect?: string,
+ *     display?: string, odata?: Record<string, unknown>,
+ * }} rel
+ * @returns {Record<string, unknown>}
+ */
+export function buildManyToManyBody(rel) {
+    const e1 = rel.from.toLowerCase();
+    const e2 = rel.with.toLowerCase();
+    /** @type {Record<string, unknown>} */
+    const body = {
+        "@odata.type": "#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata",
+        SchemaName: rel.schemaName,
+        IntersectEntityName: rel.intersect?.toLowerCase() ?? `${e1}_${e2}`,
+        Entity1LogicalName: e1,
+        Entity2LogicalName: e2,
+        Entity1AssociatedMenuConfiguration: { Behavior: "UseCollectionName" },
+        Entity2AssociatedMenuConfiguration: { Behavior: "UseCollectionName" },
+    };
+    if (rel.display) {
+        const lbl = localizedLabel(rel.display);
+        body.Entity1AssociatedMenuConfiguration = { Behavior: "UseLabel", Label: lbl };
+        body.Entity2AssociatedMenuConfiguration = { Behavior: "UseLabel", Label: lbl };
+    }
+    return /** @type {Record<string, unknown>} */ ({ ...body, ...(rel.odata ?? {}) });
+}
+
+/**
+ * Alternate key body.
+ * @param {{ schemaName: string, attributes: string[], odata?: Record<string, unknown> }} key
+ * @returns {Record<string, unknown>}
+ */
+export function buildKeyBody(key) {
+    return {
+        "@odata.type": "#Microsoft.Dynamics.CRM.EntityKeyMetadata",
+        SchemaName: key.schemaName,
+        KeyAttributes: key.attributes,
+        ...(key.odata ?? {}),
+    };
+}
 
 /**
  * Create or update a web resource, returning the record for publishing.
@@ -357,6 +669,17 @@ const publishEffect = (value, solution) =>
  *     getWebResources: (root: string) => Effect.Effect<WebResource[], DataverseError, never>,
  *     upload: (name: string, text: string | ArrayBuffer, solution?: string) => Effect.Effect<WebResource, DataverseError, never>,
  *     publish: (webResources: WebResource[], solution?: string) => Effect.Effect<void, DataverseError, never>,
+ *     query: (entitySet: string, opts?: { select?: string[], filter?: string, top?: number, orderBy?: string, expand?: string }) => Effect.Effect<any[], DataverseError, never>,
+ *     getEntityMetadata: (logicalName: string) => Effect.Effect<any | undefined, DataverseError, never>,
+ *     getEntityDefinition: (logicalName: string, expand?: string) => Effect.Effect<any | undefined, DataverseError, never>,
+ *     createEntity: (body: any, solution?: string) => Effect.Effect<any, DataverseError, never>,
+ *     updateEntity: (logicalName: string, body: any, solution?: string) => Effect.Effect<any, DataverseError, never>,
+ *     getColumnMetadata: (tableLogical: string, columnLogical: string) => Effect.Effect<any | undefined, DataverseError, never>,
+ *     createAttribute: (tableLogical: string, body: any, solution?: string) => Effect.Effect<any, DataverseError, never>,
+ *     updateAttribute: (tableLogical: string, columnLogical: string, body: any, solution?: string) => Effect.Effect<any, DataverseError, never>,
+ *     createAlternateKey: (tableLogical: string, body: any, solution?: string) => Effect.Effect<any, DataverseError, never>,
+ *     createManyToMany: (body: any, solution?: string) => Effect.Effect<any, DataverseError, never>,
+ *     getRelationship: (schemaName: string) => Effect.Effect<any | undefined, DataverseError, never>,
  * }} DataverseServiceImpl
  */
 
@@ -371,4 +694,15 @@ export const DataverseServiceLive = Layer.succeed(DataverseService, /** @type {D
     getWebResources: getWebResourcesEffect,
     upload: uploadEffect,
     publish: publishEffect,
+    query: queryEffect,
+    getEntityMetadata: getEntityMetadataEffect,
+    getEntityDefinition: getEntityDefinitionEffect,
+    createEntity: createEntityEffect,
+    updateEntity: updateEntityEffect,
+    getColumnMetadata: getColumnMetadataEffect,
+    createAttribute: createAttributeEffect,
+    updateAttribute: updateAttributeEffect,
+    createAlternateKey: createAlternateKeyEffect,
+    createManyToMany: createManyToManyEffect,
+    getRelationship: getRelationshipEffect,
 }));
