@@ -1,5 +1,8 @@
-import { createCommand } from "../terminal.mjs";
-import { dataverseConfigSchema, esbuildConfigSchema, tailwindConfigSchema } from "../utils/schemas.mjs";
+import { createCommand } from "../services/commands.mjs";
+import { Effect } from "effect";
+import { dataverseConfigSchema } from "./dataverse.mjs";
+import { esbuildConfigSchema } from "./esbuild.mjs";
+import { tailwindConfigSchema } from "./tailwind.mjs";
 import {
   object,
   optional,
@@ -31,7 +34,20 @@ export const initConfig = createCommand({
   description: message`Create default config files`,
   usage: message`init-config [prefix] [--esbuild] [--tailwind] [--tsc]`,
   brief: message`Create default config files`,
-  execute: async (parsed, term) => {
+  /**
+   * @param {Record<string, any>} parsed
+   * @param {import("../types/terminal.d.ts").Terminal} term
+   * @returns {Effect.Effect<string | undefined, Error>}
+   */
+  executeEffect: (parsed, term) => Effect.tryPromise(() => initConfigExecute(parsed, term)),
+});
+
+/**
+ * Legacy synchronous body, wrapped by executeEffect above.
+ * @param {Record<string, any>} parsed
+ * @param {import("../types/terminal.d.ts").Terminal} term
+ */
+async function initConfigExecute(parsed, term) {
     const { fs } = term;
     const withEsbuild = parsed.esbuild;
     const withTailwind = parsed.tailwind;
@@ -47,7 +63,9 @@ export const initConfig = createCommand({
     }
 
     if (!dcExists) {
-      const config = dataverseConfigSchema.parse({ prefix });
+      // launderJs defaults to on; users with clean/non-OneDrive workspaces
+      // can set it to false in dataverse.config.json or via `launder off`.
+      const config = dataverseConfigSchema.parse({ prefix, launderJs: true });
       await fs.writeFile(
         "dataverse.config.json",
         JSON.stringify(config, null, 2),
@@ -106,5 +124,4 @@ export const initConfig = createCommand({
     }
 
     return "";
-  },
-});
+}

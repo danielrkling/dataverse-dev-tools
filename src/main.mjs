@@ -3,6 +3,7 @@ import esbuild from "./commands/esbuild.mjs";
 import { flatten, templateCommand } from "./commands/flatten.mjs";
 import {
     lsCommand,
+    launderCommand,
     catCommand,
     cdCommand,
     mvCommand,
@@ -18,6 +19,7 @@ import { uploadCommand, previewCommand, cacheCommand } from "./commands/datavers
 import git from "./commands/git.mjs";
 import gitlab from "./commands/gitlab.mjs";
 import { runCommand } from "./commands/run.mjs";
+import { initConfig } from "./commands/init-config.mjs";
 import "./components/terminal.mjs";
 import "./components/file-tree.mjs";
 import "./components/editor-pane.mjs";
@@ -34,6 +36,8 @@ terminal.registerCommand(historyCommand);
 terminal.registerCommand(flatten);
 terminal.registerCommand(templateCommand); 
 terminal.registerCommand(lsCommand);
+terminal.registerCommand(launderCommand);
+terminal.registerCommand(initConfig);
 terminal.registerCommand(catCommand);
 terminal.registerCommand(cdCommand);
 terminal.registerCommand(mvCommand);

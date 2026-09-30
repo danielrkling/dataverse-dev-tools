@@ -62,6 +62,45 @@ export function launderPath(path) {
 }
 
 /**
+ * localStorage key holding the user-level laundering preference
+ * ("0" = off, "1" = on). The project-level `dataverse.config.json`
+ * `launderJs` field overrides it.
+ */
+export const LAUNDER_PREF_KEY = "dtv.launderExtensions";
+
+/** @returns {boolean | null} stored user preference, or null if unset */
+export function readStoredLaunderPref() {
+  try {
+    const raw = localStorage.getItem(LAUNDER_PREF_KEY);
+    if (raw === "0") return false;
+    if (raw === "1") return true;
+  } catch {}
+  return null;
+}
+
+/**
+ * @param {boolean} value user preference to persist ("on"/"off" toggle)
+ */
+export function writeStoredLaunderPref(value) {
+  try {
+    localStorage.setItem(LAUNDER_PREF_KEY, value ? "1" : "0");
+  } catch {}
+}
+
+/**
+ * Resolve the laundering preference: project config > localStorage > on.
+ * @param {{ launderJs?: boolean } | null} [projectConfig]
+ * @returns {boolean}
+ */
+export function resolveLaunderPreference(projectConfig) {
+  if (projectConfig && typeof projectConfig.launderJs === "boolean") {
+    return projectConfig.launderJs;
+  }
+  const stored = readStoredLaunderPref();
+  return stored === null ? true : stored;
+}
+
+/**
  * Return the plain (un-laundered) variant of a laundered path,
  * or the path unchanged.
  * @param {string} path

@@ -9,6 +9,7 @@ import {
   option,
   message,
 } from "@optique/core";
+import { readStoredLaunderPref, writeStoredLaunderPref } from "../utils/launder.mjs";
 
 /**
  * Typed fs failure — carries the operation and path so error mapping can
@@ -83,6 +84,56 @@ export const lsCommand = createCommand({
         .map((s) => `  ${(s.isDirectory ? "[DIR]" : "[FILE]").padEnd(7)} ${s.name}`)
         .join("\n");
     }).pipe(withFsSpan("fs.ls", path));
+  },
+});
+
+export const launderCommand = createCommand({
+  name: "launder",
+  parser: object({
+    mode: optional(
+      argument(string({ metavar: "on|off" }), {
+        description: message`Turn .js laundering on or off for this workspace`,
+      }),
+    ),
+  }),
+  description: message`Show or set .js extension laundering`,
+  usage: message`launder [on|off]`,
+  brief: message`Show or set .js extension laundering`,
+  /**
+   * Read the current laundering state, or set it for the active workspace
+   * (persisted in localStorage). Note: a `launderJs` field in
+   * dataverse.config.json takes precedence at every workspace open.
+   * @param {{ mode?: string }} parsed
+   * @param {import("../types/terminal.d.ts").Terminal} term
+   * @returns {Effect.Effect<string | undefined, Error>}
+   */
+  executeEffect: (parsed, term) => {
+    return Effect.gen(function* () {
+      const fs = term.fs;
+      if (!fs) throw new Error("No workspace open.");
+      const mode = parsed.mode?.toLowerCase();
+      if (!mode) {
+        // Report where the current setting came from, per open() precedence.
+        let source = "default";
+        try {
+          const raw = yield* fsOp("readConfig", "dataverse.config.json", (f) =>
+            /** @type {Promise<string>} */ (f.readFile("dataverse.config.json", { encoding: "utf-8" })));
+          const config = JSON.parse(raw);
+          if (typeof config.launderJs === "boolean") source = "dataverse.config.json";
+          else source = readStoredLaunderPref() === null ? "default" : "localStorage";
+        } catch {
+          source = readStoredLaunderPref() === null ? "default" : "localStorage";
+        }
+        return `laundering is ${fs.launderExtensions ? "on" : "off"} (preference: ${source}). Use "launder on|off" to change.`;
+      }
+      if (mode !== "on" && mode !== "off") {
+        throw new Error(`Unknown mode "${mode}". Use on or off.`);
+      }
+      const value = mode === "on";
+      fs.launderExtensions = value;
+      writeStoredLaunderPref(value);
+      return `laundering ${mode}. Applies to new .js writes in this workspace; existing on-disk files keep their names.`;
+    });
   },
 });
 

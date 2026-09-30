@@ -19,6 +19,7 @@
  * components/terminal.mjs, services/editor.mjs, commands/npm.mjs (via bus).
  */
 import { WebFileSystem } from "./fs.mjs";
+import { resolveLaunderPreference } from "../utils/launder.mjs";
 import { bus } from "./bus.mjs";
 import { Effect, Queue, Stream, Fiber, Option } from "effect";
 
@@ -209,6 +210,25 @@ export const workspace = {
                     activeTerminal = terminal ?? null;
                     // Reflect the active workspace in the browser tab.
                     document.title = `IDE - ${fs.rootName}`;
+                });
+
+                // Apply the laundering preference for this workspace:
+                // dataverse.config.json `launderJs` > localStorage > default on.
+                const launderPref = yield* Effect.tryPromise({
+                    try: async () => {
+                        try {
+                            const configRaw = await fs.readFile("dataverse.config.json", { encoding: "utf-8" });
+                            const config = JSON.parse(/** @type {string} */ (configRaw));
+                            return resolveLaunderPreference(config);
+                        } catch {
+                            // no/invalid config file: fall back to the user-level preference
+                            return resolveLaunderPreference(null);
+                        }
+                    },
+                    catch: (cause) => WorkspaceOpenError({ cause }),
+                });
+                yield* Effect.sync(() => {
+                    fs.launderExtensions = launderPref;
                 });
 
                 if (terminal) {
