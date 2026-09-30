@@ -3,7 +3,6 @@ import esbuild from "./commands/esbuild.mjs";
 import { flatten, templateCommand } from "./commands/flatten.mjs";
 import {
     lsCommand,
-    launderCommand,
     catCommand,
     cdCommand,
     mvCommand,
@@ -15,11 +14,10 @@ import {
 import { historyCommand } from "./commands/history.mjs";
 import { npmCommand } from "./commands/npm.mjs";
 import tailwind from "./commands/tailwind.mjs";
-import { uploadCommand, previewCommand, cacheCommand } from "./commands/dataverse.mjs";
+import { dataverseCommand } from "./commands/dataverse.mjs";
 import git from "./commands/git.mjs";
 import gitlab from "./commands/gitlab.mjs";
 import { runCommand } from "./commands/run.mjs";
-import { initConfig } from "./commands/init-config.mjs";
 import "./components/terminal.mjs";
 import "./components/file-tree.mjs";
 import "./components/editor-pane.mjs";
@@ -36,8 +34,6 @@ terminal.registerCommand(historyCommand);
 terminal.registerCommand(flatten);
 terminal.registerCommand(templateCommand); 
 terminal.registerCommand(lsCommand);
-terminal.registerCommand(launderCommand);
-terminal.registerCommand(initConfig);
 terminal.registerCommand(catCommand);
 terminal.registerCommand(cdCommand);
 terminal.registerCommand(mvCommand);
@@ -45,12 +41,10 @@ terminal.registerCommand(rmCommand);
 terminal.registerCommand(pwdCommand);
 terminal.registerCommand(statCommand);
 terminal.registerCommand(mkdirCommand);
-terminal.registerCommand(previewCommand);
+terminal.registerCommand(dataverseCommand);
 terminal.registerCommand(npmCommand);
 terminal.registerCommand(gitlab);
 terminal.registerCommand(tailwind);
-terminal.registerCommand(uploadCommand);
 terminal.registerCommand(git);
 terminal.registerCommand(esbuild);
-terminal.registerCommand(cacheCommand);
 terminal.registerCommand(runCommand);
