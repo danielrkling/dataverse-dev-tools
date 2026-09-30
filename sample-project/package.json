@@ -1,0 +1,10 @@
+{
+    "scripts": {
+        "build": "esbuild  src/**/*.ts --minify",
+        "start": "echo starting dev build && esbuild src/**/*.ts --watch",
+        "test": "echo running lint & echo running tests && echo all done",
+        "serial": "echo first && echo second && echo third",
+        "parallel": "echo job1 & echo job2 & echo job3",
+        "mixed": "echo build step && echo lint & echo test && echo deploy"
+    }
+}

@@ -1,0 +1,5 @@
+{
+  "content": ["./src/**/*.{html,js,ts,jsx,tsx,mjs}", "./index.html"],
+  "css": ["@import \"tailwindcss\"", "./src/custom.css"],
+  "outfile": "./dist/tailwind.css"
+}

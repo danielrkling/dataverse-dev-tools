@@ -1,0 +1,14 @@
+{
+  "entryPoints": [
+    "./src/app.ts"
+  ],
+  "outdir": "dist",
+  "minify": false,
+  "format": "esm",
+  "platform": "browser",
+  "sourcemap": "inline",
+  "splitting": false,
+  "outExtension": {
+    ".js": ".mjs"
+  }
+}
