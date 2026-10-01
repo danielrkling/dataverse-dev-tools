@@ -19,7 +19,7 @@
  * components/terminal.mjs, services/editor.mjs, commands/npm.mjs (via bus).
  */
 import { WebFileSystem } from "./fs.mjs";
-import { resolveLaunderPreference } from "../utils/launder.mjs";
+import { resolveLaunderPreference, unsplicePath } from "../utils/launder.mjs";
 import { bus } from "./bus.mjs";
 import { Effect, Queue, Stream, Fiber, Option } from "effect";
 
@@ -79,9 +79,12 @@ let drainFiber = null;
 function normalizeRecord(record) {
     const components = record?.relativePathComponents;
     if (!Array.isArray(components)) return null;
-    const path = components.join("/");
+    // Events use logical (plain) paths: on-disk laundered names
+    // (`foo.js.$$.mjs`) are reported as their plain spelling (`foo.js`),
+    // matching readdir and the watch pipelines' glob matchers.
+    const path = components.map(unsplicePath).join("/");
     if (!path) return null; // root-level change — per-file handlers can't use it
-    const name = components.at(-1);
+    const name = unsplicePath(components.at(-1) ?? "");
     if (name === "desktop.ini" || (name && name.endsWith(".crswap"))) return null;
 
     if (record.type === "appeared" || record.type === "modified" || record.type === "moved") {

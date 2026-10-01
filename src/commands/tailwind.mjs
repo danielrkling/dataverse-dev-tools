@@ -316,7 +316,7 @@ function runBuildEffect(config, fs) {
         const globs =
             config.files && config.files.length > 0
                 ? config.files
-                : ["./**/*.html", "./src/**/*.{js,mjs}"];
+                : ["./**/*.html", "./src/**/*.{js,mjs,ts,tsx,jsx,css}"];
         const classes = yield* extractClassesEffect(fs, globs);
 
         // Early exit: if the class list and CSS input are unchanged since the
@@ -428,7 +428,7 @@ export default createCommand({
                         return undefined;
                     }
                     const scaffold = {
-                        files: ["./**/*.html", "./src/**/*.{js,mjs}"],
+                        files: ["./**/*.html", "./src/**/*.{js,mjs,ts,tsx,jsx,css}"],
                         output: "./dist/tailwind.css",
                     };
                     yield* Effect.tryPromise({
