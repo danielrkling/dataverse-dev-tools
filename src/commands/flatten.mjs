@@ -1,7 +1,8 @@
 import { createCommand, makeFsError, makeFsOp, withFsSpan } from "../services/commands.mjs";
 import { Effect } from "effect";
 import { extname } from "../utils/path.mjs";
-import { object, optional, argument, string, option, message } from "@optique/core";
+import picomatch from "picomatch";
+import { object, optional, argument, string, option, message, multiple } from "@optique/core";
 
 /**
  * @type {Record<string, string>}
@@ -64,8 +65,8 @@ const withCommandSpan = withFsSpan;
 export const flatten = createCommand({
     name: "flatten",
     parser: object({
-        path: argument(string({ metavar: "PATH" }), {
-            description: message`Directory or file path to flatten`,
+        paths: multiple(argument(string({ metavar: "PATH" })), {
+            description: message`One or more paths or glob patterns to flatten`,
         }),
         out: optional(
             option("--out", string({ metavar: "FILE" }), {
@@ -75,34 +76,78 @@ export const flatten = createCommand({
     }),
     aliases: ["fl"],
     description: message`Combine files into one markdown file for LLM context`,
-    usage: message`flatten <path> [--out <file>]`,
+    usage: message`flatten <path|glob>... [--out <file>]`,
     brief: message`Combine files into one markdown file for LLM context`,
     /**
-     * @param {{ path: string, out?: string }} parsed
+     * Multiple paths or globs: each entry may be a plain directory/file path
+     * (flattened recursively, as before) or a glob pattern (picomatch),
+     * e.g. `flatten src docs` or `flatten "src/*.ts" "app/*.tsx"`.
+     * @param {{ paths: string[], out?: string }} parsed
      * @param {import("../types/terminal.d.ts").Terminal} term
      * @returns {Effect.Effect<string | undefined, Error>}
      */
     executeEffect: (parsed, term) => {
         const cliOut = parsed.out ?? null;
-        const path = parsed.path;
+        const paths = parsed.paths.length > 0 ? parsed.paths : ["."];
+        const GLOB_CHARS = /[*?[\]{}]/;
+        const dirPaths = paths.filter((p) => !GLOB_CHARS.test(p));
+        const globPaths = paths.filter((p) => GLOB_CHARS.test(p));
+        const scanRoots = [...new Set(
+            paths.map((p) => {
+                if (!GLOB_CHARS.test(p)) return p;
+                return p.replace(/\/[^/]*$/, "") || ".";
+            }).map((p) => (!p.includes("/") || p === "." ? "." : p)),
+        )];
 
-        const dir = path;
         return Effect.gen(function* () {
-            const entries = yield* fsOp("getFilesFromDirectory", path, (fs) =>
-                fs.getFilesFromDirectory(path),
-            );
-            const files = /** @type {[string, string][]} */ (entries)
+            /**
+             * @type {[string, string][]}
+             */
+            const entries = [];
+            const seen = new Set();
+            for (const root of scanRoots) {
+                const batch = yield* fsOp("getFilesFromDirectory", root, (fs) =>
+                    fs.getFilesFromDirectory(root),
+                );
+                for (const entry of /** @type {[string, string][]} */ (batch)) {
+                    const key = entry[0];
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        entries.push([key, entry[1]]);
+                    }
+                }
+            }
+            const isMatch = globPaths.length > 0 ? picomatch(globPaths) : null;
+            const dirAllow = dirPaths.length > 0 ? picomatch(dirPaths.map((d) => d.replace(/\/$/, ""))) : null;
+            const files = entries
+                .map(([file, content]) => [file.replace(/^\//, ""), content])
                 .filter(([file]) => {
                     const name = file.split("/").pop() || file;
-                    return !name.startsWith("#") && !name.startsWith(".") && !/(^|\/)node_modules\//.test(file);
+                    if (name.startsWith("#") || name.startsWith(".")) return false;
+                    if (/(^|\/)node_modules\//.test(file)) return false;
+                    if (cliOut && file === cliOut) return false;
+                    if (dirPaths.length === 0 && globPaths.length === 0) return true;
+                    let matched = false;
+                    if (dirAllow && dirAllow(file)) matched = true;
+                    if (!matched && isMatch) {
+                        matched = isMatch(file) || isMatch(`/${file}`);
+                    }
+                    return matched;
                 })
                 .sort();
 
+            const rootName = /** @type {string} */ (
+                yield* fsOp("rootName", ".", (fs) => Promise.resolve(fs.rootName))
+            );
+            // Where the output goes, and the label inside the header:
+            // single dir -> inside that dir; everything else -> workspace root.
+            const baseDir = dirPaths.length === 1 ? dirPaths[0] : ".";
             const folderName =
-                dir === "."
-                    ? /** @type {string} */ (yield* fsOp("rootName", path, (fs) => Promise.resolve(fs.rootName))) : dir.split("/").filter(Boolean).pop() || "project";
+                baseDir === "."
+                    ? rootName
+                    : (baseDir.split("/").filter(Boolean).pop() || "project");
             const ts = new Date().toISOString().slice(0, 19).replace(/[:.]/g, "-");
-            const outFile = cliOut || `${dir}/#${folderName}_${ts}.md`;
+            const outFile = cliOut || `${baseDir === "." ? "" : baseDir}/#${folderName}_${ts}.md`.replace(/^\//, "");
             const lines = [`# Project Files`, `Generated: ${ts}`, "", ""];
 
             // Serialized formatting: plain sync work, no fs calls — order preserved.
@@ -129,7 +174,7 @@ export const flatten = createCommand({
             }
             return result;
         }).pipe(
-            withCommandSpan("flatten.run", { path, out: cliOut ?? "<auto>" }),
+            withCommandSpan("flatten.run", { paths: paths.join(","), out: cliOut ?? "<auto>" }),
         );
     },
 });
