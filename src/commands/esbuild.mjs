@@ -471,7 +471,7 @@ export default createCommand({
                         return undefined;
                     }
                     const scaffold = {
-                        entryPoints: ["src/**/*.{js,mjs}", "index.js"],
+                        entryPoints: ["src/app.tsx"],
                         outdir: "dist",
                         bundle: true,
                         format: "esm",
