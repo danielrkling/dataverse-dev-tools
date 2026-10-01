@@ -740,7 +740,10 @@ export class WebFileSystem {
          */
         async function recursiveRead(dirHandle, currentPath) {
             for await (const entry of dirHandle.values()) {
-                const newPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+                // Logical (plain) path for filtering and results, matching
+                // readdir's laundering behavior.
+                const logicalName = unsplicePath(entry.name);
+                const newPath = currentPath ? `${currentPath}/${logicalName}` : logicalName;
 
                 if (entry.kind === "file") {
                     if (filter && !filter(newPath)) continue;

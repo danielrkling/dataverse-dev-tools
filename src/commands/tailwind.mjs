@@ -265,7 +265,7 @@ function extractClassesEffect(fs, globs) {
             const dot = filePath.lastIndexOf(".");
             if (dot === -1) continue;
             const ext = filePath.slice(dot + 1);
-            (/** @type {Record<string, string[]>} */ (byExt))[ext].push(/** @type {string} */ (content));
+            (byExt[ext] ??= []).push(/** @type {string} */ (content));
         }
 
         const classes = new Set();
@@ -316,7 +316,7 @@ function runBuildEffect(config, fs) {
         const globs =
             config.files && config.files.length > 0
                 ? config.files
-                : ["./src/**/*.{html,js,ts,jsx,tsx,mjs}"];
+                : ["./**/*.html", "./src/**/*.{js,mjs}"];
         const classes = yield* extractClassesEffect(fs, globs);
 
         // Early exit: if the class list and CSS input are unchanged since the
@@ -405,7 +405,7 @@ export default createCommand({
     parser: tailwindParser,
     aliases: ["tw"],
     description: message`Generate Tailwind CSS using compile() API with WasmScanner`,
-    usage: message`tailwind [--init] [-i FILE] [-o FILE] [--watch] [--content GLOB]...`,
+    usage: message`tailwind [--init] [-c FILE] [-i FILE] [-o FILE] [--watch] [--files GLOB]...`,
     brief: message`Generate Tailwind CSS using compile() API with WasmScanner`,
     /**
      * @param {import("@optique/core").InferValue<typeof tailwindParser>} parsed
@@ -465,9 +465,16 @@ export default createCommand({
                 const validatedConfig = configResult.data;
 
                 const { config: _, ...cliFields } = parsed;
+                // Only merge CLI fields the user actually provided: unset
+                // options must not clobber values from the config file.
+                const provided = Object.fromEntries(
+                    Object.entries(cliFields).filter(
+                        ([, v]) => v !== undefined && !(Array.isArray(v) && v.length === 0),
+                    ),
+                );
                 const mergedResult = tailwindConfigSchema.safeParse({
                     ...validatedConfig,
-                    ...cliFields,
+                    ...provided,
                 });
                 if (!mergedResult.success) {
                     term.error(`Config merge: ${zodIssuesMessage(mergedResult.error)}`);
