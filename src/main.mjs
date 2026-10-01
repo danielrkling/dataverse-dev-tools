@@ -10,6 +10,7 @@ import {
     pwdCommand,
     statCommand,
     mkdirCommand,
+    launderCommand,
 } from "./commands/fs.mjs";
 import { historyCommand } from "./commands/history.mjs";
 import { npmCommand } from "./commands/npm.mjs";
@@ -18,6 +19,7 @@ import { dataverseCommand } from "./commands/dataverse.mjs";
 import git from "./commands/git.mjs";
 import gitlab from "./commands/gitlab.mjs";
 import { runCommand } from "./commands/run.mjs";
+import { initConfig } from "./commands/init-config.mjs";
 import "./components/terminal.mjs";
 import "./components/file-tree.mjs";
 import "./components/editor-pane.mjs";
@@ -41,6 +43,7 @@ terminal.registerCommand(rmCommand);
 terminal.registerCommand(pwdCommand);
 terminal.registerCommand(statCommand);
 terminal.registerCommand(mkdirCommand);
+terminal.registerCommand(launderCommand);
 terminal.registerCommand(dataverseCommand);
 terminal.registerCommand(npmCommand);
 terminal.registerCommand(gitlab);
@@ -48,3 +51,4 @@ terminal.registerCommand(tailwind);
 terminal.registerCommand(git);
 terminal.registerCommand(esbuild);
 terminal.registerCommand(runCommand);
+terminal.registerCommand(initConfig);

@@ -39,6 +39,12 @@ export const dataverseConfigSchema = z.object({
     files: z.array(z.string()).optional(),
     preview: z.string().optional(),
     refresh: z.string().optional(),
+    /**
+     * Write .js files as .js.$$.mjs to avoid OneDrive sync errors.
+     * Works with the fs service's logical-name fallback. Default: true
+     * (falls back to the localStorage preference when absent).
+     */
+    launderJs: z.boolean().optional(),
 });
 
 /**

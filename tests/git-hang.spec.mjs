@@ -54,14 +54,14 @@ test('registry git add/commit completes', async ({ page }) => {
         // --- init subcommands scaffold config files ---
         const { default: esbuildCommand } = await import('/src/commands/esbuild.mjs');
         const { default: tailwindCommand } = await import('/src/commands/tailwind.mjs');
-        const { uploadCommand } = await import('/src/commands/dataverse.mjs');
+        const { dataverseCommand } = await import('/src/commands/dataverse.mjs');
         registry.registerCommand(esbuildCommand, term);
         registry.registerCommand(tailwindCommand, term);
-        registry.registerCommand(uploadCommand, term);
+        registry.registerCommand(dataverseCommand, term);
         await run('esbuild --init');
         await run('tailwind --init');
         await run('tailwind'); // build using the scaffolded config (new keys)
-        await run('upload --init');
+        await run('dv init');
         await run('esbuild --init'); // must refuse to overwrite
         for (const cfg of ['esbuild.config.json', 'tailwind.config.json', 'dataverse.config.json']) {
             try { term.lines.push(['meta', `${cfg}: ${(await fs.readFile(cfg, 'utf8')).slice(0, 60).replace(/\n/g, ' ')}`]); }
