@@ -418,17 +418,20 @@ async function installOneInner(fs, term, name, version, tsOnly, force = false) {
 
     const targetDir = `node_modules/${name}`;
     // Read under the fs lock so we don't read a directory mid-mutation.
+    /** @type {string | null} existing manifest version */
+    let installedVersion = null;
     const alreadyInstalled = !force && await withFsLock(async () => {
         if (!(await fs.exists(targetDir))) return false;
         const pkgRaw = await fs.readFile(`${targetDir}/package.json`, "utf8");
         const pkgJson = JSON.parse(pkgRaw);
         const installedSv = parseSemver(/** @type {string} */ (pkgJson.version));
         if (!installedSv) return false; // corrupt manifest -> reinstall
+        installedVersion = /** @type {string} */ (pkgJson.version);
         return satisfiesRange(installedSv, version || "latest");
     });
     if (alreadyInstalled) {
         term.info(`    ${name} already installed`);
-        return;
+        return installedVersion ?? undefined;
     }
 
     const meta = await fetchPackageMeta(name);
@@ -498,6 +501,8 @@ async function installOneInner(fs, term, name, version, tsOnly, force = false) {
             term.error(`    Failed to install ${depName}: ${e.message}`);
         }
     });
+
+    return resolved;
 }
 
 /**
@@ -808,14 +813,18 @@ const flows = {
     if (spec) {
       const { name, version } = parsePackageSpec(spec);
       try {
-        await installOne(fs, term, name, version, tsOnly, force);
-        const meta = await fetchPackageMeta(name);
-        const versions = Object.keys(meta.versions || {});
-        const resolved = pickBestVersion(versions, version || "latest");
+        // installOne resolves the version (including dist-tags) and returns it;
+        // use that instead of re-resolving the spec, which can't handle tags
+        // like `next`/`beta` and used to silently skip the manifest write.
+        const resolved = /** @type {string | undefined} */ (
+          await installOne(fs, term, name, version, tsOnly, force)
+        );
         if (resolved) {
           await updatePackageJson(fs, name, resolved, dev);
           const target = dev ? "devDependencies" : "dependencies";
           term.success(`Added ${name}@${resolved} to ${target}`);
+        } else {
+          term.info(`    ${name} is already installed (up to date)`);
         }
         bus.emit("npm:install", { name });
       } catch (e) {
