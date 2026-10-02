@@ -51,4 +51,4 @@ terminal.registerCommand(tailwind);
 terminal.registerCommand(git);
 terminal.registerCommand(esbuild);
 terminal.registerCommand(runCommand);
-terminal.registerCommand(initConfig);
+// terminal.registerCommand(initConfig);

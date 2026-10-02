@@ -123,4 +123,41 @@ test.describe('WebFileSystem extension laundering', () => {
 
     expect(result).toEqual({ listing: ['foo.js'], content: 'plain js' });
   });
+
+  test('files laundered while enabled stay readable after it is turned off', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const { WebFileSystem } = await import('/src/services/fs.mjs');
+      const fs = await WebFileSystem.fromOPFS('__test__launder_toggle');
+
+      // Written while laundering is on -> stored as foo.js.$$.mjs
+      await fs.writeFile('/foo.js', 'laundered while on');
+
+      // The preference governs writes only; it must not revoke read access to
+      // what is already on disk. `launder off` promises exactly this.
+      fs.launderExtensions = false;
+
+      const content = await fs.readFile('/foo.js', { encoding: 'utf8' });
+      const exists = await fs.exists('/foo.js');
+      const stat = await fs.stat('/foo.js');
+
+      // And a newly written file must respect the new preference.
+      await fs.writeFile('/bar.js', 'plain js');
+
+      const listing = await fs.readdir('/');
+
+      const raw = await navigator.storage.getDirectory();
+      const dir = await raw.getDirectoryHandle('__test__launder_toggle');
+      const onDisk = [];
+      for await (const entry of dir.values()) onDisk.push(entry.name);
+
+      return { content, exists, type: stat.type, listing: listing.sort(), onDisk: onDisk.sort() };
+    });
+
+    expect(result.content).toBe('laundered while on');
+    expect(result.exists).toBe(true);
+    expect(result.type).toBe('file');
+    expect(result.listing).toEqual(['bar.js', 'foo.js']);
+    // foo.js.$$.mjs was written under the old preference; bar.js plain under the new one.
+    expect(result.onDisk).toEqual(['bar.js', 'foo.js.$$.mjs']);
+  });
 });

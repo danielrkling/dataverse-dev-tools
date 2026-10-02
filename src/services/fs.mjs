@@ -293,12 +293,23 @@ export class WebFileSystem {
     /**
      * Returns candidate spellings for reading a path: the plain path first,
      * then the laundered variant if different.
+     *
+     * Deliberately NOT gated on `launderExtensions`. That preference decides
+     * how *new* files are written; it has no bearing on what is already on
+     * disk. Gating reads on it meant that turning laundering off (via
+     * `launder off` or `launderJs: false`) made every previously-laundered
+     * file unreadable — files that `launder off` explicitly promises to keep
+     * working. That is not hypothetical here: `node_modules` entries are
+     * fetched over a session boundary, so a workspace can hold a mix of
+     * laundered and plain `.js` files, and reads have to tolerate both.
+     *
+     * Plain wins if both spellings exist, which is the correct precedence.
+     *
      * @private
      * @param {string} absPath
      * @returns {string[]}
      */
     _readCandidatesFor(absPath) {
-        if (!this.launderExtensions) return [absPath];
         const laundered = launderPath(absPath);
         return laundered === absPath ? [absPath] : [absPath, laundered];
     }

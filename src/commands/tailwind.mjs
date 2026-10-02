@@ -1,7 +1,7 @@
 import { dirname, join } from "../utils/path.mjs";
 import * as z from "zod";
 import { createCommand, FsError, friendlyError, zodIssuesMessage, readJsonConfigEffect, attachWatchStop } from "../services/commands.mjs";
-import { object, optional, message, option, string, multiple, map } from "@optique/core";
+import { object, optional, message, option, string, multiple } from "@optique/core";
 import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 import { Effect } from "effect";
@@ -211,36 +211,37 @@ function createLoadModule(fs) {
 }
 
 /**
- * @param {object} config
- * @param {string | string[]} [config.input]
- * @param {string} [config.importCSS]
- * @param {string[]} [config.plugins]
- * @returns {string}
+ * Default stylesheet used when no input file is given.
+ * @type {string}
  */
-function buildCSSInput(config) {
-    if (Array.isArray(config.input)) {
-        return config.input
-            .map((item) => {
-                const t = item.trim();
-                if (t.startsWith("@") || t.startsWith("http://") || t.startsWith("https://")) return t;
-                return `@import "${t}"`;
-            })
-            .join("\n");
+const DEFAULT_CSS_INPUT = '@import "tailwindcss"';
+
+/**
+ * Resolve the raw CSS source handed to `compile()`.
+ *
+ * When `config.input` names a file, its contents are used verbatim — the
+ * file is the single source of truth (it can import tailwindcss, other
+ * stylesheets, and plugins itself). When no input is configured, a bare
+ * `@import "tailwindcss"` is used.
+ *
+ * @param {{ input?: string }} config
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @returns {Effect.Effect<{ css: string, base: string }, TailwindError>}
+ */
+function readCSSInputEffect(config, fs) {
+    if (!config.input) {
+        return Effect.succeed({ css: DEFAULT_CSS_INPUT, base: "/" });
     }
-    const parts = [];
-    if (config.importCSS) parts.push(config.importCSS);
-    else parts.push('@import "tailwindcss"');
-    if (config.input && typeof config.input === "string") parts.push(`@import "${config.input}"`);
-    if (config.plugins) {
-        for (const p of config.plugins) {
-            if (p.startsWith("http://") || p.startsWith("https://") || p.startsWith("./") || p.startsWith("/")) {
-                parts.push(`@import "${p}"`);
-            } else {
-                parts.push(`@plugin "${p}"`);
-            }
-        }
-    }
-    return parts.join("\n");
+    const path = config.input;
+    return Effect.tryPromise({
+        try: () => fs.readFile(path, { encoding: "utf8" }),
+        catch: TailwindError("read"),
+    }).pipe(
+        Effect.map((css) => ({
+            css,
+            base: dirname(path) || "/",
+        })),
+    );
 }
 
 /**
@@ -296,18 +297,18 @@ const lastBuildSignature = new Map();
  * Full tailwind build flow as an Effect (span `tailwind.build`, typed
  * {@link TailwindError} failures mapped to friendly Errors).
  *
- * @param {{ files?: string[], input?: string | string[], importCSS?: string, output?: string, plugins?: string[] }} config
+ * @param {{ files?: string[], input?: string, output?: string }} config
  * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {Effect.Effect<{output: string, bytes: number, classes: number, skipped?: boolean}, Error>}
  */
 function runBuildEffect(config, fs) {
     return Effect.gen(function* () {
         const compile = yield* getCompileEffect;
-        const cssInput = buildCSSInput(config);
+        const { css: cssInput, base } = yield* readCSSInputEffect(config, fs);
         const compiler = yield* Effect.tryPromise({
             try: () =>
                 Promise.resolve(compile(cssInput, {
-                    base: "/",
+                    base,
                     loadStylesheet: createLoadStylesheet(fs),
                     loadModule: createLoadModule(fs),
                 })),
@@ -363,13 +364,10 @@ const tailwindParser = object({
             description: message`Path to config file (default: tailwind.config.json)`,
         }),
     ),
-    input: map(
-        optional(
-            option("-i", "--input", string({ metavar: "FILE" }), {
-                description: message`Input CSS file`,
-            }),
-        ),
-        (s) => (s ? [s] : undefined),
+    input: optional(
+        option("-i", "--input", string({ metavar: "FILE" }), {
+            description: message`Input CSS file (defaults to @import "tailwindcss")`,
+        }),
     ),
     output: optional(
         option("-o", "--output", string({ metavar: "FILE" }), {
@@ -394,10 +392,8 @@ export const tailwindConfigSchema = z.object({
         .transform((v) => (typeof v === "string" ? [v] : v))
         .optional(),
 
-    input: z.union([z.string(), z.array(z.string())]).optional(),
+    input: z.string().optional(),
     output: z.string().optional(),
-    importCSS: z.string().optional(),
-    plugins: z.array(z.string()).optional(),
 });
 
 export default createCommand({

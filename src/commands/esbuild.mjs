@@ -20,7 +20,7 @@ import {
 import { createCommand, FsError, friendlyError, readJsonConfigEffect, zodIssuesMessage, attachWatchStop } from "../services/commands.mjs";
 import { WorkspaceFs } from "../effects/services.mjs";
 import { TerminalUi } from "../effects/terminal-ui.mjs";
-import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
+import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause, DEV_CONDITIONS, PROD_CONDITIONS, DEV_MAIN_FIELDS, PROD_MAIN_FIELDS } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 import { dropUndefined } from "../utils/json.mjs";
 import {bus} from "../services/bus.mjs"
@@ -45,12 +45,16 @@ function preprocessArgs(args) {
 
 
 
-export const esbuildConfigSchema = z.object({
+// The schema without its `.default()` values. Read the config file with this
+// first so we can tell "the user set minify: false" apart from "the user set
+// nothing" — a default applied before the mode preset is layered in would
+// silently win over `--prod`. Defaults are applied exactly once, at the end.
+const esbuildShape = {
     // Input
     entryPoints: z
         .union([z.string(), z.array(z.string())])
         .transform((v) => (typeof v === "string" ? [v] : v))
-        .default(["./src/app.ts"]),
+        .optional(),
     loader: z
         .record(
             z.string(),
@@ -59,8 +63,8 @@ export const esbuildConfigSchema = z.object({
         .optional(),
 
     // Output contents
-    format: z.enum(["iife", "cjs", "esm"]).default("esm"),
-    splitting: z.boolean().default(false),
+    format: z.enum(["iife", "cjs", "esm"]).optional(),
+    splitting: z.boolean().optional(),
     banner: z.object({ js: z.string().optional(), css: z.string().optional() }).optional(),
     footer: z.object({ js: z.string().optional(), css: z.string().optional() }).optional(),
     charset: z.enum(["utf8", "ascii"]).optional(),
@@ -69,10 +73,10 @@ export const esbuildConfigSchema = z.object({
     lineLimit: z.number().optional(),
 
     // Output location
-    outdir: z.string().default("dist"),
+    outdir: z.string().optional(),
     outfile: z.string().optional(),
     outbase: z.string().optional(),
-    outExtension: z.record(z.string(), z.string()).default({ ".js": ".mjs" }),
+    outExtension: z.record(z.string(), z.string()).optional(),
     entryNames: z.string().optional(),
     chunkNames: z.string().optional(),
     assetNames: z.string().optional(),
@@ -86,7 +90,7 @@ export const esbuildConfigSchema = z.object({
     external: z.array(z.string()).optional(),
     mainFields: z.array(z.string()).optional(),
     nodePaths: z.array(z.string()).optional(),
-    packages: z.enum(["external"]).optional(),
+    packages: z.enum(["bundle", "external"]).optional(),
     preserveSymlinks: z.boolean().optional(),
     resolveExtensions: z.array(z.string()).optional(),
     absWorkingDir: z.string().optional(),
@@ -118,7 +122,7 @@ export const esbuildConfigSchema = z.object({
         .string()
         .optional()
         .transform((v) => (v ? new RegExp(v) : undefined)),
-    minify: z.boolean().default(false),
+    minify: z.boolean().optional(),
     minifyWhitespace: z.boolean().optional(),
     minifyIdentifiers: z.boolean().optional(),
     minifySyntax: z.boolean().optional(),
@@ -126,7 +130,7 @@ export const esbuildConfigSchema = z.object({
     treeShaking: z.boolean().optional(),
 
     // Source maps
-    sourcemap: z.union([z.boolean(), z.enum(["inline", "external", "both"])]).default("inline"),
+    sourcemap: z.union([z.boolean(), z.enum(["inline", "external", "both", "linked"])]).optional(),
     sourceRoot: z.string().optional(),
     sourcesContent: z.boolean().optional(),
 
@@ -135,8 +139,8 @@ export const esbuildConfigSchema = z.object({
     analyze: z.boolean().optional(),
 
     // General
-    bundle: z.boolean().default(true),
-    platform: z.enum(["browser", "node", "neutral"]).default("browser"),
+    bundle: z.boolean().optional(),
+    platform: z.enum(["browser", "node", "neutral"]).optional(),
     watch: z.boolean().optional(),
 
     // Logging
@@ -144,7 +148,77 @@ export const esbuildConfigSchema = z.object({
     logLevel: z.enum(["verbose", "debug", "info", "warning", "error", "silent"]).optional(),
     logLimit: z.number().optional(),
     // logOverride: z.record(z.string(), z.string()).optional(),
+};
+
+/**
+ * Config-file shape with no defaults applied. Used to read the file and learn
+ * which keys the user actually specified.
+ */
+export const esbuildRawSchema = z.object(esbuildShape);
+
+/**
+ * The defaults {@link esbuildRawSchema} deliberately leaves out. Applied once,
+ * after the mode preset and CLI flags have been layered in.
+ */
+const esbuildDefaults = {
+    entryPoints: ["./src/app.ts"],
+    format: "esm",
+    splitting: false,
+    outdir: "dist",
+    outExtension: { ".js": ".mjs" },
+    minify: false,
+    sourcemap: "inline",
+    bundle: true,
+    platform: "browser",
+};
+
+/**
+ * Fully-resolved build config: every key present, defaults applied.
+ *
+ * Also used by `init-config --esbuild` to scaffold a populated file, so
+ * `parse({})` must yield the defaults above.
+ */
+export const esbuildConfigSchema = z.object(esbuildShape).extend({
+    entryPoints: esbuildShape.entryPoints.default(esbuildDefaults.entryPoints),
+    format: esbuildShape.format.default(esbuildDefaults.format),
+    splitting: esbuildShape.splitting.default(esbuildDefaults.splitting),
+    outdir: esbuildShape.outdir.default(esbuildDefaults.outdir),
+    outExtension: esbuildShape.outExtension.default(esbuildDefaults.outExtension),
+    minify: esbuildShape.minify.default(esbuildDefaults.minify),
+    sourcemap: esbuildShape.sourcemap.default(esbuildDefaults.sourcemap),
+    bundle: esbuildShape.bundle.default(esbuildDefaults.bundle),
+    platform: esbuildShape.platform.default(esbuildDefaults.platform),
 });
+
+/**
+ * Per-mode build presets. Applied *under* the config file and CLI flags, so an
+ * explicit user value always wins; anything the user leaves unset falls back
+ * to these.
+ *
+ * `conditions`/`mainFields` are the important ones: they decide which files
+ * get pulled out of `node_modules`, so `--dev` can resolve a package's
+ * `development` condition while `--prod` takes its default production build.
+ *
+ * @type {Record<string, Record<string, unknown>>}
+ */
+const MODE_PRESETS = {
+    development: {
+        minify: false,
+        sourcemap: "inline",
+        treeShaking: false,
+        define: { "process.env.NODE_ENV": JSON.stringify("development") },
+        conditions: DEV_CONDITIONS,
+        mainFields: DEV_MAIN_FIELDS,
+    },
+    production: {
+        minify: true,
+        sourcemap: false,
+        treeShaking: true,
+        define: { "process.env.NODE_ENV": JSON.stringify("production") },
+        conditions: PROD_CONDITIONS,
+        mainFields: PROD_MAIN_FIELDS,
+    },
+};
 
 // --- CLI PARSER ---
 
@@ -154,6 +228,10 @@ const esbuildParser = object({
         option("--init", {
             description: message`Scaffold the default config file and exit`,
         }),
+    ),
+    define: map(
+        multiple(option("--define", string({ metavar: "KEY=VALUE" }))),
+        (v) => (v.length ? Object.fromEntries(v.map((s) => s.split(/=(.*)/s).slice(0, 2))) : undefined),
     ),
     entryPoints: map(
         multiple(
@@ -186,6 +264,16 @@ const esbuildParser = object({
         }),
     ),
     watch: optional(option("--watch", { description: message`Watch for changes and rebuild` })),
+    prod: optional(
+        option("--prod", {
+            description: message`Production build: minify, no sourcemaps, production package conditions`,
+        }),
+    ),
+    dev: optional(
+        option("--dev", {
+            description: message`Development build (default): readable output, sourcemaps, development package conditions`,
+        }),
+    ),
 
     // Input
 
@@ -447,8 +535,8 @@ export default createCommand({
     parser: esbuildParser,
     aliases: ["build"],
     description: message`Bundle files using esbuild`,
-    usage: message`esbuild init | esbuild [entry_points..] [options]`,
-    brief: message`Bundle files using esbuild`,
+    usage: message`esbuild init | esbuild [entry_points..] [--prod | --dev] [options]`,
+    brief: message`Bundle files using esbuild (--dev default, --prod optimized)`,
 
     transformArgs: preprocessArgs,
 
@@ -470,20 +558,22 @@ export default createCommand({
                         term.error(`${configPath} already exists — remove it first if you want to re-scaffold.`);
                         return undefined;
                     }
+                    // Deliberately omits minify/sourcemap: those are mode-controlled
+                    // (--dev/--prod). Pinning them here would let the config
+                    // file override the mode preset and make --prod a no-op.
                     const scaffold = {
                         entryPoints: ["src/app.tsx"],
                         outdir: "dist",
                         bundle: true,
                         format: "esm",
                         target: "es2022",
-                        sourcemap: "inline",
-                        minify: false,
                     };
                     yield* Effect.tryPromise({
                         try: () => fs.writeFile(configPath, `${JSON.stringify(scaffold, null, 2)}\n`, "utf8"),
                         catch: FsError("writeFile", configPath),
                     });
                     term.success(`Wrote ${configPath} — edit entryPoints/outdir to match your project.`);
+                    term.info("Run with --prod for an optimized build, --dev (default) for development.");
                     return undefined;
                 }
 
@@ -500,26 +590,54 @@ export default createCommand({
                 const rawConfig =
                     rawConfigResult._tag === "Right" ? rawConfigResult.right : {};
 
-                const configResult = esbuildConfigSchema.safeParse(rawConfig);
+                // Read the config file *without* defaults so we can tell an
+                // explicit `minify: false` apart from an absent key. A default
+                // applied here would outrank the --prod preset.
+                const configResult = esbuildRawSchema.safeParse(rawConfig);
                 if (!configResult.success) {
                     term.error(`${configPath}: ${zodIssuesMessage(configResult.error)}`);
                     return undefined;
                 }
-                const validatedConfig = configResult.data;
+                const fileConfig = configResult.data;
 
-                const { config: _, ...cliFields } = parsed;
+                if (parsed.prod && parsed.dev) {
+                    term.error("Pass either --prod or --dev, not both.");
+                    return undefined;
+                }
+                const mode = parsed.prod ? "production" : "development";
+                const preset = MODE_PRESETS[mode];
+
+                const { config: _c, init: _i, prod: _p, dev: _d, ...cliFields } = parsed;
+                const provided = dropUndefined(cliFields);
+                // `define` and `conditions` merge rather than override: both are
+                // additive in esbuild. A config listing `conditions: ["production"]`
+                // means "additionally match production", not "match only
+                // production" — treating it as a replacement would deactivate
+                // `browser`/`import`/`default` and silently drop every package to
+                // the legacy mainFields fallback.
                 const mergedResult = esbuildConfigSchema.safeParse({
-                    ...validatedConfig,
-                    ...dropUndefined(cliFields),
+                    ...preset,
+                    ...fileConfig,
+                    ...provided,
+                    define: {
+                        .../** @type {Record<string,string>} */ (preset.define),
+                        ...fileConfig.define,
+                        ...provided.define,
+                    },
+                    conditions: [
+                        ...(preset.conditions ?? []),
+                        ...(fileConfig.conditions ?? []),
+                        ...(provided.conditions ?? []),
+                    ],
                 });
                 if (!mergedResult.success) {
                     term.error(`Config merge: ${zodIssuesMessage(mergedResult.error)}`);
                     return undefined;
                 }
                 const merged = mergedResult.data;
-
                 const watchMode = merged.watch;
                 const { watch: _w, entryPoints: epPatterns, ...rest } = merged;
+                void _w;
 
                 // --- entry point resolution ---
                 const fs = yield* WorkspaceFs;
@@ -578,7 +696,7 @@ export default createCommand({
                     let filesToWatch = /** @type {string[]} */ ([]);
                     // Pinned status row (terminal strip): one per watcher id,
                     // updated in place by every rebuild.
-                    const watcher = ui.startWatcher("esbuild-watch", "esbuild --watch");
+                    const watcher = ui.startWatcher("esbuild-watch", `esbuild --watch${mode === "production" ? " --prod" : ""}`);
                     watcher.set("building", resolvedEntryPoints.join(", "));
 
                     /**
@@ -619,7 +737,7 @@ export default createCommand({
                         );
 
                     // Initial rebuild under the dev span.
-                    const group = yield* Effect.sync(() => ui.startGroup("Building:", resolvedEntryPoints.join(", ")));
+                    const group = yield* Effect.sync(() => ui.startGroup("Building:", `${mode} · ${resolvedEntryPoints.join(", ")}`));
                     const result = yield* Effect.tryPromise({
                         try: () => context.rebuild(),
                         catch: BuildError("rebuild"),
@@ -661,7 +779,7 @@ export default createCommand({
                 } else {
                     const esb = yield* getEsbuildEffect;
                     const { analyze, ..._buildOptions } = buildOptions;
-                    const group = yield* Effect.sync(() => ui.startGroup("Building:", resolvedEntryPoints.join(", ")));
+                    const group = yield* Effect.sync(() => ui.startGroup("Building:", `${mode} · ${resolvedEntryPoints.join(", ")}`));
                     const result = yield* Effect.tryPromise({
                         try: () => esb.build(_buildOptions),
                         catch: BuildError("build"),

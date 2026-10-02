@@ -112,6 +112,7 @@ export const launderCommand = createCommand({
       const fs = term.fs;
       if (!fs) throw new Error("No workspace open.");
       const mode = parsed.mode?.toLowerCase();
+
       if (!mode) {
         // Report where the current setting came from, per open() precedence.
         let source = "default";
@@ -132,7 +133,7 @@ export const launderCommand = createCommand({
       const value = mode === "on";
       fs.launderExtensions = value;
       writeStoredLaunderPref(value);
-      return `laundering ${mode}. Applies to new .js writes in this workspace; existing on-disk files keep their names.`;
+      return `laundering ${mode}. Applies to new .js writes in this workspace; existing on-disk files keep their names and stay readable either way.`;
     });
   },
 });

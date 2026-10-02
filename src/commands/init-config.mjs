@@ -1,7 +1,7 @@
 import { createCommand } from "../services/commands.mjs";
 import { Effect } from "effect";
 import { dataverseConfigSchema } from "./dataverse.mjs";
-import { esbuildConfigSchema } from "./esbuild.mjs";
+import { esbuildRawSchema } from "./esbuild.mjs";
 import { tailwindConfigSchema } from "./tailwind.mjs";
 import {
   object,
@@ -79,10 +79,14 @@ async function initConfigExecute(parsed, term) {
     }
 
     if (withEsbuild && !ecExists) {
-      const esbuildConfig = esbuildConfigSchema.parse({});
+      // Write only the shape's non-default keys. Materialising the defaults
+      // here would pin minify/sourcemap in the config file, and since file
+      // values outrank the --dev/--prod mode preset, `--prod` would silently
+      // stop minifying.
+      const esbuildConfig = esbuildRawSchema.parse({});
       await fs.writeFile(
         "esbuild.config.json",
-        JSON.stringify(esbuildConfig, null, 2),
+        `${JSON.stringify(esbuildConfig, null, 2)}\n`,
       );
       term.success("Created esbuild.config.json");
     }
