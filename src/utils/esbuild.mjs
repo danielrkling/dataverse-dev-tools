@@ -196,6 +196,31 @@ async function resolveExportTarget(fs, root, target, conditions, mainFields) {
 
 
 /**
+ * Resolve a bare module specifier against the workspace filesystem using the
+ * same Node-style `exports`/`mainFields` rules the esbuild fsPlugin applies.
+ *
+ * Exposed so other commands (notably `tailwind`, whose `@plugin` loader needs
+ * to resolve npm packages) share one implementation instead of reaching for a
+ * CDN. Returns a workspace-relative path like
+ * `node_modules/foo/dist/index.js`, or null when nothing resolves.
+ *
+ * @param {import('../types/services.d.ts').WorkspaceFsService} fs
+ * @param {string} specifier bare specifier, e.g. `@scope/pkg` or `pkg/sub`
+ * @param {string} [importerDir] directory to start the node_modules walk-up from
+ * @param {{ platform?: string, conditions?: string[], mainFields?: string[] }} [opts]
+ * @returns {Promise<string | null>}
+ */
+export async function resolveBareModule(fs, specifier, importerDir = "", opts = {}) {
+    return resolveNodeModule(
+        fs,
+        specifier,
+        importerDir,
+        effectiveConditions(opts.platform ?? "browser", opts.conditions),
+        opts.mainFields ?? DEFAULT_MAIN_FIELDS,
+    );
+}
+
+/**
  * @param {import('../types/services.d.ts').WorkspaceFsService} fs
  * @param {string} specifier
  * @param {string} importerDir

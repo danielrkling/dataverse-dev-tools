@@ -2,7 +2,7 @@ import { dirname, join } from "../utils/path.mjs";
 import * as z from "zod";
 import { createCommand, FsError, friendlyError, zodIssuesMessage, readJsonConfigEffect, attachWatchStop } from "../services/commands.mjs";
 import { object, optional, message, option, string, multiple } from "@optique/core";
-import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause } from "../utils/esbuild.mjs";
+import { aliasPlugin, fsPlugin, getEsbuildEffect, httpPlugin, BuildError, describeBuildCause, resolveBareModule } from "../utils/esbuild.mjs";
 import picomatch from "picomatch";
 import { Effect } from "effect";
 import { WorkspaceFs } from "../effects/services.mjs";
@@ -169,6 +169,57 @@ function createLoadStylesheet(fs) {
 }
 
 /**
+ * Bundle a workspace-relative entry through esbuild and import the result.
+ *
+ * Bundling is required rather than importing the file directly: the file lives
+ * in OPFS, which the browser can't `import()` as a module specifier. It also
+ * means the module's own dependencies resolve through `fsPlugin`, i.e. from
+ * node_modules rather than a CDN.
+ *
+ * @param {import('../services/fs.mjs').WebFileSystem} fs
+ * @param {string} entry workspace-relative path
+ * @returns {Promise<{path: string, base: string, module: any}>}
+ */
+async function bundleAndImport(fs, entry) {
+    const esb = await Effect.runPromise(getEsbuildEffect);
+    const result = await esb.build({
+        entryPoints: [entry],
+        bundle: true,
+        format: "esm",
+        write: false,
+        // Browser baseline only: CSS output targets the browser, so a package's
+        // `browser` export should win over its node entry. Deliberately no mode
+        // conditions — tailwind resolution is independent of `esbuild --dev/
+        // --prod`, so `development` is not activated here.
+        platform: "browser",
+        plugins: [aliasPlugin(), httpPlugin(), fsPlugin(fs)],
+    });
+    const blob = new Blob([result.outputFiles[0].text], {
+        type: "application/javascript",
+    });
+    const url = URL.createObjectURL(blob);
+    try {
+        const mod = await import(url);
+        return {
+            path: entry,
+            base: dirname(entry) || "/",
+            module: mod.default || mod,
+        };
+    } finally {
+        URL.revokeObjectURL(url);
+    }
+}
+
+/**
+ * Loader handed to the Tailwind compiler for `@plugin` (and `@reference`)
+ * module specifiers.
+ *
+ * Bare specifiers resolve against the workspace first — the same Node
+ * `exports`/`mainFields` logic the esbuild command uses — so plugins come from
+ * the project's own `node_modules` and can use their dev/prod conditional
+ * exports. esm.sh remains a fallback for packages that aren't installed, which
+ * preserves the previous behaviour rather than turning it into a hard failure.
+ *
  * @param {import('../services/fs.mjs').WebFileSystem} fs
  * @returns {(id: string, base: string) => Promise<{path: string, base: string, module: any}>}
  */
@@ -180,33 +231,18 @@ function createLoadModule(fs) {
         }
 
         if (!id.startsWith("./") && !id.startsWith("../") && !id.startsWith("/")) {
+            // Bare specifier: prefer the workspace's node_modules.
+            const importerDir = base && base !== "/" ? base : "";
+            const resolved = await resolveBareModule(fs, id, importerDir);
+            if (resolved) return bundleAndImport(fs, resolved);
+
+            // Not installed locally — fall back to the CDN.
             const mod = await import(`https://esm.sh/${id}`);
             return { path: id, base, module: mod.default || mod };
         }
 
         const fullPath = base && base !== "/" ? join(base, id) : id;
-        const esb = await Effect.runPromise(getEsbuildEffect);
-        const result = await esb.build({
-            entryPoints: [fullPath],
-            bundle: true,
-            format: "esm",
-            write: false,
-            plugins: [aliasPlugin(), httpPlugin(), fsPlugin(fs)],
-        });
-        const blob = new Blob([result.outputFiles[0].text], {
-            type: "application/javascript",
-        });
-        const url = URL.createObjectURL(blob);
-        try {
-            const mod = await import(url);
-            return {
-                path: fullPath,
-                base: dirname(fullPath) || "/",
-                module: mod.default || mod,
-            };
-        } finally {
-            URL.revokeObjectURL(url);
-        }
+        return bundleAndImport(fs, fullPath);
     };
 }
 
